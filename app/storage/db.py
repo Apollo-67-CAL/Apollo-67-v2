@@ -286,7 +286,7 @@ def _connect(database_url: str) -> DBConnection:
             "Install psycopg2-binary in this environment."
         ) from exc
 
-    conn = psycopg2.connect(database_url)
+    conn = psycopg.connect(database_url)
     return DBConnection(backend="postgres", raw_connection=conn)
 
 
