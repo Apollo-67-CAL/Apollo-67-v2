@@ -7,6 +7,7 @@ from app.providers.twelvedata import ProviderError, TwelveDataClient
 from app.validation.market_data import ValidationError, validate_bars, validate_quote
 from core.config import get_config, initialise_config
 from core.storage.db import DB_DRIVER_MARKER, check_db_connectivity, init_db
+from app.services.basic_signal import compute_basic_signal
 
 logger = logging.getLogger(__name__)
 
@@ -116,4 +117,46 @@ def provider_twelvedata_quote(symbol: str):
         return JSONResponse(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             content={"status": "error", "provider": "twelvedata", "message": str(exc)},
+        )
+
+
+@app.get("/signal/basic")
+def signal_basic(symbol: str):
+    try:
+        client = TwelveDataClient()
+        get_bars = getattr(client, "get_bars", None)
+        if get_bars is None:
+            get_bars = client.fetch_bars
+
+        bars_result = get_bars(symbol=symbol, interval="1day", outputsize=30)
+        bars = bars_result.get("bars", []) if isinstance(bars_result, dict) else bars_result
+
+        if bars:
+            validate_bars(bars)
+
+        bars_for_signal = [
+            bar.model_dump(mode="json") if hasattr(bar, "model_dump") else bar for bar in bars
+        ]
+        bars_for_signal = sorted(
+            bars_for_signal,
+            key=lambda bar: str(bar.get("ts_event", "")),
+        )
+        signal = compute_basic_signal(bars_for_signal)
+        debug = signal.get("debug", {}) if isinstance(signal, dict) else {}
+        debug.setdefault("bars_count", len(bars_for_signal) if bars_for_signal else None)
+        debug.setdefault("first_ts", bars_for_signal[0].get("ts_event") if bars_for_signal else None)
+        debug.setdefault("last_ts", bars_for_signal[-1].get("ts_event") if bars_for_signal else None)
+        debug.setdefault("first_close", bars_for_signal[0].get("close") if bars_for_signal else None)
+        debug.setdefault("last_close", bars_for_signal[-1].get("close") if bars_for_signal else None)
+        signal["debug"] = debug
+        return signal
+    except ProviderError as exc:
+        return JSONResponse(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            content={"error": str(exc)},
+        )
+    except (ValidationError, ValueError, TypeError) as exc:
+        return JSONResponse(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            content={"error": str(exc)},
         )
