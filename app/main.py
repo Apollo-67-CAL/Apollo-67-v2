@@ -28,3 +28,9 @@ def health_check():
 @app.get("/")
 def root():
     return {"app": "Apollo 67", "message": "Backend running"}
+
+@app.get("/debug/init-db")
+def force_init():
+    from app.storage.db import init_db
+    init_db()
+    return {"status": "init_db executed"}
