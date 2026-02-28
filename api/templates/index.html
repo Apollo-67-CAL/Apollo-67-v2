@@ -63,8 +63,19 @@
         </div>
       </article>
     </section>
+
+    <section class="chart-card">
+      <div class="chart-head">
+        <h2>Price Chart</h2>
+        <span class="label" id="chartMeta">Close, MA10, MA20</span>
+      </div>
+      <div class="chart-wrap">
+        <canvas id="priceChart" aria-label="Price chart"></canvas>
+      </div>
+    </section>
   </main>
 
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
   <script src="/static/app.js"></script>
 </body>
 </html>
