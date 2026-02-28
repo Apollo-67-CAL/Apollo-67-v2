@@ -6,6 +6,7 @@ from urllib.parse import urlparse
 
 DEFAULT_DATABASE_URL = "sqlite:///./apollo67.db"
 
+DB_DRIVER_MARKER = "psycopg3"
 SQLITE_SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_migrations (
     version TEXT PRIMARY KEY,

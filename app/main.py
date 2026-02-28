@@ -1,13 +1,14 @@
 from fastapi import FastAPI, status
 from fastapi.responses import JSONResponse
 
-from app.storage.db import check_db_connectivity, init_db
+from app.storage.db import DB_DRIVER_MARKER, check_db_connectivity, init_db
 
 app = FastAPI(title="Apollo 67")
 
 @app.on_event("startup")
 def startup() -> None:
     init_db()
+    print(f"DB_DRIVER={DB_DRIVER_MARKER}")
 
 @app.get("/healthz")
 def health_check():
@@ -31,6 +32,6 @@ def root():
 
 @app.get("/debug/init-db")
 def force_init():
-    from app.storage.db import init_db
+    from app.storage.db import DB_DRIVER_MARKER, init_db
     init_db()
     return {"status": "init_db executed"}
