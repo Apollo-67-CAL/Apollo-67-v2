@@ -3,6 +3,8 @@ import logging
 from fastapi import FastAPI, status
 from fastapi.responses import JSONResponse
 
+from app.providers.twelvedata import ProviderError, TwelveDataClient
+from app.validation.market_data import ValidationError, validate_bars, validate_quote
 from core.config import get_config, initialise_config
 from core.storage.db import DB_DRIVER_MARKER, check_db_connectivity, init_db
 
@@ -64,3 +66,54 @@ def config_view():
 def force_init():
     init_db()
     return {"status": "init_db executed"}
+
+
+@app.get("/provider/twelvedata/search")
+def provider_twelvedata_search(q: str):
+    try:
+        client = TwelveDataClient()
+        return {"provider": "twelvedata", "query": q, "results": client.search_symbols(q)}
+    except (ProviderError, ValidationError, ValueError) as exc:
+        return JSONResponse(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            content={"status": "error", "provider": "twelvedata", "message": str(exc)},
+        )
+
+
+@app.get("/provider/twelvedata/bars")
+def provider_twelvedata_bars(symbol: str, interval: str = "1day", outputsize: int = 500):
+    try:
+        client = TwelveDataClient()
+        bars = client.fetch_bars(symbol=symbol, interval=interval, outputsize=outputsize)
+        validate_bars(bars)
+        return {
+            "provider": "twelvedata",
+            "symbol": symbol,
+            "interval": interval,
+            "outputsize": outputsize,
+            "bars": [bar.model_dump(mode="json") for bar in bars],
+        }
+    except (ProviderError, ValidationError, ValueError) as exc:
+        return JSONResponse(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            content={"status": "error", "provider": "twelvedata", "message": str(exc)},
+        )
+
+
+@app.get("/provider/twelvedata/quote")
+def provider_twelvedata_quote(symbol: str):
+    try:
+        cfg = get_config()
+        client = TwelveDataClient()
+        quote = client.fetch_quote(symbol=symbol)
+        validate_quote(quote, freshness_seconds=cfg.data_freshness_sla_seconds)
+        return {
+            "provider": "twelvedata",
+            "symbol": symbol,
+            "quote": quote.model_dump(mode="json"),
+        }
+    except (ProviderError, ValidationError, ValueError) as exc:
+        return JSONResponse(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            content={"status": "error", "provider": "twelvedata", "message": str(exc)},
+        )
