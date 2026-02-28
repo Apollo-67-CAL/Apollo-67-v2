@@ -69,6 +69,84 @@ CREATE TABLE IF NOT EXISTS models (
     UNIQUE(model_name, model_version)
 );
 CREATE INDEX IF NOT EXISTS idx_models_created_at ON models(created_at);
+
+CREATE TABLE IF NOT EXISTS raw_payloads (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    dataset TEXT NOT NULL,
+    provider TEXT NOT NULL,
+    payload TEXT NOT NULL,
+    received_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_raw_payloads_dataset_received_at
+    ON raw_payloads(dataset, received_at);
+
+CREATE TABLE IF NOT EXISTS canonical_instruments (
+    instrument_id TEXT PRIMARY KEY,
+    symbol TEXT NOT NULL,
+    venue TEXT NOT NULL,
+    asset_type TEXT NOT NULL,
+    currency TEXT NOT NULL,
+    is_tradable INTEGER NOT NULL,
+    effective_from TEXT NOT NULL,
+    effective_to TEXT,
+    source_provider TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_canonical_instruments_symbol
+    ON canonical_instruments(symbol);
+
+CREATE TABLE IF NOT EXISTS canonical_price_bars (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    instrument_id TEXT NOT NULL,
+    timeframe TEXT NOT NULL,
+    ts_event TEXT NOT NULL,
+    ts_ingest TEXT NOT NULL,
+    open REAL NOT NULL,
+    high REAL NOT NULL,
+    low REAL NOT NULL,
+    close REAL NOT NULL,
+    volume REAL NOT NULL,
+    source_provider TEXT NOT NULL,
+    quality_flags TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (instrument_id, timeframe, ts_event)
+);
+CREATE INDEX IF NOT EXISTS idx_canonical_price_bars_symbol_time
+    ON canonical_price_bars(instrument_id, ts_event);
+
+CREATE TABLE IF NOT EXISTS canonical_corporate_actions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    instrument_id TEXT NOT NULL,
+    action_type TEXT NOT NULL,
+    effective_date TEXT NOT NULL,
+    factor_or_amount REAL NOT NULL,
+    source_provider TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (instrument_id, action_type, effective_date)
+);
+
+CREATE TABLE IF NOT EXISTS canonical_session_calendars (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    venue TEXT NOT NULL,
+    session_date TEXT NOT NULL,
+    is_open INTEGER NOT NULL,
+    session_start TEXT NOT NULL,
+    session_end TEXT NOT NULL,
+    timezone TEXT NOT NULL,
+    source_provider TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (venue, session_date)
+);
+
+CREATE TABLE IF NOT EXISTS curated_datasets (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    dataset_name TEXT NOT NULL,
+    dataset_version TEXT NOT NULL,
+    status TEXT NOT NULL,
+    payload TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (dataset_name, dataset_version)
+);
 """
 
 POSTGRES_SCHEMA_SQL = """
@@ -136,6 +214,84 @@ CREATE TABLE IF NOT EXISTS models (
     UNIQUE(model_name, model_version)
 );
 CREATE INDEX IF NOT EXISTS idx_models_created_at ON models(created_at);
+
+CREATE TABLE IF NOT EXISTS raw_payloads (
+    id BIGSERIAL PRIMARY KEY,
+    dataset TEXT NOT NULL,
+    provider TEXT NOT NULL,
+    payload JSONB NOT NULL,
+    received_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_raw_payloads_dataset_received_at
+    ON raw_payloads(dataset, received_at);
+
+CREATE TABLE IF NOT EXISTS canonical_instruments (
+    instrument_id TEXT PRIMARY KEY,
+    symbol TEXT NOT NULL,
+    venue TEXT NOT NULL,
+    asset_type TEXT NOT NULL,
+    currency TEXT NOT NULL,
+    is_tradable BOOLEAN NOT NULL,
+    effective_from TIMESTAMPTZ NOT NULL,
+    effective_to TIMESTAMPTZ,
+    source_provider TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_canonical_instruments_symbol
+    ON canonical_instruments(symbol);
+
+CREATE TABLE IF NOT EXISTS canonical_price_bars (
+    id BIGSERIAL PRIMARY KEY,
+    instrument_id TEXT NOT NULL,
+    timeframe TEXT NOT NULL,
+    ts_event TIMESTAMPTZ NOT NULL,
+    ts_ingest TIMESTAMPTZ NOT NULL,
+    open DOUBLE PRECISION NOT NULL,
+    high DOUBLE PRECISION NOT NULL,
+    low DOUBLE PRECISION NOT NULL,
+    close DOUBLE PRECISION NOT NULL,
+    volume DOUBLE PRECISION NOT NULL,
+    source_provider TEXT NOT NULL,
+    quality_flags JSONB,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (instrument_id, timeframe, ts_event)
+);
+CREATE INDEX IF NOT EXISTS idx_canonical_price_bars_symbol_time
+    ON canonical_price_bars(instrument_id, ts_event);
+
+CREATE TABLE IF NOT EXISTS canonical_corporate_actions (
+    id BIGSERIAL PRIMARY KEY,
+    instrument_id TEXT NOT NULL,
+    action_type TEXT NOT NULL,
+    effective_date DATE NOT NULL,
+    factor_or_amount DOUBLE PRECISION NOT NULL,
+    source_provider TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (instrument_id, action_type, effective_date)
+);
+
+CREATE TABLE IF NOT EXISTS canonical_session_calendars (
+    id BIGSERIAL PRIMARY KEY,
+    venue TEXT NOT NULL,
+    session_date DATE NOT NULL,
+    is_open BOOLEAN NOT NULL,
+    session_start TIME NOT NULL,
+    session_end TIME NOT NULL,
+    timezone TEXT NOT NULL,
+    source_provider TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (venue, session_date)
+);
+
+CREATE TABLE IF NOT EXISTS curated_datasets (
+    id BIGSERIAL PRIMARY KEY,
+    dataset_name TEXT NOT NULL,
+    dataset_version TEXT NOT NULL,
+    status TEXT NOT NULL,
+    payload JSONB,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (dataset_name, dataset_version)
+);
 """
 
 
@@ -319,10 +475,22 @@ def init_db() -> None:
                 """,
                 ("v1_initial",),
             )
+            conn.execute(
+                """
+                INSERT INTO schema_migrations(version)
+                VALUES (?)
+                ON CONFLICT (version) DO NOTHING
+                """,
+                ("v2_ingestion_zones",),
+            )
         else:
             conn.execute(
                 "INSERT OR IGNORE INTO schema_migrations(version) VALUES (?)",
                 ("v1_initial",),
+            )
+            conn.execute(
+                "INSERT OR IGNORE INTO schema_migrations(version) VALUES (?)",
+                ("v2_ingestion_zones",),
             )
 
 
