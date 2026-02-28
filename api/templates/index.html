@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Apollo 67 UI</title>
+  <link rel="stylesheet" href="/static/app.css" />
+</head>
+<body>
+  <main class="container">
+    <header class="header">
+      <img src="/static/brand/logo-blue.png" alt="Apollo 67" class="logo" />
+      <h1>Apollo 67</h1>
+    </header>
+
+    <section class="controls">
+      <label for="symbol">Symbol</label>
+      <input id="symbol" type="text" value="AAPL" />
+      <div class="buttons">
+        <button id="quoteBtn" type="button">Get Quote</button>
+        <button id="signalBtn" type="button">Get Signal</button>
+      </div>
+    </section>
+
+    <section class="results">
+      <article class="card">
+        <h2>Quote</h2>
+        <div id="quoteCard" class="card-body">
+          <div class="row"><span class="label">Symbol</span><span id="quoteSymbol">-</span></div>
+          <div class="row"><span class="label">Last</span><span id="quoteLast">-</span></div>
+          <div class="row"><span class="label">Timestamp</span><span id="quoteTs">-</span></div>
+          <div class="row"><span class="label">Provider</span><span id="quoteProvider">-</span></div>
+          <details class="details">
+            <summary>Raw</summary>
+            <pre id="quoteRaw">{}</pre>
+          </details>
+        </div>
+      </article>
+      <article class="card">
+        <h2>Signal</h2>
+        <div id="signalCard" class="card-body">
+          <div class="signal-score-wrap">
+            <div class="label">Score</div>
+            <div id="signalScore" class="signal-score">-</div>
+          </div>
+          <div class="badges">
+            <span class="badge neutral" id="signalTrend">trend: -</span>
+            <span class="badge neutral" id="signalMomentum">momentum: -</span>
+          </div>
+          <div class="confidence-wrap">
+            <div class="row">
+              <span class="label">Confidence</span>
+              <span id="signalConfidence">-</span>
+            </div>
+            <div class="progress">
+              <div id="signalConfidenceBar" class="progress-fill"></div>
+            </div>
+          </div>
+          <details class="details">
+            <summary>Debug</summary>
+            <pre id="signalDebug">{}</pre>
+          </details>
+        </div>
+      </article>
+    </section>
+  </main>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
