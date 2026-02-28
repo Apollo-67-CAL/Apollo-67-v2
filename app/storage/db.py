@@ -279,7 +279,7 @@ def _connect(database_url: str) -> DBConnection:
         return DBConnection(backend="sqlite", raw_connection=conn)
 
     try:
-        import psycopg2  # type: ignore
+        import psycopg  # type: ignore
     except ModuleNotFoundError as exc:
         raise RuntimeError(
             "Postgres DATABASE_URL configured but psycopg2 is not installed. "
