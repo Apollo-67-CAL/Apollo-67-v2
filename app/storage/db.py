@@ -282,8 +282,8 @@ def _connect(database_url: str) -> DBConnection:
         import psycopg  # type: ignore
     except ModuleNotFoundError as exc:
         raise RuntimeError(
-            "Postgres DATABASE_URL configured but psycopg2 is not installed. "
-            "Install psycopg2-binary in this environment."
+            "Postgres DATABASE_URL configured but psycopg is not installed. "
+            "Install psycopg[binary] in this environment."
         ) from exc
 
     conn = psycopg.connect(database_url)
