@@ -107,3 +107,9 @@ Read and execute these docs in order:
 5. `docs/DEPLOYMENT_VALIDATION.md`
 
 Then return to this file to confirm stage-gate completion and validation progression.
+
+## 8) Environment Note (Database)
+
+- Local development: `DATABASE_URL` may be omitted and defaults to `sqlite:///./apollo67.db`.
+- Non-local environments (staging/production): `DATABASE_URL` is required and must use `postgresql://...` or `postgres://...`.
+- Render deployment: use the Postgres internal connection URL for `DATABASE_URL` (Render internal URL).

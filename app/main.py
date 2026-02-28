@@ -1,4 +1,5 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, status
+from fastapi.responses import JSONResponse
 
 from app.storage.db import check_db_connectivity, init_db
 
@@ -11,15 +12,18 @@ def startup() -> None:
 @app.get("/healthz")
 def health_check():
     db_ok, db_message = check_db_connectivity()
-    status = "ok" if db_ok else "degraded"
-    return {
-        "status": status,
+    health_status = "ok" if db_ok else "degraded"
+    body = {
+        "status": health_status,
         "app": "running",
         "db": {
             "ok": db_ok,
             "message": db_message,
         },
     }
+    if not db_ok:
+        return JSONResponse(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, content=body)
+    return body
 
 @app.get("/")
 def root():
