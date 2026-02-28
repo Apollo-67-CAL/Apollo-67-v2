@@ -1,13 +1,20 @@
+import logging
+
 from fastapi import FastAPI, status
 from fastapi.responses import JSONResponse
 
 from app.storage.db import DB_DRIVER_MARKER, check_db_connectivity, init_db
 
+logger = logging.getLogger(__name__)
+
 app = FastAPI(title="Apollo 67")
 
 @app.on_event("startup")
 def startup() -> None:
-    init_db()
+    try:
+        init_db()
+    except Exception as e:
+        logger.exception("init_db failed; continuing so server can start: %s", e)
     print(f"DB_DRIVER={DB_DRIVER_MARKER}")
 
 @app.get("/healthz")
