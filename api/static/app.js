@@ -16,6 +16,9 @@ const watchlistSort = document.getElementById('watchlistSort');
 const watchlistList = document.getElementById('watchlistList');
 const portfolioAddBtn = document.getElementById('portfolioAddBtn');
 const portfolioList = document.getElementById('portfolioList');
+const scannerLoading = document.getElementById('scannerLoading');
+const watchlistLoading = document.getElementById('watchlistLoading');
+const portfolioLoading = document.getElementById('portfolioLoading');
 
 const quoteSymbol = document.getElementById('quoteSymbol');
 const quoteLast = document.getElementById('quoteLast');
@@ -49,6 +52,16 @@ const state = {
     scanner: null,
     watchlist: null,
     portfolio: null,
+  },
+  sectionLoading: {
+    scanner: false,
+    watchlist: false,
+    portfolio: false,
+  },
+  loadingByPanel: {
+    scanner: new Set(),
+    watchlist: new Set(),
+    portfolio: new Set(),
   },
 };
 
@@ -103,6 +116,43 @@ function normalizeSymbol(value) {
 function getSymbol() {
   const value = normalizeSymbol(symbolInput.value);
   return value || state.selectedSymbol || 'AAPL';
+}
+
+function chunkSymbols(symbols, size) {
+  const out = [];
+  for (let i = 0; i < symbols.length; i += size) {
+    out.push(symbols.slice(i, i + size));
+  }
+  return out;
+}
+
+function setSectionLoading(panelName, isLoading) {
+  state.sectionLoading[panelName] = isLoading;
+  let el = null;
+  if (panelName === 'scanner') {
+    el = scannerLoading;
+    if (!el) {
+      const scannerTitle = document.querySelector('.left-panels article:first-child .panel-head h2');
+      if (scannerTitle) {
+        el = scannerTitle.querySelector('[data-loading-fallback="scanner"]');
+        if (!el) {
+          el = document.createElement('span');
+          el.className = 'loading-indicator';
+          el.dataset.loadingFallback = 'scanner';
+          el.textContent = 'Loading...';
+          el.hidden = true;
+          scannerTitle.appendChild(document.createTextNode(' '));
+          scannerTitle.appendChild(el);
+        }
+      }
+    }
+  } else if (panelName === 'watchlist') {
+    el = watchlistLoading;
+  } else if (panelName === 'portfolio') {
+    el = portfolioLoading;
+  }
+  if (!el) return;
+  el.hidden = !isLoading;
 }
 
 function displayError(el, message) {
@@ -192,6 +242,17 @@ function getSignalView(result) {
   };
 }
 
+function normalizeBatchItem(item, fallback) {
+  if (item && item.ok && item.data) {
+    return { ok: true, status: 200, body: item.data };
+  }
+  return {
+    ok: false,
+    status: 503,
+    body: { error: item?.error || fallback },
+  };
+}
+
 async function fetchSymbolData(symbol, force = false) {
   const key = normalizeSymbol(symbol);
   if (!key) return null;
@@ -223,14 +284,61 @@ async function fetchSymbolData(symbol, force = false) {
   }
 }
 
-function warmSymbols(symbols) {
+function warmSymbols(symbols, panelName) {
   const missing = [...new Set(symbols.map(normalizeSymbol).filter(Boolean))].filter(
     (symbol) => !dataCache.has(symbol) && !inFlight.has(symbol)
   );
 
   if (missing.length === 0) return;
 
+  const panelLoading = state.loadingByPanel[panelName];
+  missing.forEach((symbol) => panelLoading?.add(symbol));
+  if (panelName) setSectionLoading(panelName, true);
+
   Promise.allSettled(missing.map((symbol) => fetchSymbolData(symbol))).then(() => {
+    missing.forEach((symbol) => panelLoading?.delete(symbol));
+    if (panelName) setSectionLoading(panelName, false);
+    renderPanels();
+  });
+}
+
+function warmScannerSymbols(symbols) {
+  const missing = [...new Set(symbols.map(normalizeSymbol).filter(Boolean))].filter(
+    (symbol) => !dataCache.has(symbol) && !inFlight.has(symbol)
+  );
+  if (missing.length === 0) return;
+
+  missing.forEach((symbol) => state.loadingByPanel.scanner.add(symbol));
+  setSectionLoading('scanner', true);
+
+  const batches = chunkSymbols(missing, 25);
+
+  Promise.allSettled(
+    batches.map(async (batch) => {
+      const joined = encodeURIComponent(batch.join(','));
+      const [quoteBatch, signalBatch] = await Promise.all([
+        fetchJson(`/batch/quotes?symbols=${joined}`),
+        fetchJson(`/batch/signals/basic?symbols=${joined}`),
+      ]);
+
+      const quoteResults = quoteBatch.body?.results || {};
+      const signalResults = signalBatch.body?.results || {};
+
+      batch.forEach((symbol) => {
+        const quoteResult = normalizeBatchItem(
+          quoteResults[symbol],
+          getErrorMessage(quoteBatch, 'Batch quote failed')
+        );
+        const signalResult = normalizeBatchItem(
+          signalResults[symbol],
+          getErrorMessage(signalBatch, 'Batch signal failed')
+        );
+        dataCache.set(symbol, { quoteResult, signalResult, fetchedAt: Date.now() });
+      });
+    })
+  ).finally(() => {
+    missing.forEach((symbol) => state.loadingByPanel.scanner.delete(symbol));
+    setSectionLoading('scanner', false);
     renderPanels();
   });
 }
@@ -475,7 +583,9 @@ function getPanelRows(symbols, panelName) {
     const signal = getSignalView(cached?.signalResult);
     const isSelected = state.selectedSymbol === symbol;
     const isExpanded = state.expandedByPanel[panelName] === symbol;
-    return { symbol, quote, signal, isSelected, isExpanded };
+    const isLoading = state.loadingByPanel[panelName]?.has(symbol) || false;
+    const hasData = Boolean(cached);
+    return { symbol, quote, signal, isSelected, isExpanded, isLoading, hasData };
   });
 }
 
@@ -526,19 +636,27 @@ function renderSymbolList(container, rows, panelName, options = {}) {
     .map((row) => {
       const trendClass = sentimentClass(row.signal.trend);
       const momentumClass = sentimentClass(row.signal.momentum);
+      const loadingClass = row.isLoading ? 'loading' : '';
+      const priceText = row.hasData ? `$${formatPrice(row.quote.last)}` : '...';
+      const scoreText = row.hasData ? `score ${formatScore(row.signal.score)}` : 'score ...';
+      const trendText = row.hasData ? row.signal.trend : '...';
+      const momentumText = row.hasData ? row.signal.momentum : '...';
       const qty = showQty ? `<span class="pill">qty ${qtyBySymbol[row.symbol] ?? 0}</span>` : '';
       const pl = showQty
         ? `<span class="pill muted-pill">P/L ${formatPct(plPctBySymbol[row.symbol])}</span>`
         : '';
+      const hasErr = row.hasData && (row.quote.error || row.signal.error);
+      const errBadge = hasErr ? '<span class="badge bear">ERR</span>' : '';
 
       return `
-      <article class="symbol-card ${row.isSelected ? 'selected' : ''}" data-panel="${panelName}" data-symbol="${row.symbol}">
+      <article class="symbol-card ${row.isSelected ? 'selected' : ''} ${loadingClass}" data-panel="${panelName}" data-symbol="${row.symbol}">
         <button type="button" class="symbol-main" data-action="select" data-panel="${panelName}" data-symbol="${row.symbol}">
           <span class="sym">${row.symbol}</span>
-          <span class="metric">$${formatPrice(row.quote.last)}</span>
-          <span class="metric">score ${formatScore(row.signal.score)}</span>
-          <span class="badge ${trendClass}">${row.signal.trend}</span>
-          <span class="badge ${momentumClass}">${row.signal.momentum}</span>
+          <span class="metric ${row.hasData ? '' : 'skeleton-chip'}">${priceText}</span>
+          <span class="metric ${row.hasData ? '' : 'skeleton-chip'}">${scoreText}</span>
+          <span class="badge ${row.hasData ? trendClass : 'neutral'} ${row.hasData ? '' : 'skeleton-chip'}">${trendText}</span>
+          <span class="badge ${row.hasData ? momentumClass : 'neutral'} ${row.hasData ? '' : 'skeleton-chip'}">${momentumText}</span>
+          ${errBadge}
           ${qty}
           ${pl}
         </button>
@@ -555,13 +673,13 @@ function renderScanner() {
 
   const rows = getPanelRows(list, 'scanner').sort(sortByScoreDesc);
   renderSymbolList(scannerList, rows, 'scanner');
-  warmSymbols(list);
+  warmScannerSymbols(list);
 }
 
 function renderWatchlist() {
   const rows = sortWatchlistRows(getPanelRows(state.watchlist, 'watchlist'));
   renderSymbolList(watchlistList, rows, 'watchlist');
-  warmSymbols(state.watchlist);
+  warmSymbols(state.watchlist, 'watchlist');
 }
 
 function buildPortfolioDerived() {
@@ -611,7 +729,7 @@ function renderPortfolio() {
   );
 
   renderSymbolList(portfolioList, rows, 'portfolio', { showQty: true, qtyBySymbol, plPctBySymbol });
-  warmSymbols(symbols);
+  warmSymbols(symbols, 'portfolio');
 }
 
 function renderPanels() {
