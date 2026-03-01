@@ -1,7 +1,9 @@
 import logging
 
-from fastapi import FastAPI, status
+from fastapi import FastAPI, Request, status
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
 
 from app.providers.twelvedata import ProviderError, TwelveDataClient
 from app.validation.market_data import ValidationError, validate_bars, validate_quote
@@ -12,6 +14,8 @@ from app.services.basic_signal import compute_basic_signal
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Apollo 67")
+app.mount("/static", StaticFiles(directory="api/static"), name="static")
+templates = Jinja2Templates(directory="api/templates")
 
 
 @app.on_event("startup")
@@ -50,6 +54,11 @@ def health_check():
 @app.get("/")
 def root():
     return {"app": "Apollo 67", "message": "Backend running"}
+
+
+@app.get("/ui")
+def ui(request: Request):
+    return templates.TemplateResponse("index.html", {"request": request})
 
 
 @app.get("/config")
