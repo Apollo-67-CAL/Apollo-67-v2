@@ -39,8 +39,6 @@
               <option value="symbol">Symbol</option>
               <option value="price">Price</option>
               <option value="score">Score</option>
-              <option value="forecast">Forecast (placeholder)</option>
-              <option value="target">Target (placeholder)</option>
             </select>
           </div>
           <div id="watchlistList" class="symbol-list"></div>
@@ -49,6 +47,7 @@
         <article class="panel">
           <div class="panel-head">
             <h2>Portfolio</h2>
+            <button id="portfolioAddBtn" type="button" class="button-ghost">Add</button>
           </div>
           <div id="portfolioList" class="symbol-list"></div>
         </article>
@@ -68,6 +67,7 @@
           <article class="card">
             <h2>Quote</h2>
             <div id="quoteCard" class="card-body">
+              <div id="quoteError" class="panel-error" hidden></div>
               <div class="row"><span class="label">Symbol</span><span id="quoteSymbol">-</span></div>
               <div class="row"><span class="label">Last</span><span id="quoteLast">-</span></div>
               <div class="row"><span class="label">Timestamp</span><span id="quoteTs">-</span></div>
@@ -81,6 +81,7 @@
           <article class="card">
             <h2>Signal</h2>
             <div id="signalCard" class="card-body">
+              <div id="signalError" class="panel-error" hidden></div>
               <div class="signal-score-wrap">
                 <div class="label">Score</div>
                 <div id="signalScore" class="signal-score">-</div>
