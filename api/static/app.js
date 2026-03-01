@@ -1,6 +1,26 @@
+const SCANNER_SYMBOLS = [
+  'AAPL', 'MSFT', 'NVDA', 'AMZN', 'GOOGL', 'META', 'TSLA', 'AVGO', 'AMD', 'NFLX',
+  'CRM', 'ORCL', 'INTC', 'ADBE', 'QCOM', 'SHOP', 'PLTR', 'UBER', 'COIN', 'PANW',
+  'SNOW', 'MU', 'CRWD', 'ASML', 'TSM', 'PYPL', 'ABNB', 'DIS', 'JPM', 'V'
+];
+
+const PORTFOLIO = [
+  { symbol: 'AAPL', qty: 10 },
+  { symbol: 'TSLA', qty: 5 },
+  { symbol: 'MSFT', qty: 8 },
+];
+
 const symbolInput = document.getElementById('symbol');
 const quoteBtn = document.getElementById('quoteBtn');
 const signalBtn = document.getElementById('signalBtn');
+
+const scannerList = document.getElementById('scannerList');
+const scannerToggleBtn = document.getElementById('scannerToggleBtn');
+const watchlistInput = document.getElementById('watchlistInput');
+const watchlistAddBtn = document.getElementById('watchlistAddBtn');
+const watchlistSort = document.getElementById('watchlistSort');
+const watchlistList = document.getElementById('watchlistList');
+const portfolioList = document.getElementById('portfolioList');
 
 const quoteSymbol = document.getElementById('quoteSymbol');
 const quoteLast = document.getElementById('quoteLast');
@@ -19,9 +39,44 @@ const chartCanvas = document.getElementById('priceChart');
 const chartMeta = document.getElementById('chartMeta');
 let priceChart = null;
 
+const dataCache = new Map();
+const inFlight = new Map();
+
+const state = {
+  scannerExpanded: false,
+  selectedSymbol: 'AAPL',
+  watchlist: loadWatchlist(),
+  watchlistSort: 'symbol',
+  expandedByPanel: {
+    scanner: null,
+    watchlist: null,
+    portfolio: null,
+  },
+};
+
+function loadWatchlist() {
+  try {
+    const raw = localStorage.getItem('apollo67.watchlist');
+    if (!raw) return ['AAPL', 'MSFT', 'NVDA'];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return ['AAPL', 'MSFT', 'NVDA'];
+    return [...new Set(parsed.map(normalizeSymbol).filter(Boolean))];
+  } catch {
+    return ['AAPL', 'MSFT', 'NVDA'];
+  }
+}
+
+function saveWatchlist() {
+  localStorage.setItem('apollo67.watchlist', JSON.stringify(state.watchlist));
+}
+
+function normalizeSymbol(value) {
+  return (value || '').toString().trim().toUpperCase();
+}
+
 function getSymbol() {
-  const value = (symbolInput.value || '').trim().toUpperCase();
-  return value || 'AAPL';
+  const value = normalizeSymbol(symbolInput.value);
+  return value || state.selectedSymbol || 'AAPL';
 }
 
 async function fetchJson(url) {
@@ -49,6 +104,74 @@ function sentimentClass(value) {
   if (v.includes('bullish') || v.includes('positive')) return 'bull';
   if (v.includes('bearish') || v.includes('negative')) return 'bear';
   return 'neutral';
+}
+
+function getQuoteView(symbol, result) {
+  const body = result?.body || {};
+  const quote = body.quote || {};
+  return {
+    symbol: body.symbol || quote.instrument_id || symbol,
+    last: quote.last != null ? Number(quote.last) : null,
+    ts: quote.ts_event || quote.ts_ingest || null,
+    provider: quote.source_provider || body.provider || 'twelvedata',
+    raw: result || {},
+  };
+}
+
+function getSignalView(result) {
+  const body = result?.body || {};
+  return {
+    score: body.score != null ? Number(body.score) : null,
+    trend: body.trend || 'neutral',
+    momentum: body.momentum || 'neutral',
+    confidence: body.confidence != null ? Number(body.confidence) : 0,
+    debug: body.debug || {},
+    raw: result || {},
+    error: !result?.ok || !!body.error,
+  };
+}
+
+async function fetchSymbolData(symbol, force = false) {
+  const key = normalizeSymbol(symbol);
+  if (!key) return null;
+
+  if (!force && dataCache.has(key)) {
+    return dataCache.get(key);
+  }
+
+  if (inFlight.has(key)) {
+    return inFlight.get(key);
+  }
+
+  const pending = (async () => {
+    const [quoteResult, signalResult] = await Promise.all([
+      fetchJson(`/provider/twelvedata/quote?symbol=${encodeURIComponent(key)}`),
+      fetchJson(`/signal/basic?symbol=${encodeURIComponent(key)}`),
+    ]);
+
+    const entry = { quoteResult, signalResult, fetchedAt: Date.now() };
+    dataCache.set(key, entry);
+    return entry;
+  })();
+
+  inFlight.set(key, pending);
+  try {
+    return await pending;
+  } finally {
+    inFlight.delete(key);
+  }
+}
+
+function warmSymbols(symbols) {
+  const missing = [...new Set(symbols.map(normalizeSymbol).filter(Boolean))].filter(
+    (symbol) => !dataCache.has(symbol) && !inFlight.has(symbol)
+  );
+
+  if (missing.length === 0) return;
+
+  Promise.allSettled(missing.map((symbol) => fetchSymbolData(symbol))).then(() => {
+    renderPanels();
+  });
 }
 
 function computeMovingAverage(values, window) {
@@ -216,35 +339,207 @@ function renderSignal(result) {
   signalDebug.textContent = asJson(body.debug || {});
 }
 
+function formatPrice(value) {
+  if (value == null || Number.isNaN(Number(value))) return '-';
+  return Number(value).toFixed(2);
+}
+
+function formatScore(value) {
+  if (value == null || Number.isNaN(Number(value))) return '-';
+  return String(Math.round(Number(value)));
+}
+
+function sortByScoreDesc(a, b) {
+  const as = a.signal.score == null ? -9999 : Number(a.signal.score);
+  const bs = b.signal.score == null ? -9999 : Number(b.signal.score);
+  if (bs !== as) return bs - as;
+  return a.symbol.localeCompare(b.symbol);
+}
+
+function sortWatchlistRows(rows) {
+  const mode = state.watchlistSort;
+  if (mode === 'price') {
+    return rows.sort((a, b) => (b.quote.last || -1) - (a.quote.last || -1));
+  }
+  if (mode === 'score') {
+    return rows.sort((a, b) => (b.signal.score || -9999) - (a.signal.score || -9999));
+  }
+  return rows.sort((a, b) => a.symbol.localeCompare(b.symbol));
+}
+
+function getPanelRows(symbols, panelName) {
+  return symbols.map((symbol) => {
+    const cached = dataCache.get(symbol);
+    const quote = getQuoteView(symbol, cached?.quoteResult);
+    const signal = getSignalView(cached?.signalResult);
+    const isSelected = state.selectedSymbol === symbol;
+    const isExpanded = state.expandedByPanel[panelName] === symbol;
+    return { symbol, quote, signal, isSelected, isExpanded };
+  });
+}
+
+function renderCardDetails(row) {
+  const trendClass = sentimentClass(row.signal.trend);
+  const momentumClass = sentimentClass(row.signal.momentum);
+  const debug = row.signal.debug || {};
+
+  return `
+    <div class="expand-content">
+      <div class="expand-grid">
+        <div>
+          <div class="label">Quote summary</div>
+          <div class="expand-line">last: ${formatPrice(row.quote.last)}</div>
+          <div class="expand-line">ts_event: ${row.quote.ts || '-'}</div>
+          <div class="expand-line">provider: ${row.quote.provider || '-'}</div>
+        </div>
+        <div>
+          <div class="label">Signal summary</div>
+          <div class="expand-line">score: ${formatScore(row.signal.score)}</div>
+          <div class="expand-line">confidence: ${Math.round((row.signal.confidence || 0) * 100)}%</div>
+          <div class="expand-line">ma10: ${debug.ma10 != null ? debug.ma10 : '-'}</div>
+          <div class="expand-line">ma20: ${debug.ma20 != null ? debug.ma20 : '-'}</div>
+          <div class="expand-line">rsi14: ${debug.rsi14 != null ? debug.rsi14 : '-'}</div>
+        </div>
+      </div>
+      <details class="details details-inline">
+        <summary>Raw JSON</summary>
+        <pre>${asJson({ quote: row.quote.raw, signal: row.signal.raw })}</pre>
+      </details>
+    </div>
+  `;
+}
+
+function renderSymbolList(container, rows, panelName, options = {}) {
+  const showQty = Boolean(options.showQty);
+  if (!rows.length) {
+    container.innerHTML = '<div class="empty">No symbols.</div>';
+    return;
+  }
+
+  container.innerHTML = rows
+    .map((row) => {
+      const trendClass = sentimentClass(row.signal.trend);
+      const momentumClass = sentimentClass(row.signal.momentum);
+      const qty = showQty ? `<span class="pill">qty ${options.qtyBySymbol[row.symbol] || 0}</span>` : '';
+      const pl = showQty ? '<span class="pill muted-pill">P/L --</span>' : '';
+      return `
+      <article class="symbol-card ${row.isSelected ? 'selected' : ''}" data-panel="${panelName}" data-symbol="${row.symbol}">
+        <button type="button" class="symbol-main" data-action="select" data-panel="${panelName}" data-symbol="${row.symbol}">
+          <span class="sym">${row.symbol}</span>
+          <span class="metric">$${formatPrice(row.quote.last)}</span>
+          <span class="metric">score ${formatScore(row.signal.score)}</span>
+          <span class="badge ${trendClass}">${row.signal.trend}</span>
+          <span class="badge ${momentumClass}">${row.signal.momentum}</span>
+          ${qty}
+          ${pl}
+        </button>
+        ${row.isExpanded ? renderCardDetails(row) : ''}
+      </article>
+      `;
+    })
+    .join('');
+}
+
+function renderScanner() {
+  const list = state.scannerExpanded ? SCANNER_SYMBOLS : SCANNER_SYMBOLS.slice(0, 15);
+  scannerToggleBtn.textContent = state.scannerExpanded ? 'Show less' : 'Show more';
+
+  const rows = getPanelRows(list, 'scanner').sort(sortByScoreDesc);
+  renderSymbolList(scannerList, rows, 'scanner');
+  warmSymbols(list);
+}
+
+function renderWatchlist() {
+  const rows = sortWatchlistRows(getPanelRows(state.watchlist, 'watchlist'));
+  renderSymbolList(watchlistList, rows, 'watchlist');
+  warmSymbols(state.watchlist);
+}
+
+function renderPortfolio() {
+  const symbols = PORTFOLIO.map((h) => h.symbol);
+  const qtyBySymbol = Object.fromEntries(PORTFOLIO.map((h) => [h.symbol, h.qty]));
+  const rows = getPanelRows(symbols, 'portfolio').sort(sortByScoreDesc);
+  renderSymbolList(portfolioList, rows, 'portfolio', { showQty: true, qtyBySymbol });
+  warmSymbols(symbols);
+}
+
+function renderPanels() {
+  renderScanner();
+  renderWatchlist();
+  renderPortfolio();
+}
+
+async function selectSymbol(symbol, { force = false } = {}) {
+  const normalized = normalizeSymbol(symbol);
+  if (!normalized) return;
+
+  state.selectedSymbol = normalized;
+  symbolInput.value = normalized;
+
+  const data = await fetchSymbolData(normalized, force);
+  if (!data) return;
+
+  renderQuote(data.quoteResult, normalized);
+  renderSignal(data.signalResult);
+  await loadBarsChart(normalized);
+  renderPanels();
+}
+
+scannerToggleBtn.addEventListener('click', () => {
+  state.scannerExpanded = !state.scannerExpanded;
+  renderScanner();
+});
+
+watchlistSort.addEventListener('change', () => {
+  state.watchlistSort = watchlistSort.value;
+  renderWatchlist();
+});
+
+watchlistAddBtn.addEventListener('click', () => {
+  const symbol = normalizeSymbol(watchlistInput.value);
+  if (!symbol) return;
+  if (!state.watchlist.includes(symbol)) {
+    state.watchlist.push(symbol);
+    saveWatchlist();
+  }
+  watchlistInput.value = '';
+  renderWatchlist();
+});
+
+watchlistInput.addEventListener('keydown', (event) => {
+  if (event.key === 'Enter') {
+    event.preventDefault();
+    watchlistAddBtn.click();
+  }
+});
+
+document.addEventListener('click', (event) => {
+  const target = event.target.closest('[data-action="select"]');
+  if (!target) return;
+
+  const panel = target.dataset.panel;
+  const symbol = normalizeSymbol(target.dataset.symbol);
+  if (!panel || !symbol) return;
+
+  state.expandedByPanel[panel] = state.expandedByPanel[panel] === symbol ? null : symbol;
+  selectSymbol(symbol).catch(() => {
+    renderPanels();
+  });
+});
+
 quoteBtn.addEventListener('click', async () => {
   const symbol = getSymbol();
-  quoteSymbol.textContent = symbol;
-  quoteLast.textContent = 'Loading...';
-  quoteTs.textContent = '-';
-  quoteProvider.textContent = 'twelvedata';
-  quoteRaw.textContent = '{}';
-
-  const result = await fetchJson(`/provider/twelvedata/quote?symbol=${encodeURIComponent(symbol)}`);
-  renderQuote(result, symbol);
-  await loadBarsChart(symbol);
+  await selectSymbol(symbol, { force: true });
 });
 
 signalBtn.addEventListener('click', async () => {
   const symbol = getSymbol();
-  signalScore.textContent = '...';
-  signalTrend.textContent = 'trend: -';
-  signalMomentum.textContent = 'momentum: -';
-  resetClass(signalTrend, 'badge', 'neutral');
-  resetClass(signalMomentum, 'badge', 'neutral');
-  signalConfidence.textContent = '0%';
-  signalConfidenceBar.style.width = '0%';
-  signalDebug.textContent = '{}';
-
-  const result = await fetchJson(`/signal/basic?symbol=${encodeURIComponent(symbol)}`);
-  renderSignal(result);
-  await loadBarsChart(symbol);
+  await selectSymbol(symbol, { force: true });
 });
 
 window.addEventListener('DOMContentLoaded', async () => {
-  await loadBarsChart(getSymbol());
+  const initial = getSymbol();
+  state.selectedSymbol = initial;
+  renderPanels();
+  await selectSymbol(initial);
 });

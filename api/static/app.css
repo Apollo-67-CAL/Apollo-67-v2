@@ -22,7 +22,7 @@ body {
 }
 
 .container {
-  max-width: 980px;
+  max-width: 1400px;
   margin: 0 auto;
   padding: 24px;
 }
@@ -31,7 +31,7 @@ body {
   display: flex;
   align-items: center;
   gap: 14px;
-  margin-bottom: 22px;
+  margin-bottom: 18px;
 }
 
 .logo {
@@ -45,26 +45,152 @@ h1 {
   font-size: 1.6rem;
 }
 
+h2 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.dashboard-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 14px;
+}
+
+.left-panels,
+.right-detail {
+  display: grid;
+  gap: 12px;
+}
+
+.panel,
 .controls,
-.results article {
+.results article,
+.chart-card {
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: 10px;
 }
 
-.controls {
-  padding: 16px;
-  margin-bottom: 18px;
+.panel,
+.controls,
+.results article,
+.chart-card {
+  padding: 14px;
 }
 
-label {
-  display: block;
-  font-size: 0.9rem;
+.panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.symbol-list {
+  display: grid;
+  gap: 8px;
+}
+
+.symbol-card {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #0f1723;
+  overflow: hidden;
+}
+
+.symbol-card.selected {
+  border-color: rgba(59, 130, 246, 0.5);
+  box-shadow: inset 0 0 0 1px rgba(59, 130, 246, 0.25);
+}
+
+.symbol-main {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  padding: 10px;
+  cursor: pointer;
+}
+
+.sym {
+  font-weight: 700;
+  min-width: 56px;
+}
+
+.metric {
   color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.pill {
+  border: 1px solid rgba(59, 130, 246, 0.4);
+  color: #93c5fd;
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-size: 0.75rem;
+}
+
+.muted-pill {
+  border-color: rgba(154, 166, 178, 0.35);
+  color: var(--muted);
+}
+
+.expand-content {
+  border-top: 1px solid var(--border);
+  padding: 10px;
+  background: #0b1220;
+}
+
+.expand-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 10px;
   margin-bottom: 8px;
 }
 
-input {
+.expand-line {
+  color: var(--muted);
+  font-size: 0.82rem;
+  line-height: 1.4;
+}
+
+.watchlist-controls {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.watchlist-controls input {
+  margin-bottom: 0;
+}
+
+.watchlist-sort {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.watchlist-sort label,
+label {
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.controls label {
+  display: block;
+  margin-bottom: 8px;
+}
+
+input,
+select {
   width: 100%;
   background: #0b1220;
   color: var(--text);
@@ -72,12 +198,10 @@ input {
   border-radius: 8px;
   padding: 10px 12px;
   font-size: 0.95rem;
-  margin-bottom: 12px;
 }
 
-.buttons {
-  display: flex;
-  gap: 10px;
+.controls input {
+  margin-bottom: 12px;
 }
 
 button {
@@ -90,29 +214,32 @@ button {
   cursor: pointer;
 }
 
+.button-ghost {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--muted);
+  padding: 7px 10px;
+  font-size: 0.8rem;
+}
+
 button:hover {
   filter: brightness(1.08);
+}
+
+.buttons {
+  display: flex;
+  gap: 10px;
 }
 
 .results {
   display: grid;
   grid-template-columns: 1fr;
   gap: 12px;
-  margin-bottom: 12px;
-}
-
-.results article {
-  padding: 14px;
 }
 
 .card-body {
   display: grid;
   gap: 10px;
-}
-
-h2 {
-  margin: 0 0 10px;
-  font-size: 1rem;
 }
 
 .row {
@@ -134,6 +261,10 @@ h2 {
   margin-bottom: 8px;
 }
 
+.details-inline summary {
+  margin-bottom: 6px;
+}
+
 pre {
   margin: 0;
   white-space: pre-wrap;
@@ -142,7 +273,7 @@ pre {
   border: 1px solid var(--border);
   border-radius: 8px;
   padding: 12px;
-  min-height: 120px;
+  min-height: 110px;
 }
 
 .signal-score-wrap {
@@ -208,13 +339,6 @@ pre {
   transition: width 180ms ease-out;
 }
 
-.chart-card {
-  background: var(--panel);
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 14px;
-}
-
 .chart-head {
   display: flex;
   align-items: center;
@@ -231,7 +355,28 @@ pre {
   height: 320px;
 }
 
-@media (min-width: 860px) {
+.empty {
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+@media (min-width: 980px) {
+  .dashboard-grid {
+    grid-template-columns: 420px minmax(0, 1fr);
+    align-items: start;
+  }
+
+  .left-panels {
+    position: sticky;
+    top: 16px;
+  }
+
+  .expand-grid {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+@media (min-width: 1280px) {
   .results {
     grid-template-columns: 1fr 1fr;
   }

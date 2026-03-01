@@ -13,65 +13,107 @@
       <h1>Apollo 67</h1>
     </header>
 
-    <section class="controls">
-      <label for="symbol">Symbol</label>
-      <input id="symbol" type="text" value="AAPL" />
-      <div class="buttons">
-        <button id="quoteBtn" type="button">Get Quote</button>
-        <button id="signalBtn" type="button">Get Signal</button>
-      </div>
-    </section>
+    <section class="dashboard-grid">
+      <aside class="left-panels">
+        <article class="panel">
+          <div class="panel-head">
+            <h2>Scanner</h2>
+            <button id="scannerToggleBtn" type="button" class="button-ghost">Show more</button>
+          </div>
+          <div id="scannerList" class="symbol-list"></div>
+        </article>
 
-    <section class="results">
-      <article class="card">
-        <h2>Quote</h2>
-        <div id="quoteCard" class="card-body">
-          <div class="row"><span class="label">Symbol</span><span id="quoteSymbol">-</span></div>
-          <div class="row"><span class="label">Last</span><span id="quoteLast">-</span></div>
-          <div class="row"><span class="label">Timestamp</span><span id="quoteTs">-</span></div>
-          <div class="row"><span class="label">Provider</span><span id="quoteProvider">-</span></div>
-          <details class="details">
-            <summary>Raw</summary>
-            <pre id="quoteRaw">{}</pre>
-          </details>
-        </div>
-      </article>
-      <article class="card">
-        <h2>Signal</h2>
-        <div id="signalCard" class="card-body">
-          <div class="signal-score-wrap">
-            <div class="label">Score</div>
-            <div id="signalScore" class="signal-score">-</div>
+        <article class="panel">
+          <div class="panel-head">
+            <h2>Watchlist</h2>
           </div>
-          <div class="badges">
-            <span class="badge neutral" id="signalTrend">trend: -</span>
-            <span class="badge neutral" id="signalMomentum">momentum: -</span>
+          <div class="watchlist-controls">
+            <input id="watchlistInput" type="text" placeholder="Add symbol (e.g. MSFT)" />
+            <button id="watchlistAddBtn" type="button">Add</button>
           </div>
-          <div class="confidence-wrap">
-            <div class="row">
-              <span class="label">Confidence</span>
-              <span id="signalConfidence">-</span>
-            </div>
-            <div class="progress">
-              <div id="signalConfidenceBar" class="progress-fill"></div>
-            </div>
+          <div class="watchlist-sort">
+            <label for="watchlistSort">Sort</label>
+            <select id="watchlistSort">
+              <option value="symbol">Symbol</option>
+              <option value="price">Price</option>
+              <option value="score">Score</option>
+              <option value="forecast">Forecast (placeholder)</option>
+              <option value="target">Target (placeholder)</option>
+            </select>
           </div>
-          <details class="details">
-            <summary>Debug</summary>
-            <pre id="signalDebug">{}</pre>
-          </details>
-        </div>
-      </article>
-    </section>
+          <div id="watchlistList" class="symbol-list"></div>
+        </article>
 
-    <section class="chart-card">
-      <div class="chart-head">
-        <h2>Price Chart</h2>
-        <span class="label" id="chartMeta">Close, MA10, MA20</span>
-      </div>
-      <div class="chart-wrap">
-        <canvas id="priceChart" aria-label="Price chart"></canvas>
-      </div>
+        <article class="panel">
+          <div class="panel-head">
+            <h2>Portfolio</h2>
+          </div>
+          <div id="portfolioList" class="symbol-list"></div>
+        </article>
+      </aside>
+
+      <section class="right-detail">
+        <section class="controls">
+          <label for="symbol">Symbol</label>
+          <input id="symbol" type="text" value="AAPL" />
+          <div class="buttons">
+            <button id="quoteBtn" type="button">Get Quote</button>
+            <button id="signalBtn" type="button">Get Signal</button>
+          </div>
+        </section>
+
+        <section class="results">
+          <article class="card">
+            <h2>Quote</h2>
+            <div id="quoteCard" class="card-body">
+              <div class="row"><span class="label">Symbol</span><span id="quoteSymbol">-</span></div>
+              <div class="row"><span class="label">Last</span><span id="quoteLast">-</span></div>
+              <div class="row"><span class="label">Timestamp</span><span id="quoteTs">-</span></div>
+              <div class="row"><span class="label">Provider</span><span id="quoteProvider">-</span></div>
+              <details class="details">
+                <summary>Raw</summary>
+                <pre id="quoteRaw">{}</pre>
+              </details>
+            </div>
+          </article>
+          <article class="card">
+            <h2>Signal</h2>
+            <div id="signalCard" class="card-body">
+              <div class="signal-score-wrap">
+                <div class="label">Score</div>
+                <div id="signalScore" class="signal-score">-</div>
+              </div>
+              <div class="badges">
+                <span class="badge neutral" id="signalTrend">trend: -</span>
+                <span class="badge neutral" id="signalMomentum">momentum: -</span>
+              </div>
+              <div class="confidence-wrap">
+                <div class="row">
+                  <span class="label">Confidence</span>
+                  <span id="signalConfidence">-</span>
+                </div>
+                <div class="progress">
+                  <div id="signalConfidenceBar" class="progress-fill"></div>
+                </div>
+              </div>
+              <details class="details">
+                <summary>Debug</summary>
+                <pre id="signalDebug">{}</pre>
+              </details>
+            </div>
+          </article>
+        </section>
+
+        <section class="chart-card">
+          <div class="chart-head">
+            <h2>Price Chart</h2>
+            <span class="label" id="chartMeta">Close, MA10, MA20</span>
+          </div>
+          <div class="chart-wrap">
+            <canvas id="priceChart" aria-label="Price chart"></canvas>
+          </div>
+        </section>
+      </section>
     </section>
   </main>
 
