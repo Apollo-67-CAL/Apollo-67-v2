@@ -64,19 +64,17 @@
             <button id="tradeBtn" type="button">Get Trade</button>
           </div>
 
-          <div class="buttons" style="margin-top: 10px;">
-            <label for="interval" style="min-width: 70px;">Timeframe</label>
+          <div class="trade-controls" style="margin-top:12px; display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+            <label for="interval" style="opacity:.8;">Timeframe</label>
             <select id="interval">
               <option value="1day" selected>1day</option>
               <option value="1h">1h</option>
               <option value="30min">30min</option>
               <option value="15min">15min</option>
-              <option value="5min">5min</option>
-              <option value="1min">1min</option>
             </select>
 
-            <label for="outputsize" style="min-width: 70px;">Bars</label>
-            <input id="outputsize" type="number" value="60" min="20" max="500" />
+            <label for="outputsize" style="opacity:.8;">Bars</label>
+            <input id="outputsize" type="number" value="60" min="20" max="500" step="1" style="width:90px;" />
           </div>
         </section>
 
@@ -133,10 +131,10 @@
               <div class="row"><span class="label">Confidence</span><span id="tradeConfidence">-</span></div>
               <div class="row"><span class="label">Timeframe</span><span id="tradeTimeframe">-</span></div>
 
-              <div class="row"><span class="label">Entry Zone</span><span id="tradeEntryZone">-</span></div>
-              <div class="row"><span class="label">Target Sell</span><span id="tradeTarget">-</span></div>
-              <div class="row"><span class="label">Stop Loss</span><span id="tradeStop">-</span></div>
-              <div class="row"><span class="label">Trailing Stop</span><span id="tradeTrail">-</span></div>
+              <div class="row"><span class="label">Entry zone</span><span id="tradeEntryZone">-</span></div>
+              <div class="row"><span class="label">Target</span><span id="tradeTarget">-</span></div>
+              <div class="row"><span class="label">Stop</span><span id="tradeStop">-</span></div>
+              <div class="row"><span class="label">Trailing stop</span><span id="tradeTrail">-</span></div>
 
               <details class="details">
                 <summary>Reasons</summary>
