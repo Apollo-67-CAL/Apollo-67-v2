@@ -8,6 +8,11 @@ const symbolInput = document.getElementById('symbol');
 const quoteBtn = document.getElementById('quoteBtn');
 const signalBtn = document.getElementById('signalBtn');
 
+// New UI bits (safe if missing)
+const tradeBtn = document.getElementById('tradeBtn');
+const intervalSelect = document.getElementById('interval');
+const outputsizeInput = document.getElementById('outputsize');
+
 const scannerList = document.getElementById('scannerList');
 const scannerToggleBtn = document.getElementById('scannerToggleBtn');
 const watchlistInput = document.getElementById('watchlistInput');
@@ -34,6 +39,18 @@ const signalConfidence = document.getElementById('signalConfidence');
 const signalConfidenceBar = document.getElementById('signalConfidenceBar');
 const signalDebug = document.getElementById('signalDebug');
 const signalError = document.getElementById('signalError');
+
+// Trade card elements (safe if missing)
+const tradeError = document.getElementById('tradeError');
+const tradeAction = document.getElementById('tradeAction');
+const tradeConfidence = document.getElementById('tradeConfidence');
+const tradeTimeframe = document.getElementById('tradeTimeframe');
+const tradeEntryZone = document.getElementById('tradeEntryZone');
+const tradeTarget = document.getElementById('tradeTarget');
+const tradeStop = document.getElementById('tradeStop');
+const tradeTrail = document.getElementById('tradeTrail');
+const tradeReasons = document.getElementById('tradeReasons');
+const tradeRaw = document.getElementById('tradeRaw');
 
 const chartCanvas = document.getElementById('priceChart');
 const chartMeta = document.getElementById('chartMeta');
@@ -119,6 +136,18 @@ function normalizeSymbol(value) {
 function getSymbol() {
   const value = normalizeSymbol(symbolInput.value);
   return value || state.selectedSymbol || 'AAPL';
+}
+
+function getInterval() {
+  const raw = intervalSelect ? String(intervalSelect.value || '').trim() : '';
+  return raw || '1day';
+}
+
+function getOutputsize() {
+  if (!outputsizeInput) return 60;
+  const n = Number(outputsizeInput.value);
+  if (!Number.isFinite(n)) return 60;
+  return Math.max(20, Math.min(500, Math.floor(n)));
 }
 
 function chunkSymbols(symbols, size) {
@@ -235,6 +264,7 @@ function getErrorMessage(result, fallback = 'Request failed') {
   const body = result.body || {};
   if (typeof body.error === 'string' && body.error.trim()) return body.error;
   if (typeof body.detail === 'string' && body.detail.trim()) return body.detail;
+  if (typeof body.message === 'string' && body.message.trim()) return body.message;
   if (!result.ok) return `HTTP ${result.status || 500} ${fallback}`;
   return '';
 }
@@ -588,14 +618,11 @@ function renderSignal(result) {
   signalDebug.textContent = asJson(body.debug || {});
 }
 
+// Trade support
+
 function formatPrice(value) {
   if (value == null || Number.isNaN(Number(value))) return '-';
   return Number(value).toFixed(2);
-}
-
-function formatScore(value) {
-  if (value == null || Number.isNaN(Number(value))) return '-';
-  return String(Math.round(Number(value)));
 }
 
 function formatPct(value) {
@@ -603,6 +630,80 @@ function formatPct(value) {
   const num = Number(value);
   const sign = num > 0 ? '+' : '';
   return `${sign}${num.toFixed(2)}%`;
+}
+
+function formatScore(value) {
+  if (value == null || Number.isNaN(Number(value))) return '-';
+  return String(Math.round(Number(value)));
+}
+
+function entryZoneText(zone) {
+  if (!zone || typeof zone !== 'object') return '-';
+  const low = zone.low != null ? formatPrice(zone.low) : '-';
+  const high = zone.high != null ? formatPrice(zone.high) : '-';
+  const type = zone.type ? String(zone.type) : '';
+  return type ? `${low} to ${high} (${type})` : `${low} to ${high}`;
+}
+
+function renderTrade(result) {
+  if (!tradeAction && !tradeRaw && !tradeError) {
+    return;
+  }
+
+  const errorMessage = getErrorMessage(result, 'Trade request failed');
+  displayError(tradeError, errorMessage);
+
+  if (!result.ok) {
+    if (tradeAction) tradeAction.textContent = '-';
+    if (tradeConfidence) tradeConfidence.textContent = '-';
+    if (tradeTimeframe) tradeTimeframe.textContent = '-';
+    if (tradeEntryZone) tradeEntryZone.textContent = '-';
+    if (tradeTarget) tradeTarget.textContent = '-';
+    if (tradeStop) tradeStop.textContent = '-';
+    if (tradeTrail) tradeTrail.textContent = '-';
+    if (tradeReasons) tradeReasons.textContent = '[]';
+    if (tradeRaw) tradeRaw.textContent = asJson(result);
+    return;
+  }
+
+  const body = result.body || {};
+  const trade = body.trade || body || {};
+
+  if (tradeAction) tradeAction.textContent = trade.action || '-';
+  if (tradeConfidence) {
+    const conf = trade.confidence != null ? Number(trade.confidence) : null;
+    tradeConfidence.textContent = conf == null || Number.isNaN(conf) ? '-' : `${Math.round(conf * 100)}%`;
+  }
+  if (tradeTimeframe) tradeTimeframe.textContent = trade.timeframe || body.interval || '-';
+
+  if (tradeEntryZone) tradeEntryZone.textContent = entryZoneText(trade.entry_zone);
+  if (tradeTarget) tradeTarget.textContent = trade.target_sell_price != null ? formatPrice(trade.target_sell_price) : '-';
+  if (tradeStop) tradeStop.textContent = trade.stop_loss_price != null ? formatPrice(trade.stop_loss_price) : '-';
+  if (tradeTrail) tradeTrail.textContent = trade.trailing_stop_price != null ? formatPrice(trade.trailing_stop_price) : '-';
+
+  if (tradeReasons) {
+    const reasons = Array.isArray(trade.reasons) ? trade.reasons : [];
+    tradeReasons.textContent = asJson(reasons);
+  }
+
+  if (tradeRaw) tradeRaw.textContent = asJson(result);
+}
+
+async function fetchTrade(symbol, interval, outputsize) {
+  const url = `/signal/trade?symbol=${encodeURIComponent(symbol)}&interval=${encodeURIComponent(interval)}&outputsize=${encodeURIComponent(String(outputsize))}`;
+  return fetchJson(url);
+}
+
+async function loadTradeForCurrentSymbol() {
+  const symbol = getSymbol();
+  const interval = getInterval();
+  const outputsize = getOutputsize();
+
+  renderTrade({ ok: false, status: 0, body: { error: '' } });
+  displayError(tradeError, 'Loading...');
+
+  const result = await fetchTrade(symbol, interval, outputsize);
+  renderTrade(result);
 }
 
 function sortByScoreDesc(a, b) {
@@ -696,6 +797,12 @@ function renderCardDetails(row) {
   `;
 }
 
+function sentimentChipText(row) {
+  const trend = row.hasData ? row.signal.trend : '...';
+  const momentum = row.hasData ? row.signal.momentum : '...';
+  return { trend, momentum };
+}
+
 function renderSymbolList(container, rows, panelName, options = {}) {
   const showQty = Boolean(options.showQty);
   const qtyBySymbol = options.qtyBySymbol || {};
@@ -713,8 +820,11 @@ function renderSymbolList(container, rows, panelName, options = {}) {
       const loadingClass = row.isLoading ? 'loading' : '';
       const priceText = row.hasData ? `$${formatPrice(row.quote.last)}` : '...';
       const scoreText = row.hasData ? `score ${formatScore(row.signal.score)}` : 'score ...';
-      const trendText = row.hasData ? row.signal.trend : '...';
-      const momentumText = row.hasData ? row.signal.momentum : '...';
+      const { trendText, momentumText } = (() => {
+        const t = sentimentChipText(row);
+        return { trendText: t.trend, momentumText: t.momentum };
+      })();
+
       const qty = showQty ? `<span class="pill">qty ${qtyBySymbol[row.symbol] ?? 0}</span>` : '';
       const pl = showQty
         ? `<span class="pill muted-pill">P/L ${formatPct(plPctBySymbol[row.symbol])}</span>`
@@ -927,9 +1037,19 @@ signalBtn.addEventListener('click', async () => {
   await safeSelectSymbol(symbol, { force: true });
 });
 
+if (tradeBtn) {
+  tradeBtn.addEventListener('click', async () => {
+    await loadTradeForCurrentSymbol();
+  });
+}
+
 window.addEventListener('DOMContentLoaded', async () => {
   const initial = getSymbol();
   state.selectedSymbol = initial;
   renderPanels();
   await safeSelectSymbol(initial);
+
+  // Optional: clear trade card on load so it doesn't show stale content
+  if (tradeRaw) tradeRaw.textContent = '{}';
+  if (tradeReasons) tradeReasons.textContent = '[]';
 });
