@@ -58,6 +58,9 @@ const state = {
     watchlist: false,
     portfolio: false,
   },
+  scannerNeedsUpdate: false,
+  scannerStatusCheckInFlight: false,
+  scannerLastStatusCheckMs: 0,
   loadingByPanel: {
     scanner: new Set(),
     watchlist: new Set(),
@@ -152,7 +155,68 @@ function setSectionLoading(panelName, isLoading) {
     el = portfolioLoading;
   }
   if (!el) return;
+  if (panelName === 'scanner') {
+    renderScannerIndicator();
+    return;
+  }
   el.hidden = !isLoading;
+}
+
+function renderScannerIndicator() {
+  if (!scannerLoading) return;
+  if (state.sectionLoading.scanner) {
+    scannerLoading.textContent = 'Loading...';
+    scannerLoading.hidden = false;
+    return;
+  }
+  if (state.scannerNeedsUpdate) {
+    scannerLoading.textContent = 'Updating...';
+    scannerLoading.hidden = false;
+    return;
+  }
+  scannerLoading.hidden = true;
+}
+
+function parseCacheAgeSeconds(rawTs) {
+  if (!rawTs) return Number.POSITIVE_INFINITY;
+  const ts = Date.parse(String(rawTs));
+  if (Number.isNaN(ts)) return Number.POSITIVE_INFINITY;
+  return Math.max(0, (Date.now() - ts) / 1000);
+}
+
+function isCacheStaleOrMissing(statusBody) {
+  const quotes = statusBody?.quotes || {};
+  const signals = statusBody?.signals || {};
+  const bars = statusBody?.bars || {};
+
+  if ((quotes.count || 0) === 0 || (signals.count || 0) === 0 || (bars.count || 0) === 0) {
+    return true;
+  }
+
+  const staleThresholdSeconds = 180;
+  const quoteAge = parseCacheAgeSeconds(quotes.latest_created_at);
+  const signalAge = parseCacheAgeSeconds(signals.latest_created_at);
+  const barAge = parseCacheAgeSeconds(bars.latest_ts_ingest);
+  return quoteAge > staleThresholdSeconds || signalAge > staleThresholdSeconds || barAge > staleThresholdSeconds;
+}
+
+async function refreshScannerCacheStatus({ force = false } = {}) {
+  const now = Date.now();
+  if (!force && now - state.scannerLastStatusCheckMs < 15000) {
+    return;
+  }
+  if (state.scannerStatusCheckInFlight) {
+    return;
+  }
+  state.scannerStatusCheckInFlight = true;
+  try {
+    const statusResult = await fetchJson('/cache/status');
+    state.scannerNeedsUpdate = !statusResult.ok || isCacheStaleOrMissing(statusResult.body);
+    state.scannerLastStatusCheckMs = now;
+    renderScannerIndicator();
+  } finally {
+    state.scannerStatusCheckInFlight = false;
+  }
 }
 
 function displayError(el, message) {
@@ -312,33 +376,43 @@ function warmScannerSymbols(symbols) {
   setSectionLoading('scanner', true);
 
   const batches = chunkSymbols(missing, 25);
+  let hasCacheMisses = false;
 
   Promise.allSettled(
     batches.map(async (batch) => {
       const joined = encodeURIComponent(batch.join(','));
       const [quoteBatch, signalBatch] = await Promise.all([
-        fetchJson(`/batch/quotes?symbols=${joined}`),
-        fetchJson(`/batch/signals/basic?symbols=${joined}`),
+        fetchJson(`/cache/quotes?symbols=${joined}`),
+        fetchJson(`/cache/signals/basic?symbols=${joined}`),
       ]);
 
       const quoteResults = quoteBatch.body?.results || {};
       const signalResults = signalBatch.body?.results || {};
 
       batch.forEach((symbol) => {
+        const quoteItem = quoteResults[symbol];
+        const signalItem = signalResults[symbol];
         const quoteResult = normalizeBatchItem(
-          quoteResults[symbol],
+          quoteItem,
           getErrorMessage(quoteBatch, 'Batch quote failed')
         );
         const signalResult = normalizeBatchItem(
-          signalResults[symbol],
+          signalItem,
           getErrorMessage(signalBatch, 'Batch signal failed')
         );
+
+        if (!quoteItem?.ok || !signalItem?.ok) {
+          hasCacheMisses = true;
+        }
         dataCache.set(symbol, { quoteResult, signalResult, fetchedAt: Date.now() });
       });
     })
   ).finally(() => {
     missing.forEach((symbol) => state.loadingByPanel.scanner.delete(symbol));
     setSectionLoading('scanner', false);
+    state.scannerNeedsUpdate = state.scannerNeedsUpdate || hasCacheMisses;
+    refreshScannerCacheStatus({ force: true });
+    renderScannerIndicator();
     renderPanels();
   });
 }
@@ -673,6 +747,7 @@ function renderScanner() {
 
   const rows = getPanelRows(list, 'scanner').sort(sortByScoreDesc);
   renderSymbolList(scannerList, rows, 'scanner');
+  refreshScannerCacheStatus();
   warmScannerSymbols(list);
 }
 

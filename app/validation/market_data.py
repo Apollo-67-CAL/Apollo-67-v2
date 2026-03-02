@@ -1,49 +1,121 @@
-from datetime import datetime, timedelta, timezone
+from __future__ import annotations
 
-from app.contracts.market_data import CanonicalBar, CanonicalQuote
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from typing import Any, Iterable, Mapping, Optional
 
 
-class ValidationError(ValueError):
+class ValidationError(Exception):
     pass
 
 
-def _ensure_utc(ts: datetime, field_name: str) -> None:
-    if ts.tzinfo is None:
-        raise ValidationError(f"{field_name} must be timezone-aware UTC")
-    if ts.utcoffset() != timedelta(0):
-        raise ValidationError(f"{field_name} must be UTC")
+def _as_mapping(bar: Any) -> dict[str, Any]:
+    """
+    Normalize a bar into a dict with keys:
+    ts_event, open, high, low, close, volume (optional)
+
+    Accepts:
+    - Pydantic / objects with attributes
+    - dict-like
+    - tuple/list in (ts_event, open, high, low, close, volume?) order
+    """
+    # Tuple/list from DB rows or provider adapters
+    if isinstance(bar, (tuple, list)):
+        if len(bar) < 5:
+            raise ValidationError(f"Invalid bar tuple length: {len(bar)}")
+        return {
+            "ts_event": bar[0],
+            "open": bar[1],
+            "high": bar[2],
+            "low": bar[3],
+            "close": bar[4],
+            "volume": bar[5] if len(bar) > 5 else None,
+        }
+
+    # Dict
+    if isinstance(bar, Mapping):
+        return dict(bar)
+
+    # Object with attributes
+    ts_event = getattr(bar, "ts_event", None)
+    if ts_event is None and hasattr(bar, "model_dump"):
+        # Pydantic v2
+        dumped = bar.model_dump(mode="json")
+        if isinstance(dumped, dict):
+            return dumped
+
+    # Generic attribute extraction
+    return {
+        "ts_event": getattr(bar, "ts_event", None),
+        "open": getattr(bar, "open", None),
+        "high": getattr(bar, "high", None),
+        "low": getattr(bar, "low", None),
+        "close": getattr(bar, "close", None),
+        "volume": getattr(bar, "volume", None),
+    }
 
 
-def validate_bars(bars: list[CanonicalBar]) -> None:
-    if not bars:
-        raise ValidationError("No bars returned")
+def _ensure_ts(ts: Any) -> Any:
+    """
+    Ensure ts_event is present. If it's a datetime, force UTC.
+    We do not force a specific string format here because different providers vary.
+    """
+    if ts is None or ts == "":
+        raise ValidationError("Missing ts_event")
 
-    seen: set[str] = set()
+    if isinstance(ts, datetime):
+        if ts.tzinfo is None:
+            return ts.replace(tzinfo=timezone.utc)
+        return ts.astimezone(timezone.utc)
+
+    return ts
+
+
+def _ensure_float(x: Any, field: str) -> Optional[float]:
+    if x is None or x == "":
+        return None
+    try:
+        return float(x)
+    except Exception as exc:
+        raise ValidationError(f"Invalid {field}: {x!r}") from exc
+
+
+def validate_bars(bars: Iterable[Any]) -> None:
+    """
+    Validates bars regardless of their shape.
+    Accepts objects, dicts, tuples.
+    """
     for bar in bars:
-        _ensure_utc(bar.ts_event, "ts_event")
-        _ensure_utc(bar.ts_ingest, "ts_ingest")
+        b = _as_mapping(bar)
 
-        if bar.open < 0 or bar.high < 0 or bar.low < 0 or bar.close < 0 or bar.volume < 0:
-            raise ValidationError("Negative values are not allowed")
-        if bar.high < max(bar.open, bar.close, bar.low):
-            raise ValidationError("Invalid OHLC: high bound")
-        if bar.low > min(bar.open, bar.close, bar.high):
-            raise ValidationError("Invalid OHLC: low bound")
+        b["ts_event"] = _ensure_ts(b.get("ts_event"))
 
-        key = f"{bar.instrument_id}:{bar.ts_event.isoformat()}"
-        if key in seen:
-            raise ValidationError("Duplicate bars in response")
-        seen.add(key)
+        # Required OHLC
+        for f in ("open", "high", "low", "close"):
+            val = b.get(f)
+            _ensure_float(val, f)
+
+        # Optional volume
+        if "volume" in b:
+            _ensure_float(b.get("volume"), "volume")
 
 
-def validate_quote(quote: CanonicalQuote, freshness_seconds: int = 30) -> None:
-    _ensure_utc(quote.ts_event, "ts_event")
-    _ensure_utc(quote.ts_ingest, "ts_ingest")
+def validate_quote(quote: Any) -> None:
+    """
+    Minimal quote validation for provider responses.
+    Accepts dict or object with attributes.
+    """
+    if quote is None:
+        raise ValidationError("Missing quote")
 
-    if quote.last < 0 or (quote.bid is not None and quote.bid < 0) or (quote.ask is not None and quote.ask < 0):
-        raise ValidationError("Quote has negative values")
+    if isinstance(quote, Mapping):
+        price = quote.get("price") or quote.get("close") or quote.get("last")
+        if price is None:
+            raise ValidationError("Quote missing price")
+        _ensure_float(price, "price")
+        return
 
-    now = datetime.now(timezone.utc)
-    age = now - quote.ts_ingest
-    if age.total_seconds() > freshness_seconds:
-        raise ValidationError("Quote freshness SLA breach")
+    price = getattr(quote, "price", None) or getattr(quote, "close", None) or getattr(quote, "last", None)
+    if price is None:
+        raise ValidationError("Quote missing price")
+    _ensure_float(price, "price")

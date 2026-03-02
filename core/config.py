@@ -66,6 +66,7 @@ class AppConfig:
     cpas_target_usd: float
     data_provider_primary: str
     data_provider_fallback: str
+    alphavantage_api_key: str
     data_freshness_sla_seconds: int
     data_completeness_min_ratio: float
     calendar_session_start: str
@@ -74,6 +75,7 @@ class AppConfig:
     def to_public_dict(self) -> Dict[str, Any]:
         payload = asdict(self)
         payload["database_url"] = _redact_url(self.database_url)
+        payload["alphavantage_api_key"] = "***" if self.alphavantage_api_key else ""
         return payload
 
 
@@ -179,6 +181,7 @@ def load_config() -> AppConfig:
         cpas_target_usd=_env_float("CPAS_TARGET_USD", 6.0),
         data_provider_primary=_env_str("DATA_PROVIDER_PRIMARY", "stub_primary"),
         data_provider_fallback=_env_str("DATA_PROVIDER_FALLBACK", "stub_fallback"),
+        alphavantage_api_key=_env_str("ALPHAVANTAGE_API_KEY", ""),
         data_freshness_sla_seconds=_env_int("DATA_FRESHNESS_SLA_SECONDS", 300),
         data_completeness_min_ratio=_env_float("DATA_COMPLETENESS_MIN_RATIO", 0.98),
         calendar_session_start=_env_str("CALENDAR_SESSION_START", "09:30"),

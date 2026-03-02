@@ -1,19 +1,15 @@
+# api/main.py
+
+import json
 import logging
 import os
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from pathlib import Path
 from threading import Lock
 from typing import Any
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, Request, status
-...
-
-load_dotenv()
-
-logger = logging.getLogger(__name__)
-app = FastAPI(title="Apollo 67")
-
 from fastapi import FastAPI, Request, status
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -21,12 +17,18 @@ from fastapi.templating import Jinja2Templates
 
 from app.providers.selector import get_bars_with_fallback, get_quote_with_fallback
 from app.providers.twelvedata import ProviderError, TwelveDataClient
-from app.validation.market_data import ValidationError, validate_bars, validate_quote
-from core.config import get_config, initialise_config
-from core.storage.db import DB_DRIVER_MARKER, check_db_connectivity, init_db
 from app.services.basic_signal import compute_basic_signal
+from app.services.trade_signal import compute_trade_signal
+from app.validation.market_data import ValidationError, validate_bars
+from core.config import get_config, initialise_config
+from core.storage.db import DB_DRIVER_MARKER, check_db_connectivity, get_connection, init_db
 
 logger = logging.getLogger(__name__)
+
+BASE_DIR = Path(__file__).resolve().parents[1]
+# Load .env from repo root for local dev. Render injects env vars too, harmless.
+load_dotenv(BASE_DIR / ".env")
+load_dotenv()
 
 app = FastAPI(title="Apollo 67")
 app.mount("/static", StaticFiles(directory="api/static"), name="static")
@@ -37,6 +39,15 @@ _BATCH_MAX_WORKERS = 4
 _BATCH_CACHE_TTL_SECONDS = 60
 _BATCH_CACHE_LOCK = Lock()
 _BATCH_CACHE: dict[str, tuple[float, Any]] = {}
+
+
+def _has_any_market_key() -> bool:
+    keys = (
+        os.getenv("FINNHUB_API_KEY", "").strip(),
+        os.getenv("TWELVEDATA_API_KEY", "").strip(),
+        os.getenv("ALPHAVANTAGE_API_KEY", "").strip(),
+    )
+    return any(keys)
 
 
 @app.on_event("startup")
@@ -62,10 +73,7 @@ def health_check():
     body = {
         "status": health_status,
         "app": "running",
-        "db": {
-            "ok": db_ok,
-            "message": db_message,
-        },
+        "db": {"ok": db_ok, "message": db_message},
     }
     if not db_ok:
         return JSONResponse(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, content=body)
@@ -99,6 +107,86 @@ def force_init():
     return {"status": "init_db executed"}
 
 
+def _mask(s: str) -> str:
+    s = (s or "").strip()
+    if not s:
+        return ""
+    if len(s) <= 8:
+        return s[0:2] + "..." + s[-2:]
+    return s[0:4] + "..." + s[-4:]
+
+
+@app.get("/debug/keys")
+def debug_keys():
+    td = os.getenv("TWELVEDATA_API_KEY", "")
+    fh = os.getenv("FINNHUB_API_KEY", "")
+    av = os.getenv("ALPHAVANTAGE_API_KEY", "")
+    return {
+        "TWELVEDATA_API_KEY_present": bool(td.strip()),
+        "FINNHUB_API_KEY_present": bool(fh.strip()),
+        "ALPHAVANTAGE_API_KEY_present": bool(av.strip()),
+        "TWELVEDATA_API_KEY_masked": _mask(td),
+        "FINNHUB_API_KEY_masked": _mask(fh),
+        "ALPHAVANTAGE_API_KEY_masked": _mask(av),
+        "app_env": os.getenv("APP_ENV", ""),
+    }
+
+
+# -----------------------------------------------------------------------------
+# Canonical market endpoints
+# -----------------------------------------------------------------------------
+
+@app.get("/market/quote")
+def market_quote(symbol: str):
+    try:
+        cfg = get_config()
+        result = get_quote_with_fallback(symbol=symbol, freshness_seconds=cfg.data_freshness_sla_seconds)
+        return {
+            "provider": result.provider,
+            "symbol": symbol.upper(),
+            "quote": result.quote.model_dump(mode="json"),
+        }
+    except (ProviderError, ValidationError, ValueError) as exc:
+        return JSONResponse(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            content={"status": "error", "provider": "selector", "message": str(exc)},
+        )
+
+
+def _bars_to_json(bars: list[Any]) -> list[Any]:
+    out: list[Any] = []
+    for b in bars or []:
+        if hasattr(b, "model_dump"):
+            out.append(b.model_dump(mode="json"))
+        elif isinstance(b, dict):
+            out.append(b)
+        else:
+            out.append(b)
+    return out
+
+
+@app.get("/market/bars")
+def market_bars(symbol: str, interval: str = "1day", outputsize: int = 500):
+    try:
+        result = get_bars_with_fallback(symbol=symbol, interval=interval, outputsize=outputsize)
+        return {
+            "provider": result.provider,
+            "symbol": symbol.upper(),
+            "interval": interval,
+            "outputsize": outputsize,
+            "bars": _bars_to_json(result.bars or []),
+        }
+    except (ProviderError, ValidationError, ValueError) as exc:
+        return JSONResponse(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            content={"status": "error", "provider": "selector", "message": str(exc)},
+        )
+
+
+# -----------------------------------------------------------------------------
+# Provider-specific endpoints
+# -----------------------------------------------------------------------------
+
 @app.get("/provider/twelvedata/search")
 def provider_twelvedata_search(q: str):
     try:
@@ -117,10 +205,10 @@ def provider_twelvedata_bars(symbol: str, interval: str = "1day", outputsize: in
         result = get_bars_with_fallback(symbol=symbol, interval=interval, outputsize=outputsize)
         return {
             "provider": result.provider,
-            "symbol": symbol,
+            "symbol": symbol.upper(),
             "interval": interval,
             "outputsize": outputsize,
-            "bars": [bar.model_dump(mode="json") for bar in result.bars],
+            "bars": _bars_to_json(result.bars or []),
         }
     except (ProviderError, ValidationError, ValueError) as exc:
         return JSONResponse(
@@ -136,7 +224,7 @@ def provider_twelvedata_quote(symbol: str):
         result = get_quote_with_fallback(symbol=symbol, freshness_seconds=cfg.data_freshness_sla_seconds)
         return {
             "provider": result.provider,
-            "symbol": symbol,
+            "symbol": symbol.upper(),
             "quote": result.quote.model_dump(mode="json"),
         }
     except (ProviderError, ValidationError, ValueError) as exc:
@@ -146,38 +234,106 @@ def provider_twelvedata_quote(symbol: str):
         )
 
 
+# -----------------------------------------------------------------------------
+# Signals
+# -----------------------------------------------------------------------------
+
 def _compute_basic_signal_payload(symbol: str) -> dict[str, Any]:
-    client = TwelveDataClient()
-    get_bars = getattr(client, "get_bars", None)
-    if get_bars is None:
-        get_bars = client.fetch_bars
+    # selector provides fallback
+    result = get_bars_with_fallback(symbol=symbol, interval="1day", outputsize=60)
+    bars = result.bars or []
 
-    bars_result = get_bars(symbol=symbol, interval="1day", outputsize=30)
-    bars = bars_result.get("bars", []) if isinstance(bars_result, dict) else bars_result
-
+    # Validate bars regardless of shape (your validator handles dict/tuple/object)
     if bars:
         validate_bars(bars)
 
-    bars_for_signal = [
-        bar.model_dump(mode="json") if hasattr(bar, "model_dump") else bar for bar in bars
-    ]
-    bars_for_signal = sorted(
-        bars_for_signal,
-        key=lambda bar: str(bar.get("ts_event", "")),
-    )
+    # Compute signal expects dict-ish
+    bars_for_signal = []
+    for b in bars:
+        if hasattr(b, "model_dump"):
+            bars_for_signal.append(b.model_dump(mode="json"))
+        elif isinstance(b, dict):
+            bars_for_signal.append(b)
+        else:
+            bars_for_signal.append(b)
+
+    bars_for_signal = sorted(bars_for_signal, key=lambda x: str(getattr(x, "get", lambda k, d=None: None)("ts_event", "")) if isinstance(x, dict) else str(getattr(x, "ts_event", "")))
+
     signal = compute_basic_signal(bars_for_signal)
+
     debug = signal.get("debug", {}) if isinstance(signal, dict) else {}
+    debug.setdefault("provider_used", result.provider)
     debug.setdefault("bars_count", len(bars_for_signal) if bars_for_signal else None)
-    debug.setdefault("first_ts", bars_for_signal[0].get("ts_event") if bars_for_signal else None)
-    debug.setdefault("last_ts", bars_for_signal[-1].get("ts_event") if bars_for_signal else None)
-    debug.setdefault("first_close", bars_for_signal[0].get("close") if bars_for_signal else None)
-    debug.setdefault("last_close", bars_for_signal[-1].get("close") if bars_for_signal else None)
     signal["debug"] = debug
     return signal
 
 
+@app.get("/signal/basic")
+def signal_basic(symbol: str):
+    try:
+        if not _has_any_market_key():
+            return JSONResponse(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                content={"error": "Missing API key. Set FINNHUB_API_KEY or TWELVEDATA_API_KEY or ALPHAVANTAGE_API_KEY."},
+            )
+        return _compute_basic_signal_payload(symbol)
+    except ProviderError as exc:
+        return JSONResponse(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, content={"error": str(exc)})
+    except (ValidationError, ValueError, TypeError) as exc:
+        return JSONResponse(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, content={"error": str(exc)})
+
+
+@app.get("/signal/trade")
+def signal_trade(symbol: str, interval: str = "1day", outputsize: int = 60):
+    try:
+        if not _has_any_market_key():
+            return JSONResponse(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                content={"error": "Missing API key. Set FINNHUB_API_KEY or TWELVEDATA_API_KEY or ALPHAVANTAGE_API_KEY."},
+            )
+
+        res = get_bars_with_fallback(symbol=symbol, interval=interval, outputsize=outputsize)
+        bars = res.bars or []
+
+        # normalize to list[dict] for compute_trade_signal
+        bars_dicts: list[Any] = []
+        for b in bars:
+            if hasattr(b, "model_dump"):
+                bars_dicts.append(b.model_dump(mode="json"))
+            elif isinstance(b, dict):
+                bars_dicts.append(b)
+            else:
+                bars_dicts.append(b)
+
+        if bars_dicts:
+            validate_bars(bars_dicts)
+
+        trade = compute_trade_signal(
+            bars_dicts,
+            symbol=symbol.upper(),
+            provider_used=res.provider,
+            timeframe=interval,
+        )
+
+        return {
+            "provider": res.provider,
+            "symbol": symbol.upper(),
+            "trade": trade,
+        }
+
+    except (ProviderError, ValidationError, ValueError, TypeError) as exc:
+        return JSONResponse(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            content={"status": "error", "provider": "selector", "message": str(exc)},
+        )
+
+
+# -----------------------------------------------------------------------------
+# Batch + in-memory cache
+# -----------------------------------------------------------------------------
+
 def _parse_symbols_csv(symbols: str) -> list[str]:
-    parsed = []
+    parsed: list[str] = []
     seen = set()
     for raw in symbols.split(","):
         sym = raw.strip().upper()
@@ -218,7 +374,7 @@ def _batch_quote_for_symbol(symbol: str):
         "ok": True,
         "data": {
             "provider": result.provider,
-            "symbol": symbol,
+            "symbol": symbol.upper(),
             "quote": result.quote.model_dump(mode="json"),
         },
     }
@@ -236,6 +392,93 @@ def _batch_signal_for_symbol(symbol: str):
     return payload
 
 
+# -----------------------------------------------------------------------------
+# DB-backed cache endpoints (existing)
+# -----------------------------------------------------------------------------
+
+def _decode_payload(raw: Any) -> dict[str, Any]:
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str) and raw.strip():
+        try:
+            parsed = json.loads(raw)
+            return parsed if isinstance(parsed, dict) else {}
+        except json.JSONDecodeError:
+            return {}
+    return {}
+
+
+def _cached_quotes_results(symbols: list[str]) -> dict[str, Any]:
+    results: dict[str, Any] = {symbol: {"ok": False, "error": "No cached quote"} for symbol in symbols}
+    if not symbols:
+        return results
+
+    with get_connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT id, source, payload, created_at
+            FROM events
+            WHERE event_type = ?
+            ORDER BY id DESC
+            LIMIT 2000
+            """,
+            ("worker.quote",),
+        ).fetchall()
+
+    wanted = set(symbols)
+    found = set()
+    for row in rows:
+        payload = _decode_payload(row.get("payload"))
+        symbol = str(payload.get("symbol", "")).strip().upper()
+        quote_payload = payload.get("quote")
+        provider = payload.get("provider") or row.get("source") or "cache"
+        if symbol not in wanted or symbol in found:
+            continue
+        if not isinstance(quote_payload, dict):
+            continue
+        results[symbol] = {
+            "ok": True,
+            "data": {"provider": provider, "symbol": symbol, "quote": quote_payload},
+        }
+        found.add(symbol)
+        if len(found) == len(wanted):
+            break
+    return results
+
+
+def _cached_signals_results(symbols: list[str]) -> dict[str, Any]:
+    results: dict[str, Any] = {symbol: {"ok": False, "error": "No cached signal"} for symbol in symbols}
+    if not symbols:
+        return results
+
+    placeholders = ", ".join(["?"] * len(symbols))
+    params: tuple[Any, ...] = tuple(symbols)
+    with get_connection() as conn:
+        rows = conn.execute(
+            f"""
+            SELECT id, symbol, payload
+            FROM signals
+            WHERE symbol IN ({placeholders})
+            ORDER BY id DESC
+            """,
+            params,
+        ).fetchall()
+
+    found = set()
+    for row in rows:
+        symbol = str(row.get("symbol", "")).strip().upper()
+        if not symbol or symbol in found:
+            continue
+        payload = _decode_payload(row.get("payload"))
+        if not payload:
+            continue
+        results[symbol] = {"ok": True, "data": payload}
+        found.add(symbol)
+        if len(found) == len(symbols):
+            break
+    return results
+
+
 @app.get("/batch/quotes")
 def batch_quotes(symbols: str):
     requested = _parse_symbols_csv(symbols)
@@ -245,29 +488,26 @@ def batch_quotes(symbols: str):
             content={"error": f"Maximum {_BATCH_MAX_SYMBOLS} symbols allowed per request."},
         )
 
+    if not _has_any_market_key():
+        results = {s: {"ok": False, "error": "Missing API key. Set FINNHUB_API_KEY or TWELVEDATA_API_KEY or ALPHAVANTAGE_API_KEY."} for s in requested}
+        return JSONResponse(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, content={"symbols": requested, "results": results})
+
     started = time.monotonic()
     results: dict[str, Any] = {}
     succeeded: list[str] = []
     failed: list[str] = []
 
-    api_key = os.getenv("TWELVEDATA_API_KEY", "").strip()
-    if not api_key:
-        message = "TWELVEDATA_API_KEY is required"
-        for symbol in requested:
-            results[symbol] = {"ok": False, "error": message}
-            failed.append(symbol)
-    else:
-        with ThreadPoolExecutor(max_workers=_BATCH_MAX_WORKERS) as pool:
-            futures = {pool.submit(_batch_quote_for_symbol, symbol): symbol for symbol in requested}
-            for future in as_completed(futures):
-                symbol = futures[future]
-                try:
-                    payload = future.result()
-                    results[symbol] = payload
-                    succeeded.append(symbol)
-                except Exception as exc:
-                    results[symbol] = {"ok": False, "error": str(exc)}
-                    failed.append(symbol)
+    with ThreadPoolExecutor(max_workers=_BATCH_MAX_WORKERS) as pool:
+        futures = {pool.submit(_batch_quote_for_symbol, symbol): symbol for symbol in requested}
+        for future in as_completed(futures):
+            symbol = futures[future]
+            try:
+                payload = future.result()
+                results[symbol] = payload
+                succeeded.append(symbol)
+            except Exception as exc:
+                results[symbol] = {"ok": False, "error": str(exc)}
+                failed.append(symbol)
 
     duration_ms = int((time.monotonic() - started) * 1000)
     logger.info(
@@ -277,10 +517,18 @@ def batch_quotes(symbols: str):
         failed,
         duration_ms,
     )
-    return {
-        "symbols": requested,
-        "results": results,
-    }
+    return {"symbols": requested, "results": results}
+
+
+@app.get("/cache/quotes")
+def cache_quotes(symbols: str):
+    requested = _parse_symbols_csv(symbols)
+    if len(requested) > _BATCH_MAX_SYMBOLS:
+        return JSONResponse(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            content={"error": f"Maximum {_BATCH_MAX_SYMBOLS} symbols allowed per request."},
+        )
+    return {"symbols": requested, "results": _cached_quotes_results(requested)}
 
 
 @app.get("/batch/signals/basic")
@@ -292,29 +540,26 @@ def batch_signals_basic(symbols: str):
             content={"error": f"Maximum {_BATCH_MAX_SYMBOLS} symbols allowed per request."},
         )
 
+    if not _has_any_market_key():
+        results = {s: {"ok": False, "error": "Missing API key. Set FINNHUB_API_KEY or TWELVEDATA_API_KEY or ALPHAVANTAGE_API_KEY."} for s in requested}
+        return JSONResponse(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, content={"symbols": requested, "results": results})
+
     started = time.monotonic()
     results: dict[str, Any] = {}
     succeeded: list[str] = []
     failed: list[str] = []
 
-    api_key = os.getenv("TWELVEDATA_API_KEY", "").strip()
-    if not api_key:
-        message = "TWELVEDATA_API_KEY is required"
-        for symbol in requested:
-            results[symbol] = {"ok": False, "error": message}
-            failed.append(symbol)
-    else:
-        with ThreadPoolExecutor(max_workers=_BATCH_MAX_WORKERS) as pool:
-            futures = {pool.submit(_batch_signal_for_symbol, symbol): symbol for symbol in requested}
-            for future in as_completed(futures):
-                symbol = futures[future]
-                try:
-                    payload = future.result()
-                    results[symbol] = payload
-                    succeeded.append(symbol)
-                except Exception as exc:
-                    results[symbol] = {"ok": False, "error": str(exc)}
-                    failed.append(symbol)
+    with ThreadPoolExecutor(max_workers=_BATCH_MAX_WORKERS) as pool:
+        futures = {pool.submit(_batch_signal_for_symbol, symbol): symbol for symbol in requested}
+        for future in as_completed(futures):
+            symbol = futures[future]
+            try:
+                payload = future.result()
+                results[symbol] = payload
+                succeeded.append(symbol)
+            except Exception as exc:
+                results[symbol] = {"ok": False, "error": str(exc)}
+                failed.append(symbol)
 
     duration_ms = int((time.monotonic() - started) * 1000)
     logger.info(
@@ -324,23 +569,49 @@ def batch_signals_basic(symbols: str):
         failed,
         duration_ms,
     )
+    return {"symbols": requested, "results": results}
+
+
+@app.get("/cache/signals/basic")
+def cache_signals_basic(symbols: str):
+    requested = _parse_symbols_csv(symbols)
+    if len(requested) > _BATCH_MAX_SYMBOLS:
+        return JSONResponse(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            content={"error": f"Maximum {_BATCH_MAX_SYMBOLS} symbols allowed per request."},
+        )
+    return {"symbols": requested, "results": _cached_signals_results(requested)}
+
+
+@app.get("/cache/status")
+def cache_status():
+    with get_connection() as conn:
+        signal_count_row = conn.execute("SELECT COUNT(*) AS count FROM signals").fetchall()
+        quote_count_row = conn.execute(
+            "SELECT COUNT(*) AS count FROM events WHERE event_type = ?",
+            ("worker.quote",),
+        ).fetchall()
+        bars_count_row = conn.execute("SELECT COUNT(*) AS count FROM canonical_price_bars").fetchall()
+        latest_signal_row = conn.execute("SELECT created_at FROM signals ORDER BY id DESC LIMIT 1").fetchall()
+        latest_quote_row = conn.execute(
+            "SELECT created_at FROM events WHERE event_type = ? ORDER BY id DESC LIMIT 1",
+            ("worker.quote",),
+        ).fetchall()
+        latest_bar_row = conn.execute(
+            "SELECT ts_ingest FROM canonical_price_bars ORDER BY id DESC LIMIT 1"
+        ).fetchall()
+
     return {
-        "symbols": requested,
-        "results": results,
+        "signals": {
+            "count": int(signal_count_row[0]["count"]) if signal_count_row else 0,
+            "latest_created_at": latest_signal_row[0]["created_at"] if latest_signal_row else None,
+        },
+        "quotes": {
+            "count": int(quote_count_row[0]["count"]) if quote_count_row else 0,
+            "latest_created_at": latest_quote_row[0]["created_at"] if latest_quote_row else None,
+        },
+        "bars": {
+            "count": int(bars_count_row[0]["count"]) if bars_count_row else 0,
+            "latest_ts_ingest": latest_bar_row[0]["ts_ingest"] if latest_bar_row else None,
+        },
     }
-
-
-@app.get("/signal/basic")
-def signal_basic(symbol: str):
-    try:
-        return _compute_basic_signal_payload(symbol)
-    except ProviderError as exc:
-        return JSONResponse(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            content={"error": str(exc)},
-        )
-    except (ValidationError, ValueError, TypeError) as exc:
-        return JSONResponse(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            content={"error": str(exc)},
-        )

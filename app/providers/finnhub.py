@@ -1,145 +1,183 @@
+# app/providers/finnhub.py
+
+from __future__ import annotations
+
 import os
 import time
-import logging
-from dataclasses import dataclass
-from typing import Any, Optional
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional
 
 import requests
+from pydantic import BaseModel, Field
 
-from app.providers.twelvedata import ProviderError  # reuse your existing error type
-
-logger = logging.getLogger(__name__)
-
-
-@dataclass(frozen=True)
-class FinnhubQuote:
-    # Finnhub returns:
-    # c = current
-    # d = change
-    # dp = percent change
-    # h = high
-    # l = low
-    # o = open
-    # pc = previous close
-    # t = timestamp (unix seconds)
-    symbol: str
-    c: float
-    t: int
-    raw: dict[str, Any]
+from app.providers.twelvedata import ProviderError, QuoteOutModel, BarModel, QuoteResult, BarsResult
 
 
-@dataclass(frozen=True)
-class FinnhubBar:
-    # Finnhub candle returns arrays keyed by:
-    # c,h,l,o,t,v and s="ok"
-    ts_event: str  # ISO string (we’ll convert from unix seconds)
-    open: float
-    high: float
-    low: float
-    close: float
-    volume: float
-    raw: dict[str, Any]
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _unix_to_utc(ts: Any) -> Optional[datetime]:
+    try:
+        if ts is None:
+            return None
+        t = int(ts)
+        return datetime.fromtimestamp(t, tz=timezone.utc)
+    except Exception:
+        return None
+
+
+def _interval_to_resolution(interval: str) -> str:
+    """
+    Finnhub candle resolution:
+    1, 5, 15, 30, 60, D, W, M
+    We'll map common strings used by your API:
+    1day -> D
+    1week -> W
+    1month -> M
+    1min / 1m -> 1
+    5min -> 5, etc
+    """
+    iv = (interval or "").strip().lower()
+    if iv in ("1day", "1d", "day", "d"):
+        return "D"
+    if iv in ("1week", "1w", "week", "w"):
+        return "W"
+    if iv in ("1month", "1mo", "month", "mth", "m"):
+        return "M"
+    if iv in ("1min", "1m", "min", "minute"):
+        return "1"
+    if iv.endswith("min"):
+        n = iv.replace("min", "").strip()
+        if n.isdigit():
+            return n
+    if iv.endswith("m"):
+        n = iv.replace("m", "").strip()
+        if n.isdigit():
+            return n
+    # default
+    return "D"
 
 
 class FinnhubClient:
-    def __init__(self, api_key: Optional[str] = None, base_url: str = "https://finnhub.io/api/v1"):
+    def __init__(self, api_key: Optional[str] = None, timeout: int = 20):
         self.api_key = (api_key or os.getenv("FINNHUB_API_KEY", "")).strip()
-        self.base_url = base_url.rstrip("/")
         if not self.api_key:
-            raise ProviderError("FINNHUB_API_KEY is missing")
-
+            raise ProviderError("FINNHUB_API_KEY is not set")
+        self.timeout = timeout
+        self.base_url = "https://finnhub.io/api/v1"
         self.session = requests.Session()
-        self.session.headers.update({"Accept": "application/json"})
 
-    def _get(self, path: str, params: dict[str, Any]) -> dict[str, Any]:
-        url = f"{self.base_url}{path}"
-        params = dict(params)
-        params["token"] = self.api_key
-
-        try:
-            r = self.session.get(url, params=params, timeout=15)
-        except Exception as e:
-            raise ProviderError(f"Finnhub request failed: {e}") from e
-
-        if r.status_code >= 400:
-            # Finnhub sometimes returns plain text on errors
-            try:
-                body = r.json()
-            except Exception:
-                body = {"error": r.text.strip()}
-
-            raise ProviderError(f"Finnhub error {r.status_code}: {body}")
+    def fetch_quote(self, symbol: str) -> QuoteResult:
+        symbol_u = (symbol or "").strip().upper()
+        url = f"{self.base_url}/quote"
+        params = {"symbol": symbol_u, "token": self.api_key}
 
         try:
-            return r.json()
-        except Exception as e:
-            raise ProviderError(f"Finnhub invalid JSON: {e}") from e
+            r = self.session.get(url, params=params, timeout=self.timeout)
+            r.raise_for_status()
+            data = r.json()
+        except Exception as exc:
+            raise ProviderError(f"Finnhub request failed: {exc}") from exc
 
-    def fetch_quote(self, symbol: str) -> FinnhubQuote:
-        symbol = symbol.strip().upper()
-        data = self._get("/quote", {"symbol": symbol})
+        # Finnhub quote keys:
+        # c current, d change, dp percent, h high, l low, o open, pc prev close, t timestamp
+        last = data.get("c")
+        if last is None:
+            raise ProviderError("Quote missing price")
 
-        # If invalid symbol, Finnhub often returns zeros
-        c = float(data.get("c") or 0.0)
-        t = int(data.get("t") or 0)
-
-        if c <= 0 or t <= 0:
-            raise ProviderError(f"Finnhub returned empty quote for {symbol}: {data}")
-
-        return FinnhubQuote(symbol=symbol, c=c, t=t, raw=data)
-
-    def fetch_daily_bars(self, symbol: str, days: int = 60) -> list[FinnhubBar]:
-        symbol = symbol.strip().upper()
-
-        # Finnhub candle endpoint needs unix timestamps
-        now = int(time.time())
-        frm = now - (days * 86400)
-
-        data = self._get(
-            "/stock/candle",
-            {
-                "symbol": symbol,
-                "resolution": "D",
-                "from": frm,
-                "to": now,
-            },
+        ts_event = _unix_to_utc(data.get("t"))
+        quote = QuoteOutModel(
+            instrument_id=f"FINNHUB:{symbol_u}",
+            ts_event=ts_event,
+            ts_ingest=_utc_now(),
+            last=float(last),
+            bid=None,
+            ask=None,
+            source_provider="finnhub",
+            quality_flags=[],
         )
+        return QuoteResult(provider="finnhub", quote=quote)
 
-        if data.get("s") != "ok":
-            raise ProviderError(f"Finnhub candle not ok for {symbol}: {data}")
+    def fetch_bars(self, symbol: str, interval: str = "1day", outputsize: int = 500) -> BarsResult:
+        symbol_u = (symbol or "").strip().upper()
+        resolution = _interval_to_resolution(interval)
 
-        t_list = data.get("t") or []
-        o_list = data.get("o") or []
-        h_list = data.get("h") or []
-        l_list = data.get("l") or []
-        c_list = data.get("c") or []
-        v_list = data.get("v") or []
+        # Finnhub candle needs UNIX seconds range: from, to.
+        # We'll estimate outputsize units back from now.
+        now = int(time.time())
+        # Rough seconds per bar
+        if resolution == "D":
+            step = 86400
+        elif resolution == "W":
+            step = 86400 * 7
+        elif resolution == "M":
+            step = 86400 * 30
+        else:
+            # minutes as integer
+            try:
+                mins = int(resolution)
+                step = mins * 60
+            except Exception:
+                step = 86400
 
-        bars: list[FinnhubBar] = []
-        for i in range(min(len(t_list), len(o_list), len(h_list), len(l_list), len(c_list), len(v_list))):
-            ts = int(t_list[i])
-            iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(ts))
+        count = max(10, int(outputsize))
+        frm = now - (count * step)
+
+        url = f"{self.base_url}/stock/candle"
+        params = {
+            "symbol": symbol_u,
+            "resolution": resolution,
+            "from": frm,
+            "to": now,
+            "token": self.api_key,
+        }
+
+        try:
+            r = self.session.get(url, params=params, timeout=self.timeout)
+            r.raise_for_status()
+            data = r.json()
+        except Exception as exc:
+            raise ProviderError(f"Finnhub request failed: {exc}") from exc
+
+        # Finnhub candle response:
+        # {"c":[...], "h":[...], "l":[...], "o":[...], "t":[...], "v":[...], "s":"ok"}
+        if not isinstance(data, dict) or data.get("s") != "ok":
+            raise ProviderError(f"Finnhub candle error: {data}")
+
+        t = data.get("t") or []
+        o = data.get("o") or []
+        h = data.get("h") or []
+        l = data.get("l") or []
+        c = data.get("c") or []
+        v = data.get("v") or []
+
+        bars: List[BarModel] = []
+        n = min(len(t), len(o), len(h), len(l), len(c))
+        for i in range(n):
+            ts = _unix_to_utc(t[i]) or t[i]
+            vol = None
+            if i < len(v) and v[i] is not None:
+                try:
+                    vol = float(v[i])
+                except Exception:
+                    vol = None
+
             bars.append(
-                FinnhubBar(
-                    ts_event=iso,
-                    open=float(o_list[i]),
-                    high=float(h_list[i]),
-                    low=float(l_list[i]),
-                    close=float(c_list[i]),
-                    volume=float(v_list[i]),
-                    raw={
-                        "t": ts,
-                        "o": o_list[i],
-                        "h": h_list[i],
-                        "l": l_list[i],
-                        "c": c_list[i],
-                        "v": v_list[i],
-                        "provider": "finnhub",
-                    },
+                BarModel(
+                    instrument_id=f"FINNHUB:{symbol_u}",
+                    ts_event=ts,
+                    ts_ingest=_utc_now(),
+                    open=float(o[i]),
+                    high=float(h[i]),
+                    low=float(l[i]),
+                    close=float(c[i]),
+                    volume=vol,
+                    source_provider="finnhub",
+                    quality_flags=[],
                 )
             )
 
-        if not bars:
-            raise ProviderError(f"Finnhub returned no bars for {symbol}: {data}")
-
-        return bars
+        # Finnhub returns ascending time; your UI usually wants latest first or consistent.
+        # We’ll keep as-is and let callers sort if needed.
+        return BarsResult(provider="finnhub", bars=bars)
