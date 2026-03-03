@@ -39,7 +39,7 @@ html, body {
 .topbar-inner {
   max-width: 1400px;
   margin: 0 auto;
-  padding: 14px 18px;
+  padding: 10px 18px;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -52,16 +52,36 @@ html, body {
   gap: 12px;
 }
 
+.brand-copy {
+  display: grid;
+  gap: 2px;
+}
+
+.brand-title {
+  margin: 0;
+  font-size: 1.1rem;
+  font-weight: 700;
+  line-height: 1.05;
+  color: #0f172a;
+}
+
 .logo-landscape {
-  height: 26px;
+  height: 40px;
   width: auto;
+  max-width: 100%;
 }
 
 .header-subtitle {
   margin: 0;
   color: var(--muted);
-  font-size: 0.84rem;
+  font-size: 0.9rem;
   font-weight: 500;
+}
+
+.topbar-status {
+  margin-left: auto;
+  display: flex;
+  justify-content: flex-end;
 }
 
 .status-pill {
@@ -134,6 +154,47 @@ html, body {
   margin-bottom: 10px;
 }
 
+.scanner-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.scanner-controls select {
+  min-width: 150px;
+}
+
+.scanner-tabs {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 10px;
+}
+
+.scanner-tabs .tab {
+  border: 1px solid rgba(0,0,0,0.12);
+  background: #fff;
+  padding: 8px 10px;
+  border-radius: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  line-height: 1;
+}
+
+.scanner-tabs .tab.is-active {
+  border-color: rgba(37, 99, 235, 0.35);
+  background: rgba(37, 99, 235, 0.08);
+}
+
+.scanner-empty {
+  padding: 14px 12px;
+  font-weight: 700;
+  opacity: 0.7;
+  border: 1px dashed rgba(0,0,0,0.15);
+  border-radius: 12px;
+  background: rgba(255,255,255,0.7);
+}
+
 h2 {
   margin: 0;
   font-size: 1.02rem;
@@ -182,6 +243,55 @@ h2 {
   padding: 10px;
   text-align: left;
   cursor: pointer;
+}
+
+#scannerList .symbol-card {
+  overflow: visible;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+#scannerList .symbol-main {
+  display: flex;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  height: auto;
+  overflow: visible;
+  min-width: 0;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+#scannerList .symbol-main > * {
+  min-width: 0;
+}
+
+#scannerList .scanner-left,
+#scannerList .scanner-right {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+#scannerList .scanner-right {
+  justify-content: flex-end;
+  flex-wrap: wrap;
+}
+
+#scannerList .sym,
+#scannerList .metric {
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
+}
+
+#scannerList .badge,
+#scannerList .status-pill {
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
 .sym {
@@ -431,6 +541,18 @@ button:active {
   gap: 10px;
 }
 
+.trade-help {
+  display: grid;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.trade-help p {
+  margin: 0;
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
 .strategy-results {
   display: grid;
   gap: 8px;
@@ -553,6 +675,17 @@ pre {
   }
 }
 
+@media (max-width: 1100px) {
+  #scannerList .symbol-main {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  #scannerList .scanner-right {
+    justify-content: flex-start;
+  }
+}
+
 @media (max-width: 760px) {
   .topbar-inner,
   .container {
@@ -560,8 +693,20 @@ pre {
     padding-right: 12px;
   }
 
+  .topbar-inner {
+    gap: 8px;
+  }
+
+  .logo-landscape {
+    height: 34px;
+  }
+
   .header-subtitle {
-    display: none;
+    font-size: 0.78rem;
+  }
+
+  .brand-title {
+    font-size: 0.95rem;
   }
 
   .results {
@@ -583,5 +728,21 @@ pre {
 
   .buttons button {
     flex: 1 1 auto;
+  }
+
+  .status-pill {
+    font-size: 0.7rem;
+    padding: 5px 8px;
+  }
+
+  .scanner-controls {
+    width: 100%;
+    justify-content: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .scanner-controls select {
+    min-width: 0;
+    width: 100%;
   }
 }

@@ -15,6 +15,8 @@ const outputsizeInput = document.getElementById('outputsize');
 
 const scannerList = document.getElementById('scannerList');
 const scannerToggleBtn = document.getElementById('scannerToggleBtn');
+const scannerSector = document.getElementById('scannerSector');
+let currentScannerAgent = 'overall';
 const watchlistInput = document.getElementById('watchlistInput');
 const watchlistAddBtn = document.getElementById('watchlistAddBtn');
 const watchlistSort = document.getElementById('watchlistSort');
@@ -67,6 +69,8 @@ const inFlight = new Map();
 
 const state = {
   scannerExpanded: false,
+  scannerData: null,
+  scannerSector: 'Overall',
   selectedSymbol: 'AAPL',
   watchlist: loadWatchlist(),
   watchlistSort: 'symbol',
@@ -248,6 +252,193 @@ function renderScannerIndicator() {
     return;
   }
   scannerLoading.hidden = true;
+}
+
+function scannerScoreText(score) {
+  const num = Number(score);
+  return Number.isFinite(num) ? String(Math.round(num)) : '-';
+}
+
+function scannerPriceText(value) {
+  const num = Number(value);
+  return Number.isFinite(num) ? `$${formatPrice(num)}` : '-';
+}
+
+function _normaliseAgentKey(agent) {
+  const a = (agent || '').toLowerCase();
+  if (a === 'inst' || a === 'institutional') return 'institution';
+  if (a === 'socials' || a === 'social_media') return 'social';
+  return a || 'overall';
+}
+
+function getAgentView(item, agentRaw) {
+  const agent = _normaliseAgentKey(agentRaw);
+
+  if (!item || typeof item !== 'object') {
+    return { ok: false, reason: 'no_item' };
+  }
+
+  if (agent === 'overall') {
+    return { ok: true, data: item };
+  }
+
+  const containers = [
+    item.agents,
+    item.agent,
+    item.by_agent,
+    item.sentiment_by_agent,
+    item.sentimentByAgent,
+    item.agent_signals,
+    item.agentSignals,
+    item.components,
+    item.breakdown,
+    item.sources,
+    item.source_signals,
+    item.sourceSignals,
+    item.meta && item.meta.agents,
+  ].filter(Boolean);
+
+  for (const c of containers) {
+    if (c && typeof c === 'object') {
+      const direct = c[agent] || c[_normaliseAgentKey(agent)] || c[agent.toUpperCase()];
+      if (direct && typeof direct === 'object') return { ok: true, data: direct };
+    }
+  }
+
+  const flatCandidates = [
+    `${agent}_score`, `${agent}Score`,
+    `${agent}_trend`, `${agent}Trend`,
+    `${agent}_momentum`, `${agent}Momentum`,
+    `${agent}_confidence`, `${agent}Confidence`,
+    `${agent}_label`, `${agent}Label`,
+  ];
+
+  let anyFlat = false;
+  const flat = {};
+  for (const k of flatCandidates) {
+    if (Object.prototype.hasOwnProperty.call(item, k)) {
+      flat[k] = item[k];
+      anyFlat = true;
+    }
+  }
+  if (anyFlat) return { ok: true, data: flat, flat: true };
+
+  return { ok: false, reason: 'no_agent_data' };
+}
+
+function pickField(obj, keys, fallback) {
+  for (const k of keys) {
+    if (obj && Object.prototype.hasOwnProperty.call(obj, k) && obj[k] !== undefined && obj[k] !== null) return obj[k];
+  }
+  return fallback;
+}
+
+function initScannerTabs() {
+  const root = document.querySelector('.scanner-tabs');
+  if (!root) return;
+
+  root.addEventListener('click', (e) => {
+    const btn = e.target && e.target.closest ? e.target.closest('button[data-agent]') : null;
+    if (!btn) return;
+    const agent = btn.getAttribute('data-agent') || 'overall';
+    currentScannerAgent = _normaliseAgentKey(agent);
+
+    root.querySelectorAll('button[data-agent]').forEach((b) => b.classList.toggle('is-active', b === btn));
+    renderScanner();
+  });
+}
+
+function ensureScannerSectorOptions() {
+  if (!scannerSector) return;
+  const sectors = Object.keys(state.scannerData?.by_sector || {}).sort((a, b) => a.localeCompare(b));
+  const values = ['Overall', ...sectors];
+  const current = state.scannerSector || 'Overall';
+  scannerSector.innerHTML = values.map((sector) => `<option value="${sector}">${sector}</option>`).join('');
+  scannerSector.value = values.includes(current) ? current : 'Overall';
+  state.scannerSector = scannerSector.value;
+}
+
+function getScannerRows() {
+  const data = state.scannerData || {};
+  const selection = state.scannerSector || 'Overall';
+  if (selection === 'Overall') {
+    return Array.isArray(data.top_overall) ? data.top_overall : [];
+  }
+  const grouped = data.by_sector && typeof data.by_sector === 'object' ? data.by_sector : {};
+  const rows = grouped[selection];
+  return Array.isArray(rows) ? rows : [];
+}
+
+function renderScannerRows(rows) {
+  if (!scannerList) return;
+  const filtered = rows
+    .map((item) => ({ item, view: getAgentView(item, currentScannerAgent) }))
+    .filter((entry) => entry.view.ok);
+
+  if (!filtered.length) {
+    if (currentScannerAgent === 'overall') {
+      scannerList.innerHTML = '<div class="empty">No scanner rows yet.</div>';
+      return;
+    }
+    const label = currentScannerAgent.charAt(0).toUpperCase() + currentScannerAgent.slice(1);
+    scannerList.innerHTML = `<div class="scanner-empty">No ${label} data yet</div>`;
+    return;
+  }
+
+  scannerList.innerHTML = filtered
+    .map(({ item, view }) => {
+      const row = item;
+      const source = view.data || {};
+      const symbol = normalizeSymbol(row?.symbol);
+      const score = scannerScoreText(
+        pickField(source, ['score', 'signal_score', 'signalScore'], pickField(item, ['score'], null))
+      );
+      const last = scannerPriceText(row?.last);
+      const trend = pickField(
+        source,
+        ['trend', 'trend_label', 'trendLabel', 'direction', 'bias'],
+        pickField(item, ['trend', 'trend_label', 'trendLabel'], null)
+      );
+      const momentum = pickField(
+        source,
+        ['momentum', 'momentum_label', 'momentumLabel'],
+        pickField(item, ['momentum', 'momentum_label', 'momentumLabel'], null)
+      );
+      const trendClass = sentimentClass(trend);
+      const momentumClass = sentimentClass(momentum);
+      const isSelected = state.selectedSymbol === symbol;
+      const hasError = row && row.ok === false;
+      const trendBadge = trend ? `<span class="badge ${trendClass}">${trend}</span>` : '';
+      const momentumBadge = momentum ? `<span class="badge ${momentumClass}">${momentum}</span>` : '';
+      return `
+      <article class="symbol-card ${isSelected ? 'selected' : ''}" data-panel="scanner" data-symbol="${symbol}">
+        <button type="button" class="symbol-main scanner-main" data-action="select" data-panel="scanner" data-symbol="${symbol}">
+          <span class="scanner-left">
+            <span class="sym">${symbol}</span>
+            <span class="metric">${last}</span>
+          </span>
+          <span class="scanner-right">
+            <span class="metric">score ${score}</span>
+            ${trendBadge}
+            ${momentumBadge}
+            ${hasError ? '<span class="badge bear">ERR</span>' : ''}
+          </span>
+        </button>
+      </article>
+      `;
+    })
+    .join('');
+}
+
+async function refreshScannerData() {
+  setSectionLoading('scanner', true);
+  const result = await fetchJson('/scanner/sector');
+  if (result.ok && result.body) {
+    state.scannerData = result.body;
+    ensureScannerSectorOptions();
+  }
+  setSectionLoading('scanner', false);
+  renderScanner();
 }
 
 function parseCacheAgeSeconds(rawTs) {
@@ -1245,13 +1436,10 @@ function renderSymbolList(container, rows, panelName, options = {}) {
 }
 
 function renderScanner() {
-  const list = state.scannerExpanded ? SCANNER_SYMBOLS : SCANNER_SYMBOLS.slice(0, 15);
-  scannerToggleBtn.textContent = state.scannerExpanded ? 'Show less' : 'Show more';
-
-  const rows = getPanelRows(list, 'scanner').sort(sortByScoreDesc);
-  renderSymbolList(scannerList, rows, 'scanner');
-  refreshScannerCacheStatus();
-  warmScannerSymbols(list);
+  if (scannerToggleBtn) {
+    scannerToggleBtn.textContent = 'Refresh';
+  }
+  renderScannerRows(getScannerRows());
 }
 
 function renderWatchlist() {
@@ -1377,9 +1565,15 @@ function addPortfolioEntry() {
 }
 
 scannerToggleBtn.addEventListener('click', () => {
-  state.scannerExpanded = !state.scannerExpanded;
-  renderScanner();
+  refreshScannerData();
 });
+
+if (scannerSector) {
+  scannerSector.addEventListener('change', () => {
+    state.scannerSector = scannerSector.value || 'Overall';
+    renderScanner();
+  });
+}
 
 watchlistSort.addEventListener('change', () => {
   state.watchlistSort = watchlistSort.value;
@@ -1445,7 +1639,12 @@ if (backtestBtn) {
 window.addEventListener('DOMContentLoaded', async () => {
   const initial = getSymbol();
   state.selectedSymbol = initial;
+  initScannerTabs();
   renderPanels();
+  await refreshScannerData();
+  window.setInterval(() => {
+    refreshScannerData();
+  }, 60000);
   await safeSelectSymbol(initial);
 
   // Optional: clear trade card on load so it doesn't show stale content

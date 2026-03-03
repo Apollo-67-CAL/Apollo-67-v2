@@ -30,7 +30,18 @@
             <summary class="panel-summary">
               <div class="panel-head">
                 <h2>Scanner <span id="scannerLoading" class="loading-indicator" hidden>Loading...</span></h2>
-                <button id="scannerToggleBtn" type="button" class="button-ghost">Show more</button>
+                <div class="scanner-controls">
+                  <select id="scannerSector" aria-label="Scanner sector">
+                    <option value="Overall">Overall</option>
+                  </select>
+                  <button id="scannerToggleBtn" type="button" class="button-ghost">Refresh</button>
+                </div>
+              </div>
+              <div class="scanner-tabs" role="tablist" aria-label="Scanner views">
+                <button class="tab is-active" type="button" data-agent="overall">Overall</button>
+                <button class="tab" type="button" data-agent="institution">Institution</button>
+                <button class="tab" type="button" data-agent="news">News</button>
+                <button class="tab" type="button" data-agent="social">Social</button>
               </div>
             </summary>
             <div id="scannerList" class="symbol-list"></div>
