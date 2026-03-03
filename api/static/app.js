@@ -30,6 +30,8 @@ const monitorModalZoneLow = document.getElementById('monitorModalZoneLow');
 const monitorModalZoneHigh = document.getElementById('monitorModalZoneHigh');
 const monitorModalSubmit = document.getElementById('monitorModalSubmit');
 const monitorModalCancel = document.getElementById('monitorModalCancel');
+const monitorModalError = document.getElementById('monitorModalError');
+const monitorModalSuccess = document.getElementById('monitorModalSuccess');
 const portfolioAddBtn = document.getElementById('portfolioAddBtn');
 const portfolioList = document.getElementById('portfolioList');
 const scannerLoading = document.getElementById('scannerLoading');
@@ -118,6 +120,7 @@ const state = {
   latestBars: [],
   hoveredChartIndex: null,
   monitorDraft: null,
+  monitorModalSaving: false,
 };
 
 const chartOverlayPlugin = {
@@ -557,46 +560,147 @@ async function loadMonitorList() {
 function openMonitorModal(draft) {
   if (!monitorModal) return;
   state.monitorDraft = draft || null;
+  state.monitorModalSaving = false;
   if (monitorModalSymbol) monitorModalSymbol.value = normalizeSymbol(draft?.symbol || getSymbol());
   if (monitorModalAmount) monitorModalAmount.value = String(draft?.amount || 1000);
-  if (monitorModalPrice) monitorModalPrice.value = draft?.buy_price != null ? String(draft.buy_price) : '';
+  let defaultPrice = draft?.buy_price;
+  if (defaultPrice == null) {
+    const quoteText = String(quoteLast?.textContent || '').replace(/[^0-9.-]/g, '');
+    const parsed = Number(quoteText);
+    if (Number.isFinite(parsed) && parsed > 0) defaultPrice = parsed;
+  }
+  if (monitorModalPrice) monitorModalPrice.value = defaultPrice != null ? String(defaultPrice) : '';
   if (monitorModalZoneLow) monitorModalZoneLow.value = draft?.buy_zone_low != null ? String(draft.buy_zone_low) : '';
   if (monitorModalZoneHigh) monitorModalZoneHigh.value = draft?.buy_zone_high != null ? String(draft.buy_zone_high) : '';
+  if (monitorModalError) {
+    monitorModalError.textContent = '';
+    monitorModalError.hidden = true;
+  }
+  if (monitorModalSuccess) {
+    monitorModalSuccess.textContent = '';
+    monitorModalSuccess.hidden = true;
+  }
+  if (monitorModalSubmit) {
+    monitorModalSubmit.disabled = false;
+    monitorModalSubmit.textContent = 'Save';
+  }
+  document.body.style.overflow = 'hidden';
   monitorModal.hidden = false;
 }
 
 function closeMonitorModal() {
   if (monitorModal) monitorModal.hidden = true;
+  document.body.style.overflow = '';
+  if (monitorModalError) {
+    monitorModalError.textContent = '';
+    monitorModalError.hidden = true;
+  }
+  if (monitorModalSuccess) {
+    monitorModalSuccess.textContent = '';
+    monitorModalSuccess.hidden = true;
+  }
+  if (monitorModalSubmit) {
+    monitorModalSubmit.disabled = false;
+    monitorModalSubmit.textContent = 'Save';
+  }
+  state.monitorModalSaving = false;
   state.monitorDraft = null;
 }
 
 async function submitMonitorModal() {
+  if (state.monitorModalSaving) return;
   const symbol = normalizeSymbol(monitorModalSymbol?.value || '');
   const buyAmount = Number(monitorModalAmount?.value);
-  if (!symbol || !Number.isFinite(buyAmount) || buyAmount <= 0) {
-    window.alert('Symbol and positive buy amount are required.');
-    return;
-  }
   const buyPrice = monitorModalPrice && monitorModalPrice.value !== '' ? Number(monitorModalPrice.value) : null;
   const buyZoneLow = monitorModalZoneLow && monitorModalZoneLow.value !== '' ? Number(monitorModalZoneLow.value) : null;
   const buyZoneHigh = monitorModalZoneHigh && monitorModalZoneHigh.value !== '' ? Number(monitorModalZoneHigh.value) : null;
+
+  const setModalError = (msg) => {
+    if (monitorModalError) {
+      monitorModalError.textContent = msg;
+      monitorModalError.hidden = false;
+    }
+  };
+
+  if (monitorModalError) {
+    monitorModalError.textContent = '';
+    monitorModalError.hidden = true;
+  }
+  if (monitorModalSuccess) {
+    monitorModalSuccess.textContent = '';
+    monitorModalSuccess.hidden = true;
+  }
+
+  if (!symbol || !Number.isFinite(buyAmount) || buyAmount <= 0) {
+    setModalError('Symbol and buy amount (> 0) are required.');
+    return;
+  }
+  if (buyPrice != null && (!Number.isFinite(buyPrice) || buyPrice <= 0)) {
+    setModalError('Buy price must be > 0 when provided.');
+    return;
+  }
+  const zoneLowProvided = buyZoneLow != null;
+  const zoneHighProvided = buyZoneHigh != null;
+  if (zoneLowProvided !== zoneHighProvided) {
+    setModalError('Provide both buy zone low and high, or leave both blank.');
+    return;
+  }
+  if (zoneLowProvided && zoneHighProvided && buyZoneLow > buyZoneHigh) {
+    setModalError('Buy zone low must be less than or equal to buy zone high.');
+    return;
+  }
 
   const payload = { symbol, buy_amount: buyAmount };
   if (Number.isFinite(buyPrice)) payload.buy_price = buyPrice;
   if (Number.isFinite(buyZoneLow)) payload.buy_zone_low = buyZoneLow;
   if (Number.isFinite(buyZoneHigh)) payload.buy_zone_high = buyZoneHigh;
 
-  const result = await fetchJson('/monitor/create', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-  });
-  if (!result.ok) {
-    window.alert(getErrorMessage(result, 'Failed to create monitor position'));
-    return;
+  state.monitorModalSaving = true;
+  if (monitorModalSubmit) {
+    monitorModalSubmit.disabled = true;
+    monitorModalSubmit.textContent = 'Saving...';
   }
-  closeMonitorModal();
-  await refreshMonitor();
+
+  try {
+    const controller = new AbortController();
+    let timedOut = false;
+    const timeoutId = window.setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, 10000);
+    const result = await fetchJson('/monitor/create', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+      signal: controller.signal,
+    });
+    window.clearTimeout(timeoutId);
+    if (timedOut) {
+      setModalError('Request timed out after 10s. Please try again.');
+      return;
+    }
+    if (!result.ok) {
+      setModalError(getErrorMessage(result, 'Failed to create monitor position'));
+      return;
+    }
+    if (monitorModalSuccess) {
+      monitorModalSuccess.textContent = 'Saved';
+      monitorModalSuccess.hidden = false;
+    }
+    closeMonitorModal();
+    await loadMonitorList();
+  } catch (error) {
+    const msg = error?.name === 'AbortError'
+      ? 'Request timed out after 10s. Please try again.'
+      : (error?.message || 'Failed to create monitor position');
+    setModalError(msg);
+  } finally {
+    state.monitorModalSaving = false;
+    if (monitorModalSubmit) {
+      monitorModalSubmit.disabled = false;
+      monitorModalSubmit.textContent = 'Save';
+    }
+  }
 }
 
 async function refreshMonitor() {
@@ -1746,6 +1850,20 @@ if (monitorModalSubmit) {
     await submitMonitorModal();
   });
 }
+
+if (monitorModal) {
+  monitorModal.addEventListener('click', (event) => {
+    if (event.target === monitorModal) {
+      closeMonitorModal();
+    }
+  });
+}
+
+document.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape' && monitorModal && !monitorModal.hidden) {
+    closeMonitorModal();
+  }
+});
 
 if (portfolioAddBtn) {
   portfolioAddBtn.addEventListener('click', addPortfolioEntry);

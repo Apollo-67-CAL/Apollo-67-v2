@@ -481,8 +481,14 @@ h2 {
   background: rgba(15, 23, 42, 0.3);
   display: grid;
   place-items: center;
-  z-index: 1000;
+  z-index: 5000;
   padding: 16px;
+  pointer-events: auto;
+}
+
+#monitorModal[hidden] {
+  display: none !important;
+  pointer-events: none;
 }
 
 .monitor-modal-card {
@@ -494,6 +500,7 @@ h2 {
   padding: 14px;
   display: grid;
   gap: 10px;
+  pointer-events: auto;
 }
 
 .monitor-modal-card h3 {
@@ -505,6 +512,15 @@ h2 {
   display: flex;
   justify-content: flex-end;
   gap: 8px;
+}
+
+.monitor-modal-success {
+  border: 1px solid rgba(22, 163, 74, 0.25);
+  background: rgba(22, 163, 74, 0.08);
+  color: #166534;
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 0.8rem;
 }
 
 .up { color: var(--good); }
