@@ -349,9 +349,14 @@ h2 {
   align-items: center;
 }
 
+.scanner-subline {
+  font-size: 0.74rem;
+  color: var(--muted);
+}
+
 .scanner-levels {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 5px 10px;
   font-size: 0.74rem;
   color: #334155;
@@ -372,6 +377,8 @@ h2 {
 .scanner-actions {
   display: flex;
   justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 6px;
   padding: 0 10px 10px;
   border-top: 1px solid var(--border);
 }
@@ -407,6 +414,10 @@ h2 {
 .monitor-list {
   display: grid;
   gap: 8px;
+}
+
+.monitor-outcomes .monitor-row {
+  border-left: 3px solid #dbe7ff;
 }
 
 .monitor-row {
@@ -462,6 +473,38 @@ h2 {
   font-size: 0.7rem;
   color: #475569;
   background: rgba(148, 163, 184, 0.12);
+}
+
+.monitor-modal {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.3);
+  display: grid;
+  place-items: center;
+  z-index: 1000;
+  padding: 16px;
+}
+
+.monitor-modal-card {
+  width: min(460px, 100%);
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: 0 12px 40px rgba(15, 23, 42, 0.2);
+  padding: 14px;
+  display: grid;
+  gap: 10px;
+}
+
+.monitor-modal-card h3 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.monitor-modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
 }
 
 .up { color: var(--good); }
@@ -930,5 +973,13 @@ pre {
   .monitor-actions {
     display: grid;
     grid-template-columns: 1fr;
+  }
+
+  .scanner-actions {
+    justify-content: stretch;
+  }
+
+  .scanner-actions .scanner-monitor-btn {
+    width: 100%;
   }
 }

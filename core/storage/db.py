@@ -147,6 +147,63 @@ CREATE TABLE IF NOT EXISTS curated_datasets (
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UNIQUE (dataset_name, dataset_version)
 );
+
+CREATE TABLE IF NOT EXISTS sentiment_settings (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    scope TEXT NOT NULL UNIQUE,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    weight REAL NOT NULL,
+    recency_minutes INTEGER NOT NULL,
+    bullish_threshold REAL NOT NULL,
+    bearish_threshold REAL NOT NULL,
+    payload TEXT,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_sentiment_settings_scope ON sentiment_settings(scope);
+
+CREATE TABLE IF NOT EXISTS sentiment_audit_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    scope TEXT NOT NULL,
+    changed_by TEXT NOT NULL,
+    before_payload TEXT,
+    after_payload TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_sentiment_audit_log_scope_created_at
+    ON sentiment_audit_log(scope, created_at);
+
+CREATE TABLE IF NOT EXISTS trading_tactics (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE,
+    description TEXT,
+    tags TEXT,
+    parameters TEXT,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    deleted_at TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_trading_tactics_updated_at ON trading_tactics(updated_at);
+CREATE INDEX IF NOT EXISTS idx_trading_tactics_deleted_at ON trading_tactics(deleted_at);
+
+CREATE TABLE IF NOT EXISTS monitor_positions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    symbol TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    buy_amount REAL NOT NULL DEFAULT 0,
+    buy_price REAL,
+    buy_zone_low REAL,
+    buy_zone_high REAL,
+    status TEXT NOT NULL DEFAULT 'open',
+    notes TEXT,
+    last_price REAL,
+    last_checked_at TEXT,
+    pnl_pct REAL,
+    max_up_pct REAL,
+    max_down_pct REAL
+);
+CREATE INDEX IF NOT EXISTS idx_monitor_positions_symbol ON monitor_positions(symbol);
+CREATE INDEX IF NOT EXISTS idx_monitor_positions_status ON monitor_positions(status);
 """
 
 POSTGRES_SCHEMA_SQL = """
@@ -292,6 +349,63 @@ CREATE TABLE IF NOT EXISTS curated_datasets (
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UNIQUE (dataset_name, dataset_version)
 );
+
+CREATE TABLE IF NOT EXISTS sentiment_settings (
+    id BIGSERIAL PRIMARY KEY,
+    scope TEXT NOT NULL UNIQUE,
+    enabled BOOLEAN NOT NULL DEFAULT TRUE,
+    weight DOUBLE PRECISION NOT NULL,
+    recency_minutes INTEGER NOT NULL,
+    bullish_threshold DOUBLE PRECISION NOT NULL,
+    bearish_threshold DOUBLE PRECISION NOT NULL,
+    payload JSONB,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_sentiment_settings_scope ON sentiment_settings(scope);
+
+CREATE TABLE IF NOT EXISTS sentiment_audit_log (
+    id BIGSERIAL PRIMARY KEY,
+    scope TEXT NOT NULL,
+    changed_by TEXT NOT NULL,
+    before_payload JSONB,
+    after_payload JSONB,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_sentiment_audit_log_scope_created_at
+    ON sentiment_audit_log(scope, created_at);
+
+CREATE TABLE IF NOT EXISTS trading_tactics (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE,
+    description TEXT,
+    tags JSONB,
+    parameters JSONB,
+    enabled BOOLEAN NOT NULL DEFAULT TRUE,
+    deleted_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_trading_tactics_updated_at ON trading_tactics(updated_at);
+CREATE INDEX IF NOT EXISTS idx_trading_tactics_deleted_at ON trading_tactics(deleted_at);
+
+CREATE TABLE IF NOT EXISTS monitor_positions (
+    id BIGSERIAL PRIMARY KEY,
+    symbol TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    buy_amount DOUBLE PRECISION NOT NULL DEFAULT 0,
+    buy_price DOUBLE PRECISION,
+    buy_zone_low DOUBLE PRECISION,
+    buy_zone_high DOUBLE PRECISION,
+    status TEXT NOT NULL DEFAULT 'open',
+    notes TEXT,
+    last_price DOUBLE PRECISION,
+    last_checked_at TIMESTAMPTZ,
+    pnl_pct DOUBLE PRECISION,
+    max_up_pct DOUBLE PRECISION,
+    max_down_pct DOUBLE PRECISION
+);
+CREATE INDEX IF NOT EXISTS idx_monitor_positions_symbol ON monitor_positions(symbol);
+CREATE INDEX IF NOT EXISTS idx_monitor_positions_status ON monitor_positions(status);
 """
 
 
@@ -491,6 +605,31 @@ def init_db() -> None:
             conn.execute(
                 "INSERT OR IGNORE INTO schema_migrations(version) VALUES (?)",
                 ("v2_ingestion_zones",),
+            )
+            conn.execute(
+                "INSERT OR IGNORE INTO schema_migrations(version) VALUES (?)",
+                ("v3_admin_sentiment_tactics",),
+            )
+            conn.execute(
+                "INSERT OR IGNORE INTO schema_migrations(version) VALUES (?)",
+                ("v4_monitor_positions",),
+            )
+        if backend == "postgres":
+            conn.execute(
+                """
+                INSERT INTO schema_migrations(version)
+                VALUES (?)
+                ON CONFLICT (version) DO NOTHING
+                """,
+                ("v3_admin_sentiment_tactics",),
+            )
+            conn.execute(
+                """
+                INSERT INTO schema_migrations(version)
+                VALUES (?)
+                ON CONFLICT (version) DO NOTHING
+                """,
+                ("v4_monitor_positions",),
             )
 
 

@@ -135,9 +135,15 @@ class FinnhubClient:
 
         try:
             r = self.session.get(url, params=params, timeout=self.timeout)
+            if r.status_code in (401, 403):
+                if r.status_code == 403:
+                    raise ProviderError("[AUTH] Finnhub 403 Forbidden: check FINNHUB_API_KEY or plan")
+                raise ProviderError("[AUTH] Finnhub 401 Unauthorized: check FINNHUB_API_KEY")
             r.raise_for_status()
             data = r.json()
         except Exception as exc:
+            if isinstance(exc, ProviderError):
+                raise
             raise ProviderError(f"Finnhub request failed: {exc}") from exc
 
         # Finnhub candle response:

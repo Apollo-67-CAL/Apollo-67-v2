@@ -31,9 +31,11 @@
               <div class="panel-head">
                 <h2>Scanner <span id="scannerLoading" class="loading-indicator" hidden>Loading...</span></h2>
                 <div class="scanner-controls">
-                  <div class="scanner-toggle" role="tablist" aria-label="Scanner modes">
-                    <button class="is-active" type="button" data-mode="buy">BUY Now</button>
-                    <button type="button" data-mode="watch">Watch</button>
+                  <div class="scanner-toggle" role="tablist" aria-label="Scanner agents">
+                    <button class="is-active" type="button" data-agent="overall">Overall</button>
+                    <button type="button" data-agent="institution">Institution</button>
+                    <button type="button" data-agent="news">News</button>
+                    <button type="button" data-agent="social">Social</button>
                   </div>
                   <button id="scannerToggleBtn" type="button" class="button-ghost">Refresh</button>
                 </div>
@@ -70,12 +72,12 @@
           <details open>
             <summary class="panel-summary">
               <div class="panel-head">
-                <h2>Monitor <span id="monitorLoading" class="loading-indicator" hidden>Loading...</span></h2>
+                <h2>Monitor Outcomes <span id="monitorLoading" class="loading-indicator" hidden>Loading...</span></h2>
                 <button id="monitorRefreshBtn" type="button" class="button-ghost">Refresh</button>
               </div>
             </summary>
             <div id="monitorTotals" class="monitor-totals"></div>
-            <div id="monitorList" class="monitor-list"></div>
+            <div id="monitorList" class="monitor-list monitor-outcomes"></div>
           </details>
         </article>
 
@@ -249,6 +251,36 @@
       </section>
     </section>
   </main>
+
+  <div id="monitorModal" class="monitor-modal" hidden>
+    <div class="monitor-modal-card">
+      <h3>Add To Monitor</h3>
+      <div class="field-group">
+        <label for="monitorModalSymbol">Symbol</label>
+        <input id="monitorModalSymbol" type="text" readonly />
+      </div>
+      <div class="field-group">
+        <label for="monitorModalAmount">Buy Amount ($)</label>
+        <input id="monitorModalAmount" type="number" min="1" step="1" value="1000" />
+      </div>
+      <div class="field-group">
+        <label for="monitorModalPrice">Buy Price (optional)</label>
+        <input id="monitorModalPrice" type="number" min="0" step="0.01" />
+      </div>
+      <div class="field-group">
+        <label for="monitorModalZoneLow">Buy Zone Low (optional)</label>
+        <input id="monitorModalZoneLow" type="number" min="0" step="0.01" />
+      </div>
+      <div class="field-group">
+        <label for="monitorModalZoneHigh">Buy Zone High (optional)</label>
+        <input id="monitorModalZoneHigh" type="number" min="0" step="0.01" />
+      </div>
+      <div class="monitor-modal-actions">
+        <button id="monitorModalSubmit" type="button">Save</button>
+        <button id="monitorModalCancel" type="button" class="button-ghost">Cancel</button>
+      </div>
+    </div>
+  </div>
 
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom@2.0.1/dist/chartjs-plugin-zoom.min.js"></script>

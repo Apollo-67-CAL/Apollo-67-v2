@@ -90,14 +90,25 @@ class TwelveDataClient:
 
         try:
             r = self.session.get(url, params=params, timeout=self.timeout)
-            r.raise_for_status()
             data = r.json()
         except Exception as exc:
             raise ProviderError(f"TwelveData request failed: {exc}") from exc
 
+        if r.status_code == 429:
+            raise ProviderError("[RATE_LIMIT] TwelveData HTTP 429 Too Many Requests")
+        if r.status_code >= 400:
+            raise ProviderError(f"TwelveData request failed: HTTP {r.status_code}")
+
         # TwelveData sometimes returns {"status":"error", "message":"..."}
         if isinstance(data, dict) and data.get("status") == "error":
-            raise ProviderError(f"TwelveData error: {data.get('message') or data}")
+            message = str(data.get("message") or data)
+            message_lower = message.lower()
+            if (
+                "run out of api credits" in message_lower
+                or "too many requests" in message_lower
+            ):
+                raise ProviderError(f"[RATE_LIMIT] TwelveData error: {message}")
+            raise ProviderError(f"TwelveData error: {message}")
         return data
 
     def fetch_quote(self, symbol: str) -> QuoteResult:

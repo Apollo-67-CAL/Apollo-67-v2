@@ -22,6 +22,14 @@ const watchlistList = document.getElementById('watchlistList');
 const monitorRefreshBtn = document.getElementById('monitorRefreshBtn');
 const monitorTotals = document.getElementById('monitorTotals');
 const monitorList = document.getElementById('monitorList');
+const monitorModal = document.getElementById('monitorModal');
+const monitorModalSymbol = document.getElementById('monitorModalSymbol');
+const monitorModalAmount = document.getElementById('monitorModalAmount');
+const monitorModalPrice = document.getElementById('monitorModalPrice');
+const monitorModalZoneLow = document.getElementById('monitorModalZoneLow');
+const monitorModalZoneHigh = document.getElementById('monitorModalZoneHigh');
+const monitorModalSubmit = document.getElementById('monitorModalSubmit');
+const monitorModalCancel = document.getElementById('monitorModalCancel');
 const portfolioAddBtn = document.getElementById('portfolioAddBtn');
 const portfolioList = document.getElementById('portfolioList');
 const scannerLoading = document.getElementById('scannerLoading');
@@ -75,25 +83,15 @@ const scannerTradeQueue = [];
 let scannerTradeActive = 0;
 const SCANNER_TRADE_CACHE_TTL_MS = 60 * 1000;
 const SCANNER_MAX_INFLIGHT = 4;
-const MONITOR_STORAGE_KEY = 'apollo67_monitor_v1';
-const MONITOR_QUOTE_CACHE_TTL_MS = 20 * 1000;
-const MONITOR_MAX_INFLIGHT = 4;
-const monitorQuoteCache = new Map();
-const monitorQuoteInFlight = new Map();
-const monitorQuoteQueue = [];
-let monitorQuoteActive = 0;
 
 const state = {
   scannerExpanded: false,
+  scannerAgent: 'overall',
   scannerRows: [],
-  scannerMode: 'buy',
   selectedSymbol: 'AAPL',
   watchlist: loadWatchlist(),
   watchlistSort: 'symbol',
-  monitor: loadMonitor(),
-  monitorLastPrice: {},
-  monitorStale: {},
-  monitorLastRefreshMs: 0,
+  monitorRows: [],
   portfolio: loadPortfolio(),
   expandedByPanel: {
     scanner: null,
@@ -119,6 +117,7 @@ const state = {
   latestTrade: null,
   latestBars: [],
   hoveredChartIndex: null,
+  monitorDraft: null,
 };
 
 const chartOverlayPlugin = {
@@ -198,46 +197,6 @@ function loadPortfolio() {
 
 function savePortfolio() {
   localStorage.setItem('apollo_portfolio', JSON.stringify(state.portfolio));
-}
-
-function loadMonitor() {
-  try {
-    const raw = localStorage.getItem(MONITOR_STORAGE_KEY);
-    if (!raw) return [];
-    const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return [];
-    return parsed
-      .map((item) => {
-        const symbol = normalizeSymbol(item?.symbol);
-        const entryPrice = Number(item?.entry_price);
-        const amount = Number(item?.amount);
-        const shares = Number(item?.shares);
-        const createdAt = String(item?.created_at || '');
-        if (!symbol || !Number.isFinite(entryPrice) || entryPrice <= 0 || !Number.isFinite(amount) || amount <= 0) {
-          return null;
-        }
-        return {
-          id: String(item?.id || `${Date.now()}_${symbol}`),
-          symbol,
-          entry_price: entryPrice,
-          amount,
-          shares: Number.isFinite(shares) && shares > 0 ? shares : amount / entryPrice,
-          created_at: createdAt || new Date().toISOString(),
-          notes: item?.notes ? String(item.notes) : '',
-        };
-      })
-      .filter(Boolean);
-  } catch {
-    return [];
-  }
-}
-
-function saveMonitor() {
-  localStorage.setItem(MONITOR_STORAGE_KEY, JSON.stringify(state.monitor));
-}
-
-function makeMonitorId(symbol) {
-  return `${Date.now()}_${Math.random().toString(36).slice(2, 8)}_${symbol}`;
 }
 
 function normalizeSymbol(value) {
@@ -334,12 +293,12 @@ function initScannerModeToggle() {
   if (!root) return;
 
   root.addEventListener('click', (e) => {
-    const btn = e.target && e.target.closest ? e.target.closest('button[data-mode]') : null;
+    const btn = e.target && e.target.closest ? e.target.closest('button[data-agent]') : null;
     if (!btn) return;
-    const mode = btn.getAttribute('data-mode') || 'buy';
-    state.scannerMode = mode === 'watch' ? 'watch' : 'buy';
-    root.querySelectorAll('button[data-mode]').forEach((b) => b.classList.toggle('is-active', b === btn));
-    renderScanner();
+    const agent = String(btn.getAttribute('data-agent') || 'overall').toLowerCase();
+    state.scannerAgent = ['overall', 'institution', 'news', 'social'].includes(agent) ? agent : 'overall';
+    root.querySelectorAll('button[data-agent]').forEach((b) => b.classList.toggle('is-active', b === btn));
+    refreshScannerData();
   });
 }
 
@@ -423,113 +382,62 @@ function _buildScannerRowFromTrade(symbol, tradePayload) {
 
 async function refreshScannerData() {
   setSectionLoading('scanner', true);
-  const symbols = SCANNER_SYMBOLS.slice(0, state.scannerExpanded ? SCANNER_SYMBOLS.length : 15);
-  const rows = [];
-
-  await Promise.allSettled(
-    symbols.map((symbol) =>
-      fetchTradeForSymbol(symbol).then((tradePayload) => {
-        if (!tradePayload) return;
-        rows.push(_buildScannerRowFromTrade(symbol, tradePayload));
-      })
-    )
-  );
-
-  const buyRows = rows
-    .filter((row) => row.action === 'BUY')
-    .sort((a, b) => {
-      if (b.confidence !== a.confidence) return b.confidence - a.confidence;
-      const arr = a.rr == null ? Number.NEGATIVE_INFINITY : a.rr;
-      const brr = b.rr == null ? Number.NEGATIVE_INFINITY : b.rr;
-      return brr - arr;
-    });
-
-  const watchRows = rows
-    .filter((row) => row.action === 'HOLD' && row.nearEntry)
-    .sort((a, b) => {
-      if (a.distanceToEntry !== b.distanceToEntry) return a.distanceToEntry - b.distanceToEntry;
-      return b.confidence - a.confidence;
-    });
-
-  state.scannerRows = [...buyRows, ...watchRows];
-
+  const endpoint = `/scanner/${encodeURIComponent(state.scannerAgent)}?interval=1day&bars=60&limit=10`;
+  const result = await fetchJson(endpoint);
+  state.scannerRows = result.ok && Array.isArray(result.body?.rows) ? result.body.rows : [];
   setSectionLoading('scanner', false);
   renderScanner();
 }
 
-function fetchTradeForSymbol(symbol) {
-  const key = normalizeSymbol(symbol);
-  if (!key) return Promise.resolve(null);
-
-  const cached = scannerTradeCache.get(key);
-  if (cached && (Date.now() - cached.fetchedAt) < SCANNER_TRADE_CACHE_TTL_MS) {
-    return Promise.resolve(cached.trade);
-  }
-
-  if (scannerTradeInFlight.has(key)) {
-    return scannerTradeInFlight.get(key);
-  }
-
-  const pending = _queueScannerTradeTask(async () => {
-    const result = await fetchTrade(key, '1day', 60);
-    if (!result.ok) return null;
-    const body = result.body || {};
-    const trade = body.trade || body;
-    if (!trade || typeof trade !== 'object') return null;
-    scannerTradeCache.set(key, { trade, fetchedAt: Date.now() });
-    return trade;
-  }).finally(() => {
-    scannerTradeInFlight.delete(key);
-  });
-
-  scannerTradeInFlight.set(key, pending);
-  return pending;
-}
-
 function renderScannerRows(rows) {
   if (!scannerList) return;
-  const mode = state.scannerMode === 'watch' ? 'watch' : 'buy';
   if (!rows.length) {
-    scannerList.innerHTML = mode === 'watch'
-      ? '<div class="scanner-empty">No setups near entry right now.</div>'
-      : '<div class="scanner-empty">No BUY opportunities right now.</div>';
+    scannerList.innerHTML = '<div class="scanner-empty">No scanner opportunities right now.</div>';
     return;
   }
 
   scannerList.innerHTML = rows.map((row) => {
     const symbol = normalizeSymbol(row.symbol);
-    const isSelected = state.selectedSymbol === symbol;
-    const actionPillClass = row.action === 'BUY' ? 'bull' : 'neutral';
+    const action = String(row.action || '').toUpperCase();
+    const actionPillClass = action === 'BUY' ? 'bull' : action === 'SELL' ? 'bear' : 'neutral';
+    const provider = row.provider || '-';
+    const timeframe = row.timeframe || '1day';
     const rrText = row.rr != null ? `RR ${Number(row.rr).toFixed(2)}` : null;
     const confText = `${Math.round((Number(row.confidence) || 0) * 100)}%`;
-    const entryText = row.entryLow != null && row.entryHigh != null
-      ? `${formatPrice(row.entryLow)} - ${formatPrice(row.entryHigh)}`
+    const entryLow = row.entry_low != null ? row.entry_low : row.entryLow;
+    const entryHigh = row.entry_high != null ? row.entry_high : row.entryHigh;
+    const target = row.target;
+    const stop = row.stop;
+    const nearEntry = Array.isArray(row.tags) && row.tags.includes('Near Entry');
+    const entryText = entryLow != null && entryHigh != null
+      ? `${formatPrice(entryLow)} - ${formatPrice(entryHigh)}`
       : '-';
 
     return `
-    <article class="symbol-card scanner-card ${isSelected ? 'selected' : ''}" data-panel="scanner" data-symbol="${symbol}">
+    <article class="symbol-card scanner-card ${state.selectedSymbol === symbol ? 'selected' : ''}" data-panel="scanner" data-symbol="${symbol}">
       <button type="button" class="symbol-main scanner-main" data-action="select" data-panel="scanner" data-symbol="${symbol}">
         <div class="scanner-topline">
           <span class="scanner-symbol">${symbol}</span>
           <span class="scanner-price">${scannerPriceText(row.price)}</span>
         </div>
+        <div class="scanner-subline">${provider} • ${timeframe}</div>
         <div class="scanner-pills">
-          <span class="badge ${actionPillClass}">${row.action || 'HOLD'}</span>
+          <span class="badge ${actionPillClass}">${action || 'HOLD'}</span>
           <span class="pill">Conf ${confText}</span>
-          <span class="pill">${row.timeframe || '1day'}</span>
           ${rrText ? `<span class="pill">${rrText}</span>` : ''}
-          ${mode === 'watch' ? '<span class="badge neutral">Near Entry</span>' : ''}
+          ${nearEntry ? '<span class="badge neutral">Near Entry</span>' : ''}
         </div>
         <div class="scanner-levels">
           <span>Entry: ${entryText}</span>
-          <span>Target: ${row.target != null ? formatPrice(row.target) : '-'}</span>
-          <span>Stop: ${row.stop != null ? formatPrice(row.stop) : '-'}</span>
-          <span>Trail: ${row.trail != null ? formatPrice(row.trail) : '-'}</span>
+          <span>Target: ${target != null ? formatPrice(target) : '-'}</span>
+          <span>Stop: ${stop != null ? formatPrice(stop) : '-'}</span>
         </div>
-        ${row.reasons.length ? `<div class="scanner-reasons">${row.reasons.slice(0, 2).join(' • ')}</div>` : ''}
+        ${Array.isArray(row.reasons) && row.reasons.length ? `<div class="scanner-reasons">${row.reasons.slice(0, 2).join(' • ')}</div>` : ''}
       </button>
       <div class="scanner-actions">
-        <button type="button" class="button-ghost scanner-monitor-btn" data-action="monitor-add" data-symbol="${symbol}" data-entry="${row.price != null ? Number(row.price) : ''}">Monitor</button>
+        <button type="button" class="button-ghost scanner-monitor-btn" data-action="scanner-buy-now" data-symbol="${symbol}" data-price="${row.price != null ? Number(row.price) : ''}">BUY NOW</button>
+        <button type="button" class="button-ghost scanner-monitor-btn" data-action="scanner-watch" data-symbol="${symbol}" data-entry-low="${entryLow != null ? Number(entryLow) : ''}" data-entry-high="${entryHigh != null ? Number(entryHigh) : ''}">WATCH</button>
+        <button type="button" class="button-ghost scanner-monitor-btn" data-action="scanner-monitor" data-symbol="${symbol}" data-price="${row.price != null ? Number(row.price) : ''}" data-entry-low="${entryLow != null ? Number(entryLow) : ''}" data-entry-high="${entryHigh != null ? Number(entryHigh) : ''}">MONITOR</button>
       </div>
     </article>
     `;
@@ -578,64 +486,6 @@ async function refreshScannerCacheStatus({ force = false } = {}) {
   }
 }
 
-function queueMonitorQuoteTask(task) {
-  return new Promise((resolve, reject) => {
-    monitorQuoteQueue.push({ task, resolve, reject });
-    runMonitorQuoteQueue();
-  });
-}
-
-function runMonitorQuoteQueue() {
-  while (monitorQuoteActive < MONITOR_MAX_INFLIGHT && monitorQuoteQueue.length) {
-    const next = monitorQuoteQueue.shift();
-    if (!next) return;
-    monitorQuoteActive += 1;
-    Promise.resolve()
-      .then(next.task)
-      .then(next.resolve)
-      .catch(next.reject)
-      .finally(() => {
-        monitorQuoteActive = Math.max(0, monitorQuoteActive - 1);
-        runMonitorQuoteQueue();
-      });
-  }
-}
-
-async function fetchMonitorQuote(symbol, { force = false } = {}) {
-  const key = normalizeSymbol(symbol);
-  if (!key) return null;
-  const cached = monitorQuoteCache.get(key);
-  if (!force && cached && (Date.now() - cached.fetchedAt) < MONITOR_QUOTE_CACHE_TTL_MS) {
-    return cached.price;
-  }
-  if (monitorQuoteInFlight.has(key)) {
-    return monitorQuoteInFlight.get(key);
-  }
-
-  const pending = queueMonitorQuoteTask(async () => {
-    const result = await fetchJson(`/provider/twelvedata/quote?symbol=${encodeURIComponent(key)}`);
-    if (result.ok) {
-      const quote = result.body?.quote || {};
-      const price = Number(quote.last);
-      if (Number.isFinite(price)) {
-        monitorQuoteCache.set(key, { price, fetchedAt: Date.now() });
-        return price;
-      }
-    }
-    const fallback = _quoteFallbackPrice(key);
-    if (fallback != null) {
-      monitorQuoteCache.set(key, { price: fallback, fetchedAt: Date.now() });
-      return fallback;
-    }
-    throw new Error(getErrorMessage(result, 'Quote unavailable'));
-  }).finally(() => {
-    monitorQuoteInFlight.delete(key);
-  });
-
-  monitorQuoteInFlight.set(key, pending);
-  return pending;
-}
-
 function monitorDaysHeld(createdAt) {
   const ts = Date.parse(createdAt || '');
   if (Number.isNaN(ts)) return 0;
@@ -644,29 +494,25 @@ function monitorDaysHeld(createdAt) {
 
 function renderMonitorPanel() {
   if (!monitorList || !monitorTotals) return;
-  if (!state.monitor.length) {
-    monitorTotals.innerHTML = '<div class="monitor-total-item">No monitored positions yet.</div>';
-    monitorList.innerHTML = '<div class="empty">Add a symbol from Trade or Scanner.</div>';
+  if (!state.monitorRows.length) {
+    monitorTotals.innerHTML = '<div class="monitor-total-item">No monitor outcomes yet.</div>';
+    monitorList.innerHTML = '<div class="empty">Create one from scanner or trade panel.</div>';
     return;
   }
 
-  const rows = state.monitor.map((item) => {
-    const currentPrice = Number(state.monitorLastPrice[item.id]);
-    const hasCurrent = Number.isFinite(currentPrice);
-    const pnlValue = hasCurrent ? (currentPrice - item.entry_price) * item.shares : null;
-    const pnlPct = hasCurrent ? ((currentPrice / item.entry_price) - 1) * 100 : null;
-    return {
-      ...item,
-      currentPrice: hasCurrent ? currentPrice : null,
-      pnlValue,
-      pnlPct,
-      stale: Boolean(state.monitorStale[item.id]),
-      daysHeld: monitorDaysHeld(item.created_at),
-    };
-  });
+  const rows = state.monitorRows.map((row) => ({ ...row }));
 
-  const totalAmount = rows.reduce((sum, row) => sum + row.amount, 0);
-  const totalPnl = rows.reduce((sum, row) => sum + (Number.isFinite(row.pnlValue) ? row.pnlValue : 0), 0);
+  const totalAmount = rows.reduce((sum, row) => sum + (Number(row.buy_amount) || 0), 0);
+  const totalPnl = rows.reduce((sum, row) => {
+    const entryRef = row.buy_price != null
+      ? Number(row.buy_price)
+      : (row.buy_zone_low != null && row.buy_zone_high != null ? (Number(row.buy_zone_low) + Number(row.buy_zone_high)) / 2 : null);
+    const lastPrice = Number(row.last_price);
+    const amount = Number(row.buy_amount);
+    if (!Number.isFinite(entryRef) || entryRef <= 0 || !Number.isFinite(lastPrice) || !Number.isFinite(amount)) return sum;
+    const shares = amount / entryRef;
+    return sum + ((lastPrice - entryRef) * shares);
+  }, 0);
   const totalPnlPct = totalAmount > 0 ? (totalPnl / totalAmount) * 100 : 0;
 
   monitorTotals.innerHTML = `
@@ -680,140 +526,94 @@ function renderMonitorPanel() {
       <div class="monitor-main">
         <div class="monitor-top">
           <span class="monitor-symbol">${row.symbol}</span>
-          <span class="monitor-price">${row.currentPrice != null ? `$${formatPrice(row.currentPrice)}` : '-'}</span>
+          <span class="monitor-price">${row.last_price != null ? `$${formatPrice(row.last_price)}` : '-'}</span>
         </div>
         <div class="monitor-meta">
-          <span>Entry $${formatPrice(row.entry_price)}</span>
-          <span>Amount $${formatPrice(row.amount)}</span>
-          <span>Move <strong class="${Number.isFinite(row.pnlPct) ? (row.pnlPct >= 0 ? 'up' : 'down') : ''}">${row.pnlPct != null ? formatPct(row.pnlPct) : '--'}</strong></span>
-          <span>P/L <strong class="${Number.isFinite(row.pnlValue) ? (row.pnlValue >= 0 ? 'up' : 'down') : ''}">${row.pnlValue != null ? `$${formatPrice(row.pnlValue)}` : '--'}</strong></span>
-          <span>Days ${row.daysHeld}</span>
-          ${row.stale ? '<span class="monitor-stale">stale</span>' : ''}
+          <span>Amount $${formatPrice(row.buy_amount)}</span>
+          <span>Entry ${row.buy_price != null ? `$${formatPrice(row.buy_price)}` : (row.buy_zone_low != null && row.buy_zone_high != null ? `${formatPrice(row.buy_zone_low)}-${formatPrice(row.buy_zone_high)}` : '-')}</span>
+          <span>P/L <strong class="${row.pnl_pct != null && Number(row.pnl_pct) >= 0 ? 'up' : 'down'}">${row.pnl_pct != null ? formatPct(row.pnl_pct) : '--'}</strong></span>
+          <span>Max Up <strong class="${row.max_up_pct != null && Number(row.max_up_pct) >= 0 ? 'up' : 'down'}">${row.max_up_pct != null ? formatPct(row.max_up_pct) : '--'}</strong></span>
+          <span>Max Down <strong class="${row.max_down_pct != null && Number(row.max_down_pct) >= 0 ? 'up' : 'down'}">${row.max_down_pct != null ? formatPct(row.max_down_pct) : '--'}</strong></span>
+          <span>Days ${monitorDaysHeld(row.created_at)}</span>
+          <span>Status ${row.status || 'open'}</span>
+          <span>Checked ${row.last_checked_at ? String(row.last_checked_at).slice(0, 19).replace('T', ' ') : '-'}</span>
         </div>
       </div>
       <div class="monitor-actions">
-        <button type="button" class="button-ghost" data-action="monitor-edit-amount" data-id="${row.id}">Edit amount</button>
-        <button type="button" class="button-ghost" data-action="monitor-edit-entry" data-id="${row.id}">Edit entry</button>
-        <button type="button" class="button-ghost" data-action="monitor-remove" data-id="${row.id}">Remove</button>
+        ${String(row.status || 'open') === 'open' ? `<button type="button" class="button-ghost" data-action="monitor-close" data-id="${row.id}">Close</button>` : ''}
       </div>
     </article>
   `).join('');
 }
 
-async function refreshMonitorQuotes({ force = false } = {}) {
-  if (!state.monitor.length) {
-    renderMonitorPanel();
-    return;
-  }
+async function loadMonitorList() {
   setSectionLoading('monitor', true);
-  await Promise.allSettled(
-    state.monitor.map(async (item) => {
-      try {
-        const price = await fetchMonitorQuote(item.symbol, { force });
-        if (Number.isFinite(price)) {
-          state.monitorLastPrice[item.id] = price;
-          state.monitorStale[item.id] = false;
-        } else {
-          state.monitorStale[item.id] = true;
-        }
-      } catch {
-        state.monitorStale[item.id] = true;
-      }
-    })
-  );
-  state.monitorLastRefreshMs = Date.now();
+  const result = await fetchJson('/monitor/list?status=open');
+  state.monitorRows = result.ok && Array.isArray(result.body?.rows) ? result.body.rows : [];
   setSectionLoading('monitor', false);
   renderMonitorPanel();
 }
 
-function addMonitorItem(symbol, defaultEntry) {
-  const normalized = normalizeSymbol(symbol);
-  if (!normalized) return;
-  const parsedEntry = Number(defaultEntry);
-  if (!Number.isFinite(parsedEntry) || parsedEntry <= 0) {
-    window.alert('No valid entry price available for this symbol yet.');
+function openMonitorModal(draft) {
+  if (!monitorModal) return;
+  state.monitorDraft = draft || null;
+  if (monitorModalSymbol) monitorModalSymbol.value = normalizeSymbol(draft?.symbol || getSymbol());
+  if (monitorModalAmount) monitorModalAmount.value = String(draft?.amount || 1000);
+  if (monitorModalPrice) monitorModalPrice.value = draft?.buy_price != null ? String(draft.buy_price) : '';
+  if (monitorModalZoneLow) monitorModalZoneLow.value = draft?.buy_zone_low != null ? String(draft.buy_zone_low) : '';
+  if (monitorModalZoneHigh) monitorModalZoneHigh.value = draft?.buy_zone_high != null ? String(draft.buy_zone_high) : '';
+  monitorModal.hidden = false;
+}
+
+function closeMonitorModal() {
+  if (monitorModal) monitorModal.hidden = true;
+  state.monitorDraft = null;
+}
+
+async function submitMonitorModal() {
+  const symbol = normalizeSymbol(monitorModalSymbol?.value || '');
+  const buyAmount = Number(monitorModalAmount?.value);
+  if (!symbol || !Number.isFinite(buyAmount) || buyAmount <= 0) {
+    window.alert('Symbol and positive buy amount are required.');
     return;
   }
-  const amountInput = window.prompt(`Amount to allocate for ${normalized}:`, '1000');
-  if (amountInput == null) return;
-  const amount = Number(amountInput);
-  if (!Number.isFinite(amount) || amount <= 0) {
-    window.alert('Amount must be a positive number.');
+  const buyPrice = monitorModalPrice && monitorModalPrice.value !== '' ? Number(monitorModalPrice.value) : null;
+  const buyZoneLow = monitorModalZoneLow && monitorModalZoneLow.value !== '' ? Number(monitorModalZoneLow.value) : null;
+  const buyZoneHigh = monitorModalZoneHigh && monitorModalZoneHigh.value !== '' ? Number(monitorModalZoneHigh.value) : null;
+
+  const payload = { symbol, buy_amount: buyAmount };
+  if (Number.isFinite(buyPrice)) payload.buy_price = buyPrice;
+  if (Number.isFinite(buyZoneLow)) payload.buy_zone_low = buyZoneLow;
+  if (Number.isFinite(buyZoneHigh)) payload.buy_zone_high = buyZoneHigh;
+
+  const result = await fetchJson('/monitor/create', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  if (!result.ok) {
+    window.alert(getErrorMessage(result, 'Failed to create monitor position'));
     return;
   }
-  const notesInput = window.prompt('Notes (optional):', '') || '';
-  const shares = amount / parsedEntry;
-  const item = {
-    id: makeMonitorId(normalized),
-    symbol: normalized,
-    entry_price: parsedEntry,
-    amount,
-    shares,
-    created_at: new Date().toISOString(),
-    notes: notesInput.trim(),
-  };
-  state.monitor.unshift(item);
-  saveMonitor();
-  state.monitorLastPrice[item.id] = parsedEntry;
-  state.monitorStale[item.id] = false;
-  renderMonitorPanel();
-  refreshMonitorQuotes({ force: true });
+  closeMonitorModal();
+  await refreshMonitor();
+}
+
+async function refreshMonitor() {
+  await fetchJson('/monitor/refresh', { method: 'POST' });
+  await loadMonitorList();
 }
 
 function addMonitorFromCurrentTrade() {
   const symbol = getSymbol();
   const tradePrice = Number(state.latestTrade?.last_close);
-  const quoteText = String(quoteLast?.textContent || '').replace(/[^0-9.-]/g, '');
-  const quotePrice = Number(quoteText);
-  const fallbackQuote = _quoteFallbackPrice(symbol);
-  const defaultEntry = Number.isFinite(tradePrice)
-    ? tradePrice
-    : Number.isFinite(quotePrice)
-      ? quotePrice
-      : fallbackQuote;
-  addMonitorItem(symbol, defaultEntry);
-}
-
-function editMonitorAmount(id) {
-  const idx = state.monitor.findIndex((item) => item.id === id);
-  if (idx < 0) return;
-  const current = state.monitor[idx];
-  const nextRaw = window.prompt(`New amount for ${current.symbol}:`, String(current.amount));
-  if (nextRaw == null) return;
-  const next = Number(nextRaw);
-  if (!Number.isFinite(next) || next <= 0) {
-    window.alert('Amount must be a positive number.');
-    return;
-  }
-  state.monitor[idx] = { ...current, amount: next, shares: next / current.entry_price };
-  saveMonitor();
-  renderMonitorPanel();
-}
-
-function editMonitorEntry(id) {
-  const idx = state.monitor.findIndex((item) => item.id === id);
-  if (idx < 0) return;
-  const current = state.monitor[idx];
-  const nextRaw = window.prompt(`New entry price for ${current.symbol}:`, String(current.entry_price));
-  if (nextRaw == null) return;
-  const next = Number(nextRaw);
-  if (!Number.isFinite(next) || next <= 0) {
-    window.alert('Entry price must be a positive number.');
-    return;
-  }
-  state.monitor[idx] = { ...current, entry_price: next, shares: current.amount / next };
-  saveMonitor();
-  renderMonitorPanel();
-}
-
-function removeMonitorItem(id) {
-  const before = state.monitor.length;
-  state.monitor = state.monitor.filter((item) => item.id !== id);
-  if (state.monitor.length === before) return;
-  delete state.monitorLastPrice[id];
-  delete state.monitorStale[id];
-  saveMonitor();
-  renderMonitorPanel();
+  const entryLow = Number(state.latestTrade?.entry_zone?.low);
+  const entryHigh = Number(state.latestTrade?.entry_zone?.high);
+  const draft = { symbol, amount: 1000 };
+  if (Number.isFinite(tradePrice)) draft.buy_price = tradePrice;
+  if (Number.isFinite(entryLow)) draft.buy_zone_low = entryLow;
+  if (Number.isFinite(entryHigh)) draft.buy_zone_high = entryHigh;
+  openMonitorModal(draft);
 }
 
 function displayError(el, message) {
@@ -837,9 +637,9 @@ function getErrorMessage(result, fallback = 'Request failed') {
   return '';
 }
 
-async function fetchJson(url) {
+async function fetchJson(url, options = undefined) {
   try {
-    const response = await fetch(url);
+    const response = await fetch(url, options);
     const text = await response.text();
     let data;
     try {
@@ -1772,8 +1572,7 @@ function renderScanner() {
   if (scannerToggleBtn) {
     scannerToggleBtn.textContent = 'Refresh';
   }
-  const mode = state.scannerMode === 'watch' ? 'watch' : 'buy';
-  const rows = state.scannerRows.filter((row) => (mode === 'watch' ? row.action === 'HOLD' && row.nearEntry : row.action === 'BUY'));
+  const rows = state.scannerRows.filter((row) => row && row.ok !== false);
   renderScannerRows(rows);
 }
 
@@ -1932,7 +1731,19 @@ if (watchlistAddBtn) {
 
 if (monitorRefreshBtn) {
   monitorRefreshBtn.addEventListener('click', () => {
-    refreshMonitorQuotes({ force: true });
+    refreshMonitor();
+  });
+}
+
+if (monitorModalCancel) {
+  monitorModalCancel.addEventListener('click', () => {
+    closeMonitorModal();
+  });
+}
+
+if (monitorModalSubmit) {
+  monitorModalSubmit.addEventListener('click', async () => {
+    await submitMonitorModal();
   });
 }
 
@@ -1950,29 +1761,58 @@ if (watchlistInput) {
 }
 
 document.addEventListener('click', (event) => {
-  const monitorAddTarget = event.target.closest('[data-action="monitor-add"]');
-  if (monitorAddTarget) {
-    const symbol = normalizeSymbol(monitorAddTarget.dataset.symbol);
-    const entry = Number(monitorAddTarget.dataset.entry);
-    addMonitorItem(symbol, entry);
+  const scannerBuyNow = event.target.closest('[data-action="scanner-buy-now"]');
+  if (scannerBuyNow) {
+    const symbol = normalizeSymbol(scannerBuyNow.dataset.symbol);
+    const price = Number(scannerBuyNow.dataset.price);
+    openMonitorModal({
+      symbol,
+      amount: 1000,
+      buy_price: Number.isFinite(price) ? price : undefined,
+    });
     return;
   }
 
-  const editAmountTarget = event.target.closest('[data-action="monitor-edit-amount"]');
-  if (editAmountTarget) {
-    editMonitorAmount(String(editAmountTarget.dataset.id || ''));
+  const scannerWatch = event.target.closest('[data-action="scanner-watch"]');
+  if (scannerWatch) {
+    const symbol = normalizeSymbol(scannerWatch.dataset.symbol);
+    const low = Number(scannerWatch.dataset.entryLow);
+    const high = Number(scannerWatch.dataset.entryHigh);
+    openMonitorModal({
+      symbol,
+      amount: 1000,
+      buy_zone_low: Number.isFinite(low) ? low : undefined,
+      buy_zone_high: Number.isFinite(high) ? high : undefined,
+    });
     return;
   }
 
-  const editEntryTarget = event.target.closest('[data-action="monitor-edit-entry"]');
-  if (editEntryTarget) {
-    editMonitorEntry(String(editEntryTarget.dataset.id || ''));
+  const scannerMonitor = event.target.closest('[data-action="scanner-monitor"]');
+  if (scannerMonitor) {
+    const symbol = normalizeSymbol(scannerMonitor.dataset.symbol);
+    const price = Number(scannerMonitor.dataset.price);
+    const low = Number(scannerMonitor.dataset.entryLow);
+    const high = Number(scannerMonitor.dataset.entryHigh);
+    openMonitorModal({
+      symbol,
+      amount: 1000,
+      buy_price: Number.isFinite(price) ? price : undefined,
+      buy_zone_low: Number.isFinite(low) ? low : undefined,
+      buy_zone_high: Number.isFinite(high) ? high : undefined,
+    });
     return;
   }
 
-  const removeTarget = event.target.closest('[data-action="monitor-remove"]');
-  if (removeTarget) {
-    removeMonitorItem(String(removeTarget.dataset.id || ''));
+  const closeTarget = event.target.closest('[data-action="monitor-close"]');
+  if (closeTarget) {
+    const id = Number(closeTarget.dataset.id);
+    if (Number.isFinite(id)) {
+      fetchJson('/monitor/close', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id, status: 'closed_manual' }),
+      }).then(() => refreshMonitor());
+    }
     return;
   }
 
@@ -2024,9 +1864,9 @@ window.addEventListener('DOMContentLoaded', async () => {
   window.setInterval(() => {
     refreshScannerData();
   }, 60000);
-  await refreshMonitorQuotes();
+  await refreshMonitor();
   window.setInterval(() => {
-    refreshMonitorQuotes();
+    refreshMonitor();
   }, 60000);
   await safeSelectSymbol(initial);
 
