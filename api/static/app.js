@@ -51,9 +51,15 @@ const tradeStop = document.getElementById('tradeStop');
 const tradeTrail = document.getElementById('tradeTrail');
 const tradeReasons = document.getElementById('tradeReasons');
 const tradeRaw = document.getElementById('tradeRaw');
+const backtestBtn = document.getElementById('backtestBtn');
+const btWinRate = document.getElementById('btWinRate');
+const btTrades = document.getElementById('btTrades');
+const btReturn = document.getElementById('btReturn');
+const btMaxDd = document.getElementById('btMaxDd');
 
 const chartCanvas = document.getElementById('priceChart');
 const chartMeta = document.getElementById('chartMeta');
+const chartOhlc = document.getElementById('chartOhlc');
 let priceChart = null;
 
 const dataCache = new Map();
@@ -83,7 +89,45 @@ const state = {
     watchlist: new Set(),
     portfolio: new Set(),
   },
+  latestTrade: null,
+  latestBars: [],
+  hoveredChartIndex: null,
 };
+
+const chartOverlayPlugin = {
+  id: 'chartOverlayPlugin',
+  afterDatasetsDraw(chart, args, pluginOptions) {
+    const { ctx, chartArea, scales } = chart;
+    if (!chartArea || !scales?.y || !scales?.x) return;
+
+    ctx.save();
+
+    const hoverIndex = pluginOptions?.hoveredIndex;
+    if (Number.isInteger(hoverIndex)) {
+      const x = scales.x.getPixelForValue(hoverIndex);
+      if (Number.isFinite(x)) {
+        ctx.strokeStyle = 'rgba(148, 163, 184, 0.5)';
+        ctx.lineWidth = 1;
+        ctx.setLineDash([3, 3]);
+        ctx.beginPath();
+        ctx.moveTo(x, chartArea.top);
+        ctx.lineTo(x, chartArea.bottom);
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
+    }
+
+    ctx.restore();
+  },
+};
+
+if (window.Chart) {
+  Chart.register(chartOverlayPlugin);
+  const zoomPlugin = window.ChartZoom || window['chartjs-plugin-zoom'];
+  if (zoomPlugin) {
+    Chart.register(zoomPlugin);
+  }
+}
 
 function loadWatchlist() {
   try {
@@ -299,6 +343,13 @@ function asJson(payload) {
   return JSON.stringify(payload, null, 2);
 }
 
+function pulseValue(el) {
+  if (!el) return;
+  el.classList.remove('value-flash');
+  void el.offsetWidth;
+  el.classList.add('value-flash');
+}
+
 function resetClass(el, base, variant) {
   el.className = `${base} ${variant}`.trim();
 }
@@ -469,8 +520,86 @@ function sortBarsAscending(bars) {
   });
 }
 
+function getTradeOverlays(orderedBars) {
+  const trade = state.latestTrade || {};
+  const action = String(trade.action || '').toUpperCase();
+  const target = Number(trade.target_sell_price);
+  const stop = Number(trade.stop_loss_price);
+  const trail = Number(trade.trailing_stop_price);
+  const entryLow = Number(trade?.entry_zone?.low);
+  const entryHigh = Number(trade?.entry_zone?.high);
+  const overlays = [];
+  const seriesLength = orderedBars.length;
+
+  const lineDataset = (label, value, color) => ({
+    label,
+    data: Array.from({ length: seriesLength }, () => value),
+    borderColor: color,
+    backgroundColor: color,
+    borderWidth: 1.4,
+    borderDash: [6, 6],
+    pointRadius: 0,
+    pointHoverRadius: 0,
+    tension: 0,
+  });
+
+  if (Number.isFinite(target)) overlays.push(lineDataset('Target', target, '#22c55e'));
+  if (Number.isFinite(stop)) overlays.push(lineDataset('Stop', stop, '#ef4444'));
+  if (Number.isFinite(trail)) overlays.push(lineDataset('Trail', trail, '#f59e0b'));
+
+  if (Number.isFinite(entryLow)) {
+    overlays.push({
+      label: 'Entry Low',
+      data: Array.from({ length: seriesLength }, () => entryLow),
+      borderColor: '#6366f1',
+      backgroundColor: 'rgba(99, 102, 241, 0.08)',
+      borderWidth: 1.2,
+      borderDash: [3, 4],
+      pointRadius: 0,
+      pointHoverRadius: 0,
+      tension: 0,
+    });
+  }
+  if (Number.isFinite(entryHigh)) {
+    overlays.push({
+      label: 'Entry High',
+      data: Array.from({ length: seriesLength }, () => entryHigh),
+      borderColor: '#6366f1',
+      backgroundColor: 'rgba(99, 102, 241, 0.15)',
+      borderWidth: 1.2,
+      borderDash: [3, 4],
+      pointRadius: 0,
+      pointHoverRadius: 0,
+      tension: 0,
+      fill: Number.isFinite(entryLow) ? '-1' : false,
+    });
+  }
+
+  if (orderedBars.length && (action === 'BUY' || action === 'SELL')) {
+    const lastBar = orderedBars[orderedBars.length - 1];
+    const close = Number(lastBar?.close);
+    const xLabel = (lastBar?.ts_event || lastBar?.ts_ingest || '').slice(0, 10);
+    if (Number.isFinite(close) && xLabel) {
+      overlays.push({
+        type: 'scatter',
+        label: action,
+        data: [{ x: xLabel, y: close }],
+        borderColor: action === 'BUY' ? '#22c55e' : '#ef4444',
+        backgroundColor: action === 'BUY' ? '#22c55e' : '#ef4444',
+        pointRadius: 7,
+        pointHoverRadius: 8,
+        pointStyle: action === 'BUY' ? 'triangle' : 'rectRot',
+        showLine: false,
+      });
+    }
+  }
+  return overlays;
+}
+
 function renderChart(symbol, bars) {
   if (!chartCanvas) return;
+  state.hoveredChartIndex = null;
+  if (chartOhlc) chartOhlc.textContent = 'O:- H:- L:- C:-';
 
   if (!bars || bars.length === 0) {
     if (priceChart) {
@@ -486,6 +615,7 @@ function renderChart(symbol, bars) {
   const closes = ordered.map((b) => Number(b.close || 0));
   const ma10 = computeMovingAverage(closes, 10);
   const ma20 = computeMovingAverage(closes, 20);
+  const overlays = getTradeOverlays(ordered);
 
   const data = {
     labels,
@@ -497,7 +627,11 @@ function renderChart(symbol, bars) {
         backgroundColor: 'rgba(96,165,250,0.15)',
         borderWidth: 2,
         tension: 0.2,
-        pointRadius: 0,
+        pointRadius(context) {
+          const idx = context.dataIndex;
+          return state.hoveredChartIndex === idx ? 4 : 0;
+        },
+        pointBackgroundColor: '#93c5fd',
       },
       {
         label: 'MA10',
@@ -515,6 +649,7 @@ function renderChart(symbol, bars) {
         tension: 0.2,
         pointRadius: 0,
       },
+      ...overlays,
     ],
   };
 
@@ -524,9 +659,60 @@ function renderChart(symbol, bars) {
     plugins: {
       legend: {
         labels: {
-          color: '#e6edf3',
+          color: '#334155',
+          filter(item) {
+            return item.text !== 'Entry Low';
+          },
         },
       },
+      tooltip: {
+        mode: 'index',
+        intersect: false,
+        callbacks: {
+          afterBody(items) {
+            const idx = items?.[0]?.dataIndex;
+            const bar = Number.isInteger(idx) ? ordered[idx] : null;
+            if (!bar) return [];
+            return [
+              `O: ${formatPrice(bar.open)}`,
+              `H: ${formatPrice(bar.high)}`,
+              `L: ${formatPrice(bar.low)}`,
+              `C: ${formatPrice(bar.close)}`,
+            ];
+          },
+        },
+      },
+      chartOverlayPlugin: {
+        hoveredIndex: state.hoveredChartIndex,
+      },
+      zoom: {
+        pan: {
+          enabled: true,
+          mode: 'x',
+        },
+        zoom: {
+          wheel: { enabled: true },
+          pinch: { enabled: true },
+          mode: 'x',
+        },
+      },
+    },
+    interaction: {
+      mode: 'index',
+      intersect: false,
+    },
+    onHover(event, elements) {
+      const idx = elements?.[0]?.index;
+      state.hoveredChartIndex = Number.isInteger(idx) ? idx : null;
+      const bar = Number.isInteger(idx) ? ordered[idx] : null;
+      if (chartOhlc) {
+        if (bar) {
+          chartOhlc.textContent = `O:${formatPrice(bar.open)} H:${formatPrice(bar.high)} L:${formatPrice(bar.low)} C:${formatPrice(bar.close)}`;
+        } else {
+          chartOhlc.textContent = 'O:- H:- L:- C:-';
+        }
+      }
+      if (priceChart) priceChart.draw();
     },
     scales: {
       x: {
@@ -558,6 +744,7 @@ async function loadBarsChart(symbol) {
     return;
   }
   const bars = (result.body && result.body.bars) || [];
+  state.latestBars = bars;
   renderChart(symbol, bars);
 }
 
@@ -582,6 +769,7 @@ function renderQuote(result, requestedSymbol) {
   quoteTs.textContent = quote.ts_event || quote.ts_ingest || '-';
   quoteProvider.textContent = quote.source_provider || body.provider || 'twelvedata';
   quoteRaw.textContent = asJson(result);
+  pulseValue(quoteLast);
 }
 
 function renderSignal(result) {
@@ -598,6 +786,7 @@ function renderSignal(result) {
     resetClass(signalMomentum, 'badge', 'neutral');
     signalConfidence.textContent = '0%';
     signalConfidenceBar.style.width = '0%';
+    signalConfidenceBar.style.setProperty('--pct', '0');
     signalDebug.textContent = asJson(result);
     return;
   }
@@ -614,8 +803,11 @@ function renderSignal(result) {
   const conf = Math.max(0, Math.min(1, Number(body.confidence || 0)));
   signalConfidence.textContent = `${Math.round(conf * 100)}%`;
   signalConfidenceBar.style.width = `${Math.round(conf * 100)}%`;
+  signalConfidenceBar.style.setProperty('--pct', String(Math.round(conf * 100)));
 
   signalDebug.textContent = asJson(body.debug || {});
+  pulseValue(signalScore);
+  pulseValue(signalConfidence);
 }
 
 // Trade support
@@ -663,6 +855,13 @@ function renderTrade(result) {
     if (tradeTrail) tradeTrail.textContent = '-';
     if (tradeReasons) tradeReasons.textContent = '[]';
     if (tradeRaw) tradeRaw.textContent = asJson(result);
+    const explainEl = document.getElementById('tradeExplanationDynamic');
+    if (explainEl) explainEl.innerHTML = '';
+    state.latestTrade = null;
+    if (tradeAction) tradeAction.className = '';
+    if (state.latestBars.length) {
+      renderChart(getSymbol(), state.latestBars);
+    }
     return;
   }
 
@@ -670,6 +869,10 @@ function renderTrade(result) {
   const trade = body.trade || body || {};
 
   if (tradeAction) tradeAction.textContent = trade.action || '-';
+  if (tradeAction) {
+    const action = String(trade.action || '').toUpperCase();
+    tradeAction.className = action === 'BUY' ? 'trade-action-buy' : action === 'SELL' ? 'trade-action-sell' : 'trade-action-hold';
+  }
   if (tradeConfidence) {
     const conf = trade.confidence != null ? Number(trade.confidence) : null;
     tradeConfidence.textContent = conf == null || Number.isNaN(conf) ? '-' : `${Math.round(conf * 100)}%`;
@@ -687,6 +890,41 @@ function renderTrade(result) {
   }
 
   if (tradeRaw) tradeRaw.textContent = asJson(result);
+
+  const explainEl = document.getElementById('tradeExplanationDynamic');
+  if (explainEl) {
+    const explanation = trade.explanation && typeof trade.explanation === 'object' ? trade.explanation : null;
+    if (explanation) {
+      const calc = explanation.calc && typeof explanation.calc === 'object' ? explanation.calc : {};
+      const entryAnchor = calc.entry_anchor != null ? formatPrice(calc.entry_anchor) : '-';
+      const stopText = calc.stop != null ? formatPrice(calc.stop) : '-';
+      const riskText = calc.risk_per_share != null ? formatPrice(calc.risk_per_share) : '-';
+      const rrText = calc.risk_reward_ratio != null ? String(calc.risk_reward_ratio) : '-';
+      const targetText = calc.target != null ? formatPrice(calc.target) : '-';
+      const atrText = calc.atr14 != null ? formatPrice(calc.atr14) : 'null';
+      const notes = Array.isArray(explanation.notes) ? explanation.notes : [];
+      const notesHtml = notes.length
+        ? `<ul>${notes.map((n) => `<li>${String(n)}</li>`).join('')}</ul>`
+        : '';
+
+      explainEl.innerHTML = `
+        <p><strong>Why this action:</strong> ${String(explanation.action_why || '-')}</p>
+        <p><strong>Why this target:</strong> ${String(explanation.target_why || '-')}</p>
+        <p><strong>Why this stop:</strong> ${String(explanation.stop_why || '-')}</p>
+        <p><code>Entry(anchor): ${entryAnchor}, Stop: ${stopText}, Risk: ${riskText}, RR: ${rrText}, Target: ${targetText}, ATR14: ${atrText}</code></p>
+        ${notesHtml}
+      `;
+    } else {
+      explainEl.innerHTML = '';
+    }
+  }
+
+  state.latestTrade = trade;
+  if (state.latestBars.length) {
+    renderChart(getSymbol(), state.latestBars);
+  }
+  pulseValue(tradeAction);
+  pulseValue(tradeConfidence);
 }
 
 async function fetchTrade(symbol, interval, outputsize) {
@@ -704,6 +942,161 @@ async function loadTradeForCurrentSymbol() {
 
   const result = await fetchTrade(symbol, interval, outputsize);
   renderTrade(result);
+}
+
+function toFiniteNumber(value) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+
+function computeRsi(values, period = 14) {
+  if (!Array.isArray(values) || values.length < period + 1) return null;
+  let gains = 0;
+  let losses = 0;
+  for (let i = values.length - period; i < values.length; i += 1) {
+    const prev = Number(values[i - 1]);
+    const cur = Number(values[i]);
+    if (!Number.isFinite(prev) || !Number.isFinite(cur)) continue;
+    const diff = cur - prev;
+    if (diff >= 0) gains += diff;
+    else losses += Math.abs(diff);
+  }
+  if (losses === 0) return 100;
+  const rs = gains / losses;
+  return 100 - (100 / (1 + rs));
+}
+
+function computeTradeAction(closes) {
+  if (closes.length < 20) return 'HOLD';
+  const ma10 = computeMovingAverage(closes, 10).at(-1);
+  const ma20 = computeMovingAverage(closes, 20).at(-1);
+  const rsi14 = computeRsi(closes, 14);
+  const last = closes.at(-1);
+  if ([ma10, ma20, rsi14, last].some((v) => !Number.isFinite(v))) return 'HOLD';
+  if (last > ma10 && ma10 > ma20 && rsi14 < 70) return 'BUY';
+  if (last < ma10 && ma10 < ma20 && rsi14 > 30) return 'SELL';
+  return 'HOLD';
+}
+
+function midpoint(zone) {
+  if (!zone || typeof zone !== 'object') return null;
+  const low = toFiniteNumber(zone.low);
+  const high = toFiniteNumber(zone.high);
+  if (low == null || high == null) return null;
+  return (low + high) / 2;
+}
+
+function setBacktestResults(payload = null) {
+  if (!payload) {
+    btWinRate.textContent = '-';
+    btTrades.textContent = '-';
+    btReturn.textContent = '-';
+    btMaxDd.textContent = '-';
+    return;
+  }
+  btWinRate.textContent = `${payload.winRate.toFixed(1)}%`;
+  btTrades.textContent = String(payload.totalTrades);
+  btReturn.textContent = `${payload.cumulativeReturnPct.toFixed(2)}%`;
+  btMaxDd.textContent = `${payload.maxDrawdownPct.toFixed(2)}%`;
+}
+
+async function runBacktestForCurrentSymbol() {
+  const symbol = getSymbol();
+  const interval = getInterval();
+  const outputsize = getOutputsize();
+
+  if (backtestBtn) {
+    backtestBtn.disabled = true;
+    backtestBtn.textContent = 'Running...';
+  }
+  setBacktestResults(null);
+
+  try {
+    const [barsResult, tradeResult] = await Promise.all([
+      fetchJson(`/market/bars?symbol=${encodeURIComponent(symbol)}&interval=${encodeURIComponent(interval)}&outputsize=${encodeURIComponent(String(outputsize))}`),
+      fetchTrade(symbol, interval, outputsize),
+    ]);
+
+    const bars = (barsResult.body?.bars || []).filter((b) => toFiniteNumber(b?.close) != null);
+    if (!barsResult.ok || bars.length < 25) {
+      throw new Error(getErrorMessage(barsResult, 'Not enough bars to backtest'));
+    }
+
+    const ordered = sortBarsAscending(bars);
+    const closes = ordered.map((b) => Number(b.close));
+
+    const trade = tradeResult.body?.trade || tradeResult.body || {};
+    const entryBase = midpoint(trade.entry_zone);
+    const targetBase = toFiniteNumber(trade.target_sell_price);
+    const stopBase = toFiniteNumber(trade.stop_loss_price);
+    const trailBase = toFiniteNumber(trade.trailing_stop_price);
+    const targetRatio = entryBase && targetBase ? targetBase / entryBase : 1.03;
+    const stopRatio = entryBase && stopBase ? stopBase / entryBase : 0.98;
+    const trailRatio = entryBase && trailBase ? trailBase / entryBase : null;
+
+    let inPosition = false;
+    let entry = 0;
+    let peak = 1;
+    let equity = 1;
+    let maxDrawdown = 0;
+    let trades = 0;
+    let wins = 0;
+
+    for (let i = 20; i < ordered.length; i += 1) {
+      const bar = ordered[i];
+      const close = Number(bar.close);
+      if (!Number.isFinite(close)) continue;
+
+      if (!inPosition) {
+        const action = computeTradeAction(closes.slice(0, i + 1));
+        if (action === 'BUY') {
+          entry = entryBase && Number.isFinite(entryBase) ? entryBase : close;
+          inPosition = true;
+        }
+      } else {
+        const high = toFiniteNumber(bar.high) ?? close;
+        const low = toFiniteNumber(bar.low) ?? close;
+        const target = entry * targetRatio;
+        let stop = entry * stopRatio;
+        if (trailRatio) {
+          stop = Math.max(stop, close * trailRatio);
+        }
+
+        let exit = null;
+        if (high >= target) exit = target;
+        else if (low <= stop) exit = stop;
+        else if (computeTradeAction(closes.slice(0, i + 1)) === 'SELL') exit = close;
+
+        if (exit != null) {
+          const ret = (exit - entry) / entry;
+          equity *= 1 + ret;
+          trades += 1;
+          if (ret > 0) wins += 1;
+          inPosition = false;
+          peak = Math.max(peak, equity);
+          const dd = ((peak - equity) / peak) * 100;
+          maxDrawdown = Math.max(maxDrawdown, dd);
+        }
+      }
+    }
+
+    const cumulativeReturnPct = (equity - 1) * 100;
+    const winRate = trades ? (wins / trades) * 100 : 0;
+    setBacktestResults({
+      winRate,
+      totalTrades: trades,
+      cumulativeReturnPct,
+      maxDrawdownPct: maxDrawdown,
+    });
+  } catch (error) {
+    setBacktestResults(null);
+    displayError(tradeError, error?.message || 'Backtest failed');
+  } finally {
+    if (backtestBtn) {
+      backtestBtn.disabled = false;
+      backtestBtn.textContent = 'Backtest Strategy';
+    }
+  }
 }
 
 function sortByScoreDesc(a, b) {
@@ -1043,6 +1436,12 @@ if (tradeBtn) {
   });
 }
 
+if (backtestBtn) {
+  backtestBtn.addEventListener('click', async () => {
+    await runBacktestForCurrentSymbol();
+  });
+}
+
 window.addEventListener('DOMContentLoaded', async () => {
   const initial = getSymbol();
   state.selectedSymbol = initial;
@@ -1052,4 +1451,5 @@ window.addEventListener('DOMContentLoaded', async () => {
   // Optional: clear trade card on load so it doesn't show stale content
   if (tradeRaw) tradeRaw.textContent = '{}';
   if (tradeReasons) tradeReasons.textContent = '[]';
+  setBacktestResults(null);
 });

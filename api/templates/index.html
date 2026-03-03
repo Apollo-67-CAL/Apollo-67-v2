@@ -11,7 +11,10 @@
     <div class="topbar-inner">
       <div class="brand">
         <img src="/static/brand/logo-blue.png" alt="Apollo 67" class="logo-landscape" />
-        <p class="header-subtitle">AI Trading System</p>
+        <div class="brand-copy">
+          <h1 class="brand-title">Apollo 67</h1>
+          <p class="header-subtitle">AI Trading System</p>
+        </div>
       </div>
       <div class="topbar-status" aria-live="polite">
         <span class="status-pill">Cache status: Live</span>
@@ -171,6 +174,17 @@
                 <div class="row"><span class="label">Stop</span><span id="tradeStop">-</span></div>
                 <div class="row"><span class="label">Trailing stop</span><span id="tradeTrail">-</span></div>
               </div>
+
+              <details class="details">
+                <summary>What these mean</summary>
+                <div class="trade-help">
+                  <p><strong>Entry zone:</strong> Suggested range to open a position from the tactic context.</p>
+                  <p><strong>Target:</strong> Suggested take-profit level if price moves in your favour.</p>
+                  <p><strong>Stop:</strong> Invalidation level used to limit downside risk.</p>
+                  <p><strong>Trailing stop:</strong> Dynamic stop concept to help lock gains as price rises.</p>
+                  <div id="tradeExplanationDynamic"></div>
+                </div>
+              </details>
 
               <div class="row">
                 <span></span>

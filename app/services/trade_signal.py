@@ -105,6 +105,10 @@ def compute_trade_signal(
         closes.append(c)
 
     if len(closes) < 20:
+        fallback_target_why = (
+            "Target is derived from the chosen entry anchor and stop distance, multiplied by the risk reward ratio (RR). "
+            "ATR14 was not available, so a fallback method was used and no numeric target was produced."
+        )
         return {
             "symbol": symbol.upper(),
             "provider_used": provider_used,
@@ -119,6 +123,24 @@ def compute_trade_signal(
             "risk_reward_ratio": None,
             "indicators": {"sma20": None, "sma50": None, "rsi14": None, "atr14": None},
             "reasons": ["Not enough bars to compute indicators reliably"],
+            "explanation": {
+                "action_why": "HOLD because there are not enough bars to establish trend and momentum with confidence.",
+                "target_why": fallback_target_why,
+                "stop_why": "Stop is not set because ATR-based risk levels require more bars.",
+                "calc": {
+                    "entry_anchor": _round2(closes[-1]) if closes else None,
+                    "stop": None,
+                    "risk_per_share": None,
+                    "risk_reward_ratio": None,
+                    "target": None,
+                    "atr14": None,
+                    "method": "Fallback without ATR",
+                },
+                "notes": [
+                    "Need at least 20 clean bars for trade setup.",
+                    "No ATR-based stop/target could be computed.",
+                ],
+            },
         }
 
     last_close = closes[-1]
@@ -193,6 +215,39 @@ def compute_trade_signal(
         action = "HOLD"
         confidence = 0.5 if uptrend_bias else 0.45
 
+    entry_anchor = last_close
+    risk_per_share = abs(entry_anchor - stop) if stop is not None else None
+
+    if action == "BUY":
+        action_why = (
+            "BUY because trend bias is supportive (SMA20 above SMA50), momentum pullback is present "
+            "(price below/near SMA20), and the setup triggered inside the entry band."
+        )
+    elif action == "SELL":
+        action_why = (
+            "SELL because downtrend or risk signals are active, with weak momentum and/or overbought RSI "
+            "indicating elevated downside risk."
+        )
+    else:
+        action_why = (
+            "HOLD because signals are mixed or there is no clear edge from trend and momentum alignment."
+        )
+
+    if atr14 is not None:
+        target_why = (
+            "Target is derived from the chosen entry anchor and stop distance, multiplied by the risk reward ratio (RR). "
+            "ATR14 was available, so the ATR half band + RR method was used."
+        )
+        stop_why = "Stop is set using ATR distance from the entry anchor (ATR-based risk band)."
+        method = "ATR half band + RR"
+    else:
+        target_why = (
+            "Target is derived from the chosen entry anchor and stop distance, multiplied by the risk reward ratio (RR). "
+            "ATR14 was not available, so a fallback method was used."
+        )
+        stop_why = "Stop uses fallback logic because ATR was unavailable."
+        method = "Fallback without ATR"
+
     payload: Dict[str, Any] = {
         "symbol": symbol.upper(),
         "provider_used": provider_used,
@@ -220,6 +275,24 @@ def compute_trade_signal(
             "atr14": _round2(atr14),
         },
         "reasons": reasons,
+        "explanation": {
+            "action_why": action_why,
+            "target_why": target_why,
+            "stop_why": stop_why,
+            "calc": {
+                "entry_anchor": _round2(entry_anchor),
+                "stop": _round2(stop),
+                "risk_per_share": _round2(risk_per_share),
+                "risk_reward_ratio": rr if atr14 is not None else None,
+                "target": _round2(target),
+                "atr14": _round2(atr14),
+                "method": method,
+            },
+            "notes": [
+                "Entry anchor is the same price reference used by current target/stop math.",
+                "RR and ATR outputs are descriptive and do not alter signal/trade calculations.",
+            ],
+        },
     }
 
     return payload
