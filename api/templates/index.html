@@ -31,17 +31,12 @@
               <div class="panel-head">
                 <h2>Scanner <span id="scannerLoading" class="loading-indicator" hidden>Loading...</span></h2>
                 <div class="scanner-controls">
-                  <select id="scannerSector" aria-label="Scanner sector">
-                    <option value="Overall">Overall</option>
-                  </select>
+                  <div class="scanner-toggle" role="tablist" aria-label="Scanner modes">
+                    <button class="is-active" type="button" data-mode="buy">BUY Now</button>
+                    <button type="button" data-mode="watch">Watch</button>
+                  </div>
                   <button id="scannerToggleBtn" type="button" class="button-ghost">Refresh</button>
                 </div>
-              </div>
-              <div class="scanner-tabs" role="tablist" aria-label="Scanner views">
-                <button class="tab is-active" type="button" data-agent="overall">Overall</button>
-                <button class="tab" type="button" data-agent="institution">Institution</button>
-                <button class="tab" type="button" data-agent="news">News</button>
-                <button class="tab" type="button" data-agent="social">Social</button>
               </div>
             </summary>
             <div id="scannerList" class="symbol-list"></div>
@@ -75,6 +70,19 @@
           <details open>
             <summary class="panel-summary">
               <div class="panel-head">
+                <h2>Monitor <span id="monitorLoading" class="loading-indicator" hidden>Loading...</span></h2>
+                <button id="monitorRefreshBtn" type="button" class="button-ghost">Refresh</button>
+              </div>
+            </summary>
+            <div id="monitorTotals" class="monitor-totals"></div>
+            <div id="monitorList" class="monitor-list"></div>
+          </details>
+        </article>
+
+        <article class="panel">
+          <details open>
+            <summary class="panel-summary">
+              <div class="panel-head">
                 <h2>Portfolio <span id="portfolioLoading" class="loading-indicator" hidden>Loading...</span></h2>
                 <button id="portfolioAddBtn" type="button" class="button-ghost">Add</button>
               </div>
@@ -96,6 +104,7 @@
               <button id="quoteBtn" type="button">Get Quote</button>
               <button id="signalBtn" type="button">Get Signal</button>
               <button id="tradeBtn" type="button">Get Trade</button>
+              <button id="addMonitorBtn" type="button" class="button-ghost">Add to Monitor</button>
             </div>
 
             <div class="trade-controls">

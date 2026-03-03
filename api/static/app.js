@@ -15,16 +15,18 @@ const outputsizeInput = document.getElementById('outputsize');
 
 const scannerList = document.getElementById('scannerList');
 const scannerToggleBtn = document.getElementById('scannerToggleBtn');
-const scannerSector = document.getElementById('scannerSector');
-let currentScannerAgent = 'overall';
 const watchlistInput = document.getElementById('watchlistInput');
 const watchlistAddBtn = document.getElementById('watchlistAddBtn');
 const watchlistSort = document.getElementById('watchlistSort');
 const watchlistList = document.getElementById('watchlistList');
+const monitorRefreshBtn = document.getElementById('monitorRefreshBtn');
+const monitorTotals = document.getElementById('monitorTotals');
+const monitorList = document.getElementById('monitorList');
 const portfolioAddBtn = document.getElementById('portfolioAddBtn');
 const portfolioList = document.getElementById('portfolioList');
 const scannerLoading = document.getElementById('scannerLoading');
 const watchlistLoading = document.getElementById('watchlistLoading');
+const monitorLoading = document.getElementById('monitorLoading');
 const portfolioLoading = document.getElementById('portfolioLoading');
 
 const quoteSymbol = document.getElementById('quoteSymbol');
@@ -54,6 +56,7 @@ const tradeTrail = document.getElementById('tradeTrail');
 const tradeReasons = document.getElementById('tradeReasons');
 const tradeRaw = document.getElementById('tradeRaw');
 const backtestBtn = document.getElementById('backtestBtn');
+const addMonitorBtn = document.getElementById('addMonitorBtn');
 const btWinRate = document.getElementById('btWinRate');
 const btTrades = document.getElementById('btTrades');
 const btReturn = document.getElementById('btReturn');
@@ -66,23 +69,42 @@ let priceChart = null;
 
 const dataCache = new Map();
 const inFlight = new Map();
+const scannerTradeCache = new Map();
+const scannerTradeInFlight = new Map();
+const scannerTradeQueue = [];
+let scannerTradeActive = 0;
+const SCANNER_TRADE_CACHE_TTL_MS = 60 * 1000;
+const SCANNER_MAX_INFLIGHT = 4;
+const MONITOR_STORAGE_KEY = 'apollo67_monitor_v1';
+const MONITOR_QUOTE_CACHE_TTL_MS = 20 * 1000;
+const MONITOR_MAX_INFLIGHT = 4;
+const monitorQuoteCache = new Map();
+const monitorQuoteInFlight = new Map();
+const monitorQuoteQueue = [];
+let monitorQuoteActive = 0;
 
 const state = {
   scannerExpanded: false,
-  scannerData: null,
-  scannerSector: 'Overall',
+  scannerRows: [],
+  scannerMode: 'buy',
   selectedSymbol: 'AAPL',
   watchlist: loadWatchlist(),
   watchlistSort: 'symbol',
+  monitor: loadMonitor(),
+  monitorLastPrice: {},
+  monitorStale: {},
+  monitorLastRefreshMs: 0,
   portfolio: loadPortfolio(),
   expandedByPanel: {
     scanner: null,
     watchlist: null,
+    monitor: null,
     portfolio: null,
   },
   sectionLoading: {
     scanner: false,
     watchlist: false,
+    monitor: false,
     portfolio: false,
   },
   scannerNeedsUpdate: false,
@@ -91,6 +113,7 @@ const state = {
   loadingByPanel: {
     scanner: new Set(),
     watchlist: new Set(),
+    monitor: new Set(),
     portfolio: new Set(),
   },
   latestTrade: null,
@@ -177,6 +200,46 @@ function savePortfolio() {
   localStorage.setItem('apollo_portfolio', JSON.stringify(state.portfolio));
 }
 
+function loadMonitor() {
+  try {
+    const raw = localStorage.getItem(MONITOR_STORAGE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .map((item) => {
+        const symbol = normalizeSymbol(item?.symbol);
+        const entryPrice = Number(item?.entry_price);
+        const amount = Number(item?.amount);
+        const shares = Number(item?.shares);
+        const createdAt = String(item?.created_at || '');
+        if (!symbol || !Number.isFinite(entryPrice) || entryPrice <= 0 || !Number.isFinite(amount) || amount <= 0) {
+          return null;
+        }
+        return {
+          id: String(item?.id || `${Date.now()}_${symbol}`),
+          symbol,
+          entry_price: entryPrice,
+          amount,
+          shares: Number.isFinite(shares) && shares > 0 ? shares : amount / entryPrice,
+          created_at: createdAt || new Date().toISOString(),
+          notes: item?.notes ? String(item.notes) : '',
+        };
+      })
+      .filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+function saveMonitor() {
+  localStorage.setItem(MONITOR_STORAGE_KEY, JSON.stringify(state.monitor));
+}
+
+function makeMonitorId(symbol) {
+  return `${Date.now()}_${Math.random().toString(36).slice(2, 8)}_${symbol}`;
+}
+
 function normalizeSymbol(value) {
   return (value || '').toString().trim().toUpperCase();
 }
@@ -228,6 +291,8 @@ function setSectionLoading(panelName, isLoading) {
     }
   } else if (panelName === 'watchlist') {
     el = watchlistLoading;
+  } else if (panelName === 'monitor') {
+    el = monitorLoading;
   } else if (panelName === 'portfolio') {
     el = portfolioLoading;
   }
@@ -264,181 +329,211 @@ function scannerPriceText(value) {
   return Number.isFinite(num) ? `$${formatPrice(num)}` : '-';
 }
 
-function _normaliseAgentKey(agent) {
-  const a = (agent || '').toLowerCase();
-  if (a === 'inst' || a === 'institutional') return 'institution';
-  if (a === 'socials' || a === 'social_media') return 'social';
-  return a || 'overall';
-}
-
-function getAgentView(item, agentRaw) {
-  const agent = _normaliseAgentKey(agentRaw);
-
-  if (!item || typeof item !== 'object') {
-    return { ok: false, reason: 'no_item' };
-  }
-
-  if (agent === 'overall') {
-    return { ok: true, data: item };
-  }
-
-  const containers = [
-    item.agents,
-    item.agent,
-    item.by_agent,
-    item.sentiment_by_agent,
-    item.sentimentByAgent,
-    item.agent_signals,
-    item.agentSignals,
-    item.components,
-    item.breakdown,
-    item.sources,
-    item.source_signals,
-    item.sourceSignals,
-    item.meta && item.meta.agents,
-  ].filter(Boolean);
-
-  for (const c of containers) {
-    if (c && typeof c === 'object') {
-      const direct = c[agent] || c[_normaliseAgentKey(agent)] || c[agent.toUpperCase()];
-      if (direct && typeof direct === 'object') return { ok: true, data: direct };
-    }
-  }
-
-  const flatCandidates = [
-    `${agent}_score`, `${agent}Score`,
-    `${agent}_trend`, `${agent}Trend`,
-    `${agent}_momentum`, `${agent}Momentum`,
-    `${agent}_confidence`, `${agent}Confidence`,
-    `${agent}_label`, `${agent}Label`,
-  ];
-
-  let anyFlat = false;
-  const flat = {};
-  for (const k of flatCandidates) {
-    if (Object.prototype.hasOwnProperty.call(item, k)) {
-      flat[k] = item[k];
-      anyFlat = true;
-    }
-  }
-  if (anyFlat) return { ok: true, data: flat, flat: true };
-
-  return { ok: false, reason: 'no_agent_data' };
-}
-
-function pickField(obj, keys, fallback) {
-  for (const k of keys) {
-    if (obj && Object.prototype.hasOwnProperty.call(obj, k) && obj[k] !== undefined && obj[k] !== null) return obj[k];
-  }
-  return fallback;
-}
-
-function initScannerTabs() {
-  const root = document.querySelector('.scanner-tabs');
+function initScannerModeToggle() {
+  const root = document.querySelector('.scanner-toggle');
   if (!root) return;
 
   root.addEventListener('click', (e) => {
-    const btn = e.target && e.target.closest ? e.target.closest('button[data-agent]') : null;
+    const btn = e.target && e.target.closest ? e.target.closest('button[data-mode]') : null;
     if (!btn) return;
-    const agent = btn.getAttribute('data-agent') || 'overall';
-    currentScannerAgent = _normaliseAgentKey(agent);
-
-    root.querySelectorAll('button[data-agent]').forEach((b) => b.classList.toggle('is-active', b === btn));
+    const mode = btn.getAttribute('data-mode') || 'buy';
+    state.scannerMode = mode === 'watch' ? 'watch' : 'buy';
+    root.querySelectorAll('button[data-mode]').forEach((b) => b.classList.toggle('is-active', b === btn));
     renderScanner();
   });
 }
 
-function ensureScannerSectorOptions() {
-  if (!scannerSector) return;
-  const sectors = Object.keys(state.scannerData?.by_sector || {}).sort((a, b) => a.localeCompare(b));
-  const values = ['Overall', ...sectors];
-  const current = state.scannerSector || 'Overall';
-  scannerSector.innerHTML = values.map((sector) => `<option value="${sector}">${sector}</option>`).join('');
-  scannerSector.value = values.includes(current) ? current : 'Overall';
-  state.scannerSector = scannerSector.value;
+function _queueScannerTradeTask(task) {
+  return new Promise((resolve, reject) => {
+    scannerTradeQueue.push({ task, resolve, reject });
+    _runScannerTradeQueue();
+  });
 }
 
-function getScannerRows() {
-  const data = state.scannerData || {};
-  const selection = state.scannerSector || 'Overall';
-  if (selection === 'Overall') {
-    return Array.isArray(data.top_overall) ? data.top_overall : [];
+function _runScannerTradeQueue() {
+  while (scannerTradeActive < SCANNER_MAX_INFLIGHT && scannerTradeQueue.length) {
+    const next = scannerTradeQueue.shift();
+    if (!next) return;
+    scannerTradeActive += 1;
+    Promise.resolve()
+      .then(next.task)
+      .then(next.resolve)
+      .catch(next.reject)
+      .finally(() => {
+        scannerTradeActive = Math.max(0, scannerTradeActive - 1);
+        _runScannerTradeQueue();
+      });
   }
-  const grouped = data.by_sector && typeof data.by_sector === 'object' ? data.by_sector : {};
-  const rows = grouped[selection];
-  return Array.isArray(rows) ? rows : [];
 }
 
-function renderScannerRows(rows) {
-  if (!scannerList) return;
-  const filtered = rows
-    .map((item) => ({ item, view: getAgentView(item, currentScannerAgent) }))
-    .filter((entry) => entry.view.ok);
+function _distanceToEntryZone(price, low, high) {
+  if (!Number.isFinite(price) || !Number.isFinite(low) || !Number.isFinite(high)) return Number.POSITIVE_INFINITY;
+  if (price < low) return low - price;
+  if (price > high) return price - high;
+  return 0;
+}
 
-  if (!filtered.length) {
-    if (currentScannerAgent === 'overall') {
-      scannerList.innerHTML = '<div class="empty">No scanner rows yet.</div>';
-      return;
-    }
-    const label = currentScannerAgent.charAt(0).toUpperCase() + currentScannerAgent.slice(1);
-    scannerList.innerHTML = `<div class="scanner-empty">No ${label} data yet</div>`;
-    return;
+function _quoteFallbackPrice(symbol) {
+  const cached = dataCache.get(normalizeSymbol(symbol));
+  const quoteBody = cached?.quoteResult?.body || {};
+  const quote = quoteBody.quote || {};
+  const n = Number(quote.last);
+  return Number.isFinite(n) ? n : null;
+}
+
+function _buildScannerRowFromTrade(symbol, tradePayload) {
+  const trade = tradePayload && typeof tradePayload === 'object' ? tradePayload : {};
+  const action = String(trade.action || '').toUpperCase();
+  const confidenceRaw = Number(trade.confidence);
+  const confidence = Number.isFinite(confidenceRaw) ? confidenceRaw : 0;
+  const priceRaw = Number(trade.last_close);
+  const price = Number.isFinite(priceRaw) ? priceRaw : _quoteFallbackPrice(symbol);
+  const rrRaw = Number(trade.risk_reward_ratio);
+  const rr = Number.isFinite(rrRaw) ? rrRaw : null;
+  const atrRaw = Number(trade?.indicators?.atr14);
+  const atr = Number.isFinite(atrRaw) ? atrRaw : null;
+  const entryLow = Number(trade?.entry_zone?.low);
+  const entryHigh = Number(trade?.entry_zone?.high);
+
+  let near = false;
+  let distanceToEntry = Number.POSITIVE_INFINITY;
+  if (Number.isFinite(price) && Number.isFinite(entryLow) && Number.isFinite(entryHigh)) {
+    const nearPad = atr != null ? Math.max(0.0025 * price, 0.25 * atr) : 0.005 * price;
+    near = price >= (entryLow - nearPad) && price <= (entryHigh + nearPad);
+    distanceToEntry = _distanceToEntryZone(price, entryLow, entryHigh);
   }
 
-  scannerList.innerHTML = filtered
-    .map(({ item, view }) => {
-      const row = item;
-      const source = view.data || {};
-      const symbol = normalizeSymbol(row?.symbol);
-      const score = scannerScoreText(
-        pickField(source, ['score', 'signal_score', 'signalScore'], pickField(item, ['score'], null))
-      );
-      const last = scannerPriceText(row?.last);
-      const trend = pickField(
-        source,
-        ['trend', 'trend_label', 'trendLabel', 'direction', 'bias'],
-        pickField(item, ['trend', 'trend_label', 'trendLabel'], null)
-      );
-      const momentum = pickField(
-        source,
-        ['momentum', 'momentum_label', 'momentumLabel'],
-        pickField(item, ['momentum', 'momentum_label', 'momentumLabel'], null)
-      );
-      const trendClass = sentimentClass(trend);
-      const momentumClass = sentimentClass(momentum);
-      const isSelected = state.selectedSymbol === symbol;
-      const hasError = row && row.ok === false;
-      const trendBadge = trend ? `<span class="badge ${trendClass}">${trend}</span>` : '';
-      const momentumBadge = momentum ? `<span class="badge ${momentumClass}">${momentum}</span>` : '';
-      return `
-      <article class="symbol-card ${isSelected ? 'selected' : ''}" data-panel="scanner" data-symbol="${symbol}">
-        <button type="button" class="symbol-main scanner-main" data-action="select" data-panel="scanner" data-symbol="${symbol}">
-          <span class="scanner-left">
-            <span class="sym">${symbol}</span>
-            <span class="metric">${last}</span>
-          </span>
-          <span class="scanner-right">
-            <span class="metric">score ${score}</span>
-            ${trendBadge}
-            ${momentumBadge}
-            ${hasError ? '<span class="badge bear">ERR</span>' : ''}
-          </span>
-        </button>
-      </article>
-      `;
-    })
-    .join('');
+  return {
+    symbol: normalizeSymbol(symbol),
+    action,
+    confidence,
+    price,
+    rr,
+    timeframe: trade.timeframe || '1day',
+    entryLow: Number.isFinite(entryLow) ? entryLow : null,
+    entryHigh: Number.isFinite(entryHigh) ? entryHigh : null,
+    target: Number.isFinite(Number(trade.target_sell_price)) ? Number(trade.target_sell_price) : null,
+    stop: Number.isFinite(Number(trade.stop_loss_price)) ? Number(trade.stop_loss_price) : null,
+    trail: Number.isFinite(Number(trade.trailing_stop_price)) ? Number(trade.trailing_stop_price) : null,
+    reasons: Array.isArray(trade.reasons) ? trade.reasons.slice(0, 2) : [],
+    nearEntry: near,
+    distanceToEntry,
+  };
 }
 
 async function refreshScannerData() {
   setSectionLoading('scanner', true);
-  const result = await fetchJson('/scanner/sector');
-  if (result.ok && result.body) {
-    state.scannerData = result.body;
-    ensureScannerSectorOptions();
-  }
+  const symbols = SCANNER_SYMBOLS.slice(0, state.scannerExpanded ? SCANNER_SYMBOLS.length : 15);
+  const rows = [];
+
+  await Promise.allSettled(
+    symbols.map((symbol) =>
+      fetchTradeForSymbol(symbol).then((tradePayload) => {
+        if (!tradePayload) return;
+        rows.push(_buildScannerRowFromTrade(symbol, tradePayload));
+      })
+    )
+  );
+
+  const buyRows = rows
+    .filter((row) => row.action === 'BUY')
+    .sort((a, b) => {
+      if (b.confidence !== a.confidence) return b.confidence - a.confidence;
+      const arr = a.rr == null ? Number.NEGATIVE_INFINITY : a.rr;
+      const brr = b.rr == null ? Number.NEGATIVE_INFINITY : b.rr;
+      return brr - arr;
+    });
+
+  const watchRows = rows
+    .filter((row) => row.action === 'HOLD' && row.nearEntry)
+    .sort((a, b) => {
+      if (a.distanceToEntry !== b.distanceToEntry) return a.distanceToEntry - b.distanceToEntry;
+      return b.confidence - a.confidence;
+    });
+
+  state.scannerRows = [...buyRows, ...watchRows];
+
   setSectionLoading('scanner', false);
   renderScanner();
+}
+
+function fetchTradeForSymbol(symbol) {
+  const key = normalizeSymbol(symbol);
+  if (!key) return Promise.resolve(null);
+
+  const cached = scannerTradeCache.get(key);
+  if (cached && (Date.now() - cached.fetchedAt) < SCANNER_TRADE_CACHE_TTL_MS) {
+    return Promise.resolve(cached.trade);
+  }
+
+  if (scannerTradeInFlight.has(key)) {
+    return scannerTradeInFlight.get(key);
+  }
+
+  const pending = _queueScannerTradeTask(async () => {
+    const result = await fetchTrade(key, '1day', 60);
+    if (!result.ok) return null;
+    const body = result.body || {};
+    const trade = body.trade || body;
+    if (!trade || typeof trade !== 'object') return null;
+    scannerTradeCache.set(key, { trade, fetchedAt: Date.now() });
+    return trade;
+  }).finally(() => {
+    scannerTradeInFlight.delete(key);
+  });
+
+  scannerTradeInFlight.set(key, pending);
+  return pending;
+}
+
+function renderScannerRows(rows) {
+  if (!scannerList) return;
+  const mode = state.scannerMode === 'watch' ? 'watch' : 'buy';
+  if (!rows.length) {
+    scannerList.innerHTML = mode === 'watch'
+      ? '<div class="scanner-empty">No setups near entry right now.</div>'
+      : '<div class="scanner-empty">No BUY opportunities right now.</div>';
+    return;
+  }
+
+  scannerList.innerHTML = rows.map((row) => {
+    const symbol = normalizeSymbol(row.symbol);
+    const isSelected = state.selectedSymbol === symbol;
+    const actionPillClass = row.action === 'BUY' ? 'bull' : 'neutral';
+    const rrText = row.rr != null ? `RR ${Number(row.rr).toFixed(2)}` : null;
+    const confText = `${Math.round((Number(row.confidence) || 0) * 100)}%`;
+    const entryText = row.entryLow != null && row.entryHigh != null
+      ? `${formatPrice(row.entryLow)} - ${formatPrice(row.entryHigh)}`
+      : '-';
+
+    return `
+    <article class="symbol-card scanner-card ${isSelected ? 'selected' : ''}" data-panel="scanner" data-symbol="${symbol}">
+      <button type="button" class="symbol-main scanner-main" data-action="select" data-panel="scanner" data-symbol="${symbol}">
+        <div class="scanner-topline">
+          <span class="scanner-symbol">${symbol}</span>
+          <span class="scanner-price">${scannerPriceText(row.price)}</span>
+        </div>
+        <div class="scanner-pills">
+          <span class="badge ${actionPillClass}">${row.action || 'HOLD'}</span>
+          <span class="pill">Conf ${confText}</span>
+          <span class="pill">${row.timeframe || '1day'}</span>
+          ${rrText ? `<span class="pill">${rrText}</span>` : ''}
+          ${mode === 'watch' ? '<span class="badge neutral">Near Entry</span>' : ''}
+        </div>
+        <div class="scanner-levels">
+          <span>Entry: ${entryText}</span>
+          <span>Target: ${row.target != null ? formatPrice(row.target) : '-'}</span>
+          <span>Stop: ${row.stop != null ? formatPrice(row.stop) : '-'}</span>
+          <span>Trail: ${row.trail != null ? formatPrice(row.trail) : '-'}</span>
+        </div>
+        ${row.reasons.length ? `<div class="scanner-reasons">${row.reasons.slice(0, 2).join(' • ')}</div>` : ''}
+      </button>
+      <div class="scanner-actions">
+        <button type="button" class="button-ghost scanner-monitor-btn" data-action="monitor-add" data-symbol="${symbol}" data-entry="${row.price != null ? Number(row.price) : ''}">Monitor</button>
+      </div>
+    </article>
+    `;
+  }).join('');
 }
 
 function parseCacheAgeSeconds(rawTs) {
@@ -481,6 +576,244 @@ async function refreshScannerCacheStatus({ force = false } = {}) {
   } finally {
     state.scannerStatusCheckInFlight = false;
   }
+}
+
+function queueMonitorQuoteTask(task) {
+  return new Promise((resolve, reject) => {
+    monitorQuoteQueue.push({ task, resolve, reject });
+    runMonitorQuoteQueue();
+  });
+}
+
+function runMonitorQuoteQueue() {
+  while (monitorQuoteActive < MONITOR_MAX_INFLIGHT && monitorQuoteQueue.length) {
+    const next = monitorQuoteQueue.shift();
+    if (!next) return;
+    monitorQuoteActive += 1;
+    Promise.resolve()
+      .then(next.task)
+      .then(next.resolve)
+      .catch(next.reject)
+      .finally(() => {
+        monitorQuoteActive = Math.max(0, monitorQuoteActive - 1);
+        runMonitorQuoteQueue();
+      });
+  }
+}
+
+async function fetchMonitorQuote(symbol, { force = false } = {}) {
+  const key = normalizeSymbol(symbol);
+  if (!key) return null;
+  const cached = monitorQuoteCache.get(key);
+  if (!force && cached && (Date.now() - cached.fetchedAt) < MONITOR_QUOTE_CACHE_TTL_MS) {
+    return cached.price;
+  }
+  if (monitorQuoteInFlight.has(key)) {
+    return monitorQuoteInFlight.get(key);
+  }
+
+  const pending = queueMonitorQuoteTask(async () => {
+    const result = await fetchJson(`/provider/twelvedata/quote?symbol=${encodeURIComponent(key)}`);
+    if (result.ok) {
+      const quote = result.body?.quote || {};
+      const price = Number(quote.last);
+      if (Number.isFinite(price)) {
+        monitorQuoteCache.set(key, { price, fetchedAt: Date.now() });
+        return price;
+      }
+    }
+    const fallback = _quoteFallbackPrice(key);
+    if (fallback != null) {
+      monitorQuoteCache.set(key, { price: fallback, fetchedAt: Date.now() });
+      return fallback;
+    }
+    throw new Error(getErrorMessage(result, 'Quote unavailable'));
+  }).finally(() => {
+    monitorQuoteInFlight.delete(key);
+  });
+
+  monitorQuoteInFlight.set(key, pending);
+  return pending;
+}
+
+function monitorDaysHeld(createdAt) {
+  const ts = Date.parse(createdAt || '');
+  if (Number.isNaN(ts)) return 0;
+  return Math.max(0, Math.floor((Date.now() - ts) / 86400000));
+}
+
+function renderMonitorPanel() {
+  if (!monitorList || !monitorTotals) return;
+  if (!state.monitor.length) {
+    monitorTotals.innerHTML = '<div class="monitor-total-item">No monitored positions yet.</div>';
+    monitorList.innerHTML = '<div class="empty">Add a symbol from Trade or Scanner.</div>';
+    return;
+  }
+
+  const rows = state.monitor.map((item) => {
+    const currentPrice = Number(state.monitorLastPrice[item.id]);
+    const hasCurrent = Number.isFinite(currentPrice);
+    const pnlValue = hasCurrent ? (currentPrice - item.entry_price) * item.shares : null;
+    const pnlPct = hasCurrent ? ((currentPrice / item.entry_price) - 1) * 100 : null;
+    return {
+      ...item,
+      currentPrice: hasCurrent ? currentPrice : null,
+      pnlValue,
+      pnlPct,
+      stale: Boolean(state.monitorStale[item.id]),
+      daysHeld: monitorDaysHeld(item.created_at),
+    };
+  });
+
+  const totalAmount = rows.reduce((sum, row) => sum + row.amount, 0);
+  const totalPnl = rows.reduce((sum, row) => sum + (Number.isFinite(row.pnlValue) ? row.pnlValue : 0), 0);
+  const totalPnlPct = totalAmount > 0 ? (totalPnl / totalAmount) * 100 : 0;
+
+  monitorTotals.innerHTML = `
+    <div class="monitor-total-item"><span>Total Amount</span><strong>$${formatPrice(totalAmount)}</strong></div>
+    <div class="monitor-total-item"><span>Total P/L $</span><strong class="${totalPnl >= 0 ? 'up' : 'down'}">$${formatPrice(totalPnl)}</strong></div>
+    <div class="monitor-total-item"><span>Total P/L %</span><strong class="${totalPnlPct >= 0 ? 'up' : 'down'}">${formatPct(totalPnlPct)}</strong></div>
+  `;
+
+  monitorList.innerHTML = rows.map((row) => `
+    <article class="monitor-row">
+      <div class="monitor-main">
+        <div class="monitor-top">
+          <span class="monitor-symbol">${row.symbol}</span>
+          <span class="monitor-price">${row.currentPrice != null ? `$${formatPrice(row.currentPrice)}` : '-'}</span>
+        </div>
+        <div class="monitor-meta">
+          <span>Entry $${formatPrice(row.entry_price)}</span>
+          <span>Amount $${formatPrice(row.amount)}</span>
+          <span>Move <strong class="${Number.isFinite(row.pnlPct) ? (row.pnlPct >= 0 ? 'up' : 'down') : ''}">${row.pnlPct != null ? formatPct(row.pnlPct) : '--'}</strong></span>
+          <span>P/L <strong class="${Number.isFinite(row.pnlValue) ? (row.pnlValue >= 0 ? 'up' : 'down') : ''}">${row.pnlValue != null ? `$${formatPrice(row.pnlValue)}` : '--'}</strong></span>
+          <span>Days ${row.daysHeld}</span>
+          ${row.stale ? '<span class="monitor-stale">stale</span>' : ''}
+        </div>
+      </div>
+      <div class="monitor-actions">
+        <button type="button" class="button-ghost" data-action="monitor-edit-amount" data-id="${row.id}">Edit amount</button>
+        <button type="button" class="button-ghost" data-action="monitor-edit-entry" data-id="${row.id}">Edit entry</button>
+        <button type="button" class="button-ghost" data-action="monitor-remove" data-id="${row.id}">Remove</button>
+      </div>
+    </article>
+  `).join('');
+}
+
+async function refreshMonitorQuotes({ force = false } = {}) {
+  if (!state.monitor.length) {
+    renderMonitorPanel();
+    return;
+  }
+  setSectionLoading('monitor', true);
+  await Promise.allSettled(
+    state.monitor.map(async (item) => {
+      try {
+        const price = await fetchMonitorQuote(item.symbol, { force });
+        if (Number.isFinite(price)) {
+          state.monitorLastPrice[item.id] = price;
+          state.monitorStale[item.id] = false;
+        } else {
+          state.monitorStale[item.id] = true;
+        }
+      } catch {
+        state.monitorStale[item.id] = true;
+      }
+    })
+  );
+  state.monitorLastRefreshMs = Date.now();
+  setSectionLoading('monitor', false);
+  renderMonitorPanel();
+}
+
+function addMonitorItem(symbol, defaultEntry) {
+  const normalized = normalizeSymbol(symbol);
+  if (!normalized) return;
+  const parsedEntry = Number(defaultEntry);
+  if (!Number.isFinite(parsedEntry) || parsedEntry <= 0) {
+    window.alert('No valid entry price available for this symbol yet.');
+    return;
+  }
+  const amountInput = window.prompt(`Amount to allocate for ${normalized}:`, '1000');
+  if (amountInput == null) return;
+  const amount = Number(amountInput);
+  if (!Number.isFinite(amount) || amount <= 0) {
+    window.alert('Amount must be a positive number.');
+    return;
+  }
+  const notesInput = window.prompt('Notes (optional):', '') || '';
+  const shares = amount / parsedEntry;
+  const item = {
+    id: makeMonitorId(normalized),
+    symbol: normalized,
+    entry_price: parsedEntry,
+    amount,
+    shares,
+    created_at: new Date().toISOString(),
+    notes: notesInput.trim(),
+  };
+  state.monitor.unshift(item);
+  saveMonitor();
+  state.monitorLastPrice[item.id] = parsedEntry;
+  state.monitorStale[item.id] = false;
+  renderMonitorPanel();
+  refreshMonitorQuotes({ force: true });
+}
+
+function addMonitorFromCurrentTrade() {
+  const symbol = getSymbol();
+  const tradePrice = Number(state.latestTrade?.last_close);
+  const quoteText = String(quoteLast?.textContent || '').replace(/[^0-9.-]/g, '');
+  const quotePrice = Number(quoteText);
+  const fallbackQuote = _quoteFallbackPrice(symbol);
+  const defaultEntry = Number.isFinite(tradePrice)
+    ? tradePrice
+    : Number.isFinite(quotePrice)
+      ? quotePrice
+      : fallbackQuote;
+  addMonitorItem(symbol, defaultEntry);
+}
+
+function editMonitorAmount(id) {
+  const idx = state.monitor.findIndex((item) => item.id === id);
+  if (idx < 0) return;
+  const current = state.monitor[idx];
+  const nextRaw = window.prompt(`New amount for ${current.symbol}:`, String(current.amount));
+  if (nextRaw == null) return;
+  const next = Number(nextRaw);
+  if (!Number.isFinite(next) || next <= 0) {
+    window.alert('Amount must be a positive number.');
+    return;
+  }
+  state.monitor[idx] = { ...current, amount: next, shares: next / current.entry_price };
+  saveMonitor();
+  renderMonitorPanel();
+}
+
+function editMonitorEntry(id) {
+  const idx = state.monitor.findIndex((item) => item.id === id);
+  if (idx < 0) return;
+  const current = state.monitor[idx];
+  const nextRaw = window.prompt(`New entry price for ${current.symbol}:`, String(current.entry_price));
+  if (nextRaw == null) return;
+  const next = Number(nextRaw);
+  if (!Number.isFinite(next) || next <= 0) {
+    window.alert('Entry price must be a positive number.');
+    return;
+  }
+  state.monitor[idx] = { ...current, entry_price: next, shares: current.amount / next };
+  saveMonitor();
+  renderMonitorPanel();
+}
+
+function removeMonitorItem(id) {
+  const before = state.monitor.length;
+  state.monitor = state.monitor.filter((item) => item.id !== id);
+  if (state.monitor.length === before) return;
+  delete state.monitorLastPrice[id];
+  delete state.monitorStale[id];
+  saveMonitor();
+  renderMonitorPanel();
 }
 
 function displayError(el, message) {
@@ -1439,7 +1772,9 @@ function renderScanner() {
   if (scannerToggleBtn) {
     scannerToggleBtn.textContent = 'Refresh';
   }
-  renderScannerRows(getScannerRows());
+  const mode = state.scannerMode === 'watch' ? 'watch' : 'buy';
+  const rows = state.scannerRows.filter((row) => (mode === 'watch' ? row.action === 'HOLD' && row.nearEntry : row.action === 'BUY'));
+  renderScannerRows(rows);
 }
 
 function renderWatchlist() {
@@ -1498,9 +1833,14 @@ function renderPortfolio() {
   warmSymbols(symbols, 'portfolio');
 }
 
+function renderMonitor() {
+  renderMonitorPanel();
+}
+
 function renderPanels() {
   renderScanner();
   renderWatchlist();
+  renderMonitor();
   renderPortfolio();
 }
 
@@ -1564,45 +1904,78 @@ function addPortfolioEntry() {
   renderPortfolio();
 }
 
-scannerToggleBtn.addEventListener('click', () => {
-  refreshScannerData();
-});
-
-if (scannerSector) {
-  scannerSector.addEventListener('change', () => {
-    state.scannerSector = scannerSector.value || 'Overall';
-    renderScanner();
+if (scannerToggleBtn) {
+  scannerToggleBtn.addEventListener('click', () => {
+    refreshScannerData();
   });
 }
 
-watchlistSort.addEventListener('change', () => {
-  state.watchlistSort = watchlistSort.value;
-  renderWatchlist();
-});
+if (watchlistSort) {
+  watchlistSort.addEventListener('change', () => {
+    state.watchlistSort = watchlistSort.value;
+    renderWatchlist();
+  });
+}
 
-watchlistAddBtn.addEventListener('click', () => {
-  const symbol = normalizeSymbol(watchlistInput.value);
-  if (!symbol) return;
-  if (!state.watchlist.includes(symbol)) {
-    state.watchlist.push(symbol);
-    saveWatchlist();
-  }
-  watchlistInput.value = '';
-  renderWatchlist();
-});
+if (watchlistAddBtn) {
+  watchlistAddBtn.addEventListener('click', () => {
+    const symbol = normalizeSymbol(watchlistInput.value);
+    if (!symbol) return;
+    if (!state.watchlist.includes(symbol)) {
+      state.watchlist.push(symbol);
+      saveWatchlist();
+    }
+    watchlistInput.value = '';
+    renderWatchlist();
+  });
+}
+
+if (monitorRefreshBtn) {
+  monitorRefreshBtn.addEventListener('click', () => {
+    refreshMonitorQuotes({ force: true });
+  });
+}
 
 if (portfolioAddBtn) {
   portfolioAddBtn.addEventListener('click', addPortfolioEntry);
 }
 
-watchlistInput.addEventListener('keydown', (event) => {
-  if (event.key === 'Enter') {
-    event.preventDefault();
-    watchlistAddBtn.click();
-  }
-});
+if (watchlistInput) {
+  watchlistInput.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      if (watchlistAddBtn) watchlistAddBtn.click();
+    }
+  });
+}
 
 document.addEventListener('click', (event) => {
+  const monitorAddTarget = event.target.closest('[data-action="monitor-add"]');
+  if (monitorAddTarget) {
+    const symbol = normalizeSymbol(monitorAddTarget.dataset.symbol);
+    const entry = Number(monitorAddTarget.dataset.entry);
+    addMonitorItem(symbol, entry);
+    return;
+  }
+
+  const editAmountTarget = event.target.closest('[data-action="monitor-edit-amount"]');
+  if (editAmountTarget) {
+    editMonitorAmount(String(editAmountTarget.dataset.id || ''));
+    return;
+  }
+
+  const editEntryTarget = event.target.closest('[data-action="monitor-edit-entry"]');
+  if (editEntryTarget) {
+    editMonitorEntry(String(editEntryTarget.dataset.id || ''));
+    return;
+  }
+
+  const removeTarget = event.target.closest('[data-action="monitor-remove"]');
+  if (removeTarget) {
+    removeMonitorItem(String(removeTarget.dataset.id || ''));
+    return;
+  }
+
   const target = event.target.closest('[data-action="select"]');
   if (!target) return;
 
@@ -1630,6 +2003,12 @@ if (tradeBtn) {
   });
 }
 
+if (addMonitorBtn) {
+  addMonitorBtn.addEventListener('click', () => {
+    addMonitorFromCurrentTrade();
+  });
+}
+
 if (backtestBtn) {
   backtestBtn.addEventListener('click', async () => {
     await runBacktestForCurrentSymbol();
@@ -1639,11 +2018,15 @@ if (backtestBtn) {
 window.addEventListener('DOMContentLoaded', async () => {
   const initial = getSymbol();
   state.selectedSymbol = initial;
-  initScannerTabs();
+  initScannerModeToggle();
   renderPanels();
   await refreshScannerData();
   window.setInterval(() => {
     refreshScannerData();
+  }, 60000);
+  await refreshMonitorQuotes();
+  window.setInterval(() => {
+    refreshMonitorQuotes();
   }, 60000);
   await safeSelectSymbol(initial);
 
