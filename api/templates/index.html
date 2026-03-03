@@ -4,89 +4,118 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Apollo 67 UI</title>
-  <link rel="stylesheet" href="/static/app.css" />
+  <link rel="stylesheet" href="/static/app.css?v=20260303a" />
 </head>
 <body>
-  <main class="container">
-    <header class="header">
-      <div class="header-brand">
-        <img src="/static/brand/logo-white.png" alt="Apollo 67" class="logo-landscape" />
-        <p class="header-subtitle">Ai Trading System</p>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <div class="brand">
+        <img src="/static/brand/logo-blue.png" alt="Apollo 67" class="logo-landscape" />
+        <p class="header-subtitle">AI Trading System</p>
       </div>
-    </header>
+      <div class="topbar-status" aria-live="polite">
+        <span class="status-pill">Cache status: Live</span>
+      </div>
+    </div>
+  </header>
 
+  <main class="container">
     <section class="dashboard-grid">
       <aside class="left-panels">
         <article class="panel">
-          <div class="panel-head">
-            <h2>Scanner <span id="scannerLoading" class="loading-indicator" hidden>Loading...</span></h2>
-            <button id="scannerToggleBtn" type="button" class="button-ghost">Show more</button>
-          </div>
-          <div id="scannerList" class="symbol-list"></div>
+          <details open>
+            <summary class="panel-summary">
+              <div class="panel-head">
+                <h2>Scanner <span id="scannerLoading" class="loading-indicator" hidden>Loading...</span></h2>
+                <button id="scannerToggleBtn" type="button" class="button-ghost">Show more</button>
+              </div>
+            </summary>
+            <div id="scannerList" class="symbol-list"></div>
+          </details>
         </article>
 
         <article class="panel">
-          <div class="panel-head">
-            <h2>Watchlist <span id="watchlistLoading" class="loading-indicator" hidden>Loading...</span></h2>
-          </div>
-          <div class="watchlist-controls">
-            <input id="watchlistInput" type="text" placeholder="Add symbol (e.g. MSFT)" />
-            <button id="watchlistAddBtn" type="button">Add</button>
-          </div>
-          <div class="watchlist-sort">
-            <label for="watchlistSort">Sort</label>
-            <select id="watchlistSort">
-              <option value="symbol">Symbol</option>
-              <option value="price">Price</option>
-              <option value="score">Score</option>
-            </select>
-          </div>
-          <div id="watchlistList" class="symbol-list"></div>
+          <details open>
+            <summary class="panel-summary">
+              <div class="panel-head">
+                <h2>Watchlist <span id="watchlistLoading" class="loading-indicator" hidden>Loading...</span></h2>
+              </div>
+            </summary>
+            <div class="watchlist-controls">
+              <input id="watchlistInput" type="text" placeholder="Add symbol (e.g. MSFT)" />
+              <button id="watchlistAddBtn" type="button">Add</button>
+            </div>
+            <div class="watchlist-sort">
+              <label for="watchlistSort">Sort</label>
+              <select id="watchlistSort">
+                <option value="symbol">Symbol</option>
+                <option value="price">Price</option>
+                <option value="score">Score</option>
+              </select>
+            </div>
+            <div id="watchlistList" class="symbol-list"></div>
+          </details>
         </article>
 
         <article class="panel">
-          <div class="panel-head">
-            <h2>Portfolio <span id="portfolioLoading" class="loading-indicator" hidden>Loading...</span></h2>
-            <button id="portfolioAddBtn" type="button" class="button-ghost">Add</button>
-          </div>
-          <div id="portfolioList" class="symbol-list"></div>
+          <details open>
+            <summary class="panel-summary">
+              <div class="panel-head">
+                <h2>Portfolio <span id="portfolioLoading" class="loading-indicator" hidden>Loading...</span></h2>
+                <button id="portfolioAddBtn" type="button" class="button-ghost">Add</button>
+              </div>
+            </summary>
+            <div id="portfolioList" class="symbol-list"></div>
+          </details>
         </article>
       </aside>
 
       <section class="right-detail">
         <section class="controls">
-          <label for="symbol">Symbol</label>
-          <input id="symbol" type="text" value="AAPL" />
+          <div class="controls-row">
+            <div class="field-group symbol-field">
+              <label for="symbol">Symbol</label>
+              <input id="symbol" type="text" value="AAPL" />
+            </div>
 
-          <div class="buttons">
-            <button id="quoteBtn" type="button">Get Quote</button>
-            <button id="signalBtn" type="button">Get Signal</button>
-            <button id="tradeBtn" type="button">Get Trade</button>
-          </div>
+            <div class="buttons">
+              <button id="quoteBtn" type="button">Get Quote</button>
+              <button id="signalBtn" type="button">Get Signal</button>
+              <button id="tradeBtn" type="button">Get Trade</button>
+            </div>
 
-          <div class="trade-controls" style="margin-top:12px; display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
-            <label for="interval" style="opacity:.8;">Timeframe</label>
-            <select id="interval">
-              <option value="1day" selected>1day</option>
-              <option value="1h">1h</option>
-              <option value="30min">30min</option>
-              <option value="15min">15min</option>
-            </select>
+            <div class="trade-controls">
+              <label for="interval">Timeframe</label>
+              <select id="interval">
+                <option value="1day" selected>1day</option>
+                <option value="1h">1h</option>
+                <option value="30min">30min</option>
+                <option value="15min">15min</option>
+              </select>
 
-            <label for="outputsize" style="opacity:.8;">Bars</label>
-            <input id="outputsize" type="number" value="60" min="20" max="500" step="1" style="width:90px;" />
+              <label for="outputsize">Bars</label>
+              <input id="outputsize" type="number" value="60" min="20" max="500" step="1" />
+            </div>
           </div>
         </section>
 
         <section class="results">
-          <article class="card">
+          <article class="card quote-card">
             <h2>Quote</h2>
             <div id="quoteCard" class="card-body">
               <div id="quoteError" class="panel-error" hidden></div>
-              <div class="row"><span class="label">Symbol</span><span id="quoteSymbol">-</span></div>
-              <div class="row"><span class="label">Last</span><span id="quoteLast">-</span></div>
+
+              <div class="quote-highlight">
+                <div class="quote-meta">
+                  <span class="label">Symbol</span>
+                  <span id="quoteSymbol" class="quote-symbol">-</span>
+                </div>
+                <div id="quoteLast" class="quote-last">-</div>
+              </div>
+
               <div class="row"><span class="label">Timestamp</span><span id="quoteTs">-</span></div>
               <div class="row"><span class="label">Provider</span><span id="quoteProvider">-</span></div>
+
               <details class="details">
                 <summary>Raw</summary>
                 <pre id="quoteRaw">{}</pre>
@@ -94,18 +123,22 @@
             </div>
           </article>
 
-          <article class="card">
+          <article class="card signal-card">
             <h2>Signal</h2>
             <div id="signalCard" class="card-body">
               <div id="signalError" class="panel-error" hidden></div>
+
               <div class="signal-score-wrap">
-                <div class="label">Score</div>
-                <div id="signalScore" class="signal-score">-</div>
+                <div class="signal-ring">
+                  <span id="signalScore" class="signal-score">-</span>
+                </div>
               </div>
+
               <div class="badges">
                 <span class="badge neutral" id="signalTrend">trend: -</span>
                 <span class="badge neutral" id="signalMomentum">momentum: -</span>
               </div>
+
               <div class="confidence-wrap">
                 <div class="row">
                   <span class="label">Confidence</span>
@@ -115,6 +148,7 @@
                   <div id="signalConfidenceBar" class="progress-fill"></div>
                 </div>
               </div>
+
               <details class="details">
                 <summary>Debug</summary>
                 <pre id="signalDebug">{}</pre>
@@ -122,7 +156,7 @@
             </div>
           </article>
 
-          <article class="card">
+          <article class="card trade-card">
             <h2>Trade</h2>
             <div id="tradeCard" class="card-body">
               <div id="tradeError" class="panel-error" hidden></div>
@@ -131,10 +165,17 @@
               <div class="row"><span class="label">Confidence</span><span id="tradeConfidence">-</span></div>
               <div class="row"><span class="label">Timeframe</span><span id="tradeTimeframe">-</span></div>
 
-              <div class="row"><span class="label">Entry zone</span><span id="tradeEntryZone">-</span></div>
-              <div class="row"><span class="label">Target</span><span id="tradeTarget">-</span></div>
-              <div class="row"><span class="label">Stop</span><span id="tradeStop">-</span></div>
-              <div class="row"><span class="label">Trailing stop</span><span id="tradeTrail">-</span></div>
+              <div class="trade-grid">
+                <div class="row"><span class="label">Entry zone</span><span id="tradeEntryZone">-</span></div>
+                <div class="row"><span class="label">Target</span><span id="tradeTarget">-</span></div>
+                <div class="row"><span class="label">Stop</span><span id="tradeStop">-</span></div>
+                <div class="row"><span class="label">Trailing stop</span><span id="tradeTrail">-</span></div>
+              </div>
+
+              <div class="row">
+                <span></span>
+                <button id="backtestBtn" type="button" class="button-ghost">Backtest Strategy</button>
+              </div>
 
               <details class="details">
                 <summary>Reasons</summary>
@@ -144,6 +185,16 @@
               <details class="details">
                 <summary>Raw</summary>
                 <pre id="tradeRaw">{}</pre>
+              </details>
+
+              <details class="details" id="strategyResultsPanel">
+                <summary>Strategy Results</summary>
+                <div class="strategy-results">
+                  <div class="row"><span class="label">Win Rate</span><span id="btWinRate">-</span></div>
+                  <div class="row"><span class="label">Trades</span><span id="btTrades">-</span></div>
+                  <div class="row"><span class="label">Return</span><span id="btReturn">-</span></div>
+                  <div class="row"><span class="label">Max Drawdown</span><span id="btMaxDd">-</span></div>
+                </div>
               </details>
             </div>
           </article>
@@ -157,12 +208,16 @@
           <div class="chart-wrap">
             <canvas id="priceChart" aria-label="Price chart"></canvas>
           </div>
+          <div class="chart-foot">
+            <span class="label" id="chartOhlc">O:- H:- L:- C:-</span>
+          </div>
         </section>
       </section>
     </section>
   </main>
 
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
-  <script src="/static/app.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom@2.0.1/dist/chartjs-plugin-zoom.min.js"></script>
+  <script src="/static/app.js?v=20260303a"></script>
 </body>
 </html>
