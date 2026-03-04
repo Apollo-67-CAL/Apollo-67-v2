@@ -122,6 +122,11 @@ html, body {
   min-height: 0;
 }
 
+.left-panels {
+  grid-template-rows: minmax(0, 1fr) auto auto auto;
+  overflow: hidden;
+}
+
 .panel,
 .controls,
 .card,
@@ -405,6 +410,9 @@ html, body {
   white-space: normal;
   word-break: break-word;
   overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
 }
 
 .scanner-panel .scan-actions {
@@ -1191,6 +1199,11 @@ pre {
     overflow: visible;
   }
 
+  .left-panels {
+    grid-template-rows: auto;
+    overflow: visible;
+  }
+
   .controls-row {
     grid-template-columns: 1fr;
     align-items: stretch;
@@ -1317,6 +1330,11 @@ pre {
   .container,
   .dashboard-grid {
     min-height: auto;
+    overflow: visible;
+  }
+
+  .left-panels {
+    grid-template-rows: auto;
     overflow: visible;
   }
 }

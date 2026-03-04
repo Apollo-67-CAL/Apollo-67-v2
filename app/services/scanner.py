@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from app.providers.selector import (
     get_bars_cached_first,
@@ -8,6 +8,18 @@ from app.providers.selector import (
 )
 from app.services.basic_signal import compute_basic_signal
 from app.services.trade_signal import compute_trade_signal
+
+
+def _num_or_none(value: Any) -> Optional[float]:
+    if value in (None, ""):
+        return None
+    try:
+        num = float(value)
+    except Exception:
+        return None
+    if num != num:  # NaN
+        return None
+    return num
 
 
 def _bars_to_dicts(bars: List[Any]) -> List[Dict[str, Any]]:
@@ -98,11 +110,24 @@ def build_scanner_row(
     action = str(trade.get("action") or "HOLD").upper()
     confidence = trade.get("confidence")
     entry_zone = trade.get("entry_zone") if isinstance(trade.get("entry_zone"), dict) else {}
-    entry_low = entry_zone.get("low")
-    entry_high = entry_zone.get("high")
-    last_price = trade.get("last_close")
-    if last_price in (None, ""):
-        last_price = getattr(quote_res.quote, "last", None)
+    entry_low = _num_or_none(entry_zone.get("low"))
+    entry_high = _num_or_none(entry_zone.get("high"))
+
+    quote_last = _num_or_none(getattr(quote_res.quote, "last", None))
+    trade_last = _num_or_none(trade.get("last_close"))
+    bar_last = _num_or_none(bars_dicts[-1].get("close")) if bars_dicts else None
+
+    last_price = None
+    price_source = None
+    if quote_last is not None and quote_last > 0:
+        last_price = quote_last
+        price_source = "quote"
+    elif trade_last is not None and trade_last > 0:
+        last_price = trade_last
+        price_source = "trade"
+    elif bar_last is not None and bar_last > 0:
+        last_price = bar_last
+        price_source = "bar"
 
     tags: List[str] = []
     if _near_entry_tag(last_price, entry_low, entry_high):
@@ -117,18 +142,22 @@ def build_scanner_row(
     row: Dict[str, Any] = {
         "symbol": symbol_u,
         "price": last_price,
+        "price_source": price_source,
         "provider": bars_res.provider,
+        "provider_used": quote_res.provider,
+        "trade_provider_used": bars_res.provider,
         "timeframe": interval,
         "recommendation": action,
         "action": action,
         "confidence": confidence,
+        "entry_zone": {"low": entry_low, "high": entry_high},
         "entry_low": entry_low,
         "entry_high": entry_high,
-        "target_price": trade.get("target_sell_price"),
-        "target": trade.get("target_sell_price"),
-        "stop": trade.get("stop_loss_price"),
-        "trail": trade.get("trailing_stop_price"),
-        "rr": trade.get("risk_reward_ratio"),
+        "target_price": _num_or_none(trade.get("target_sell_price")),
+        "target": _num_or_none(trade.get("target_sell_price")),
+        "stop": _num_or_none(trade.get("stop_loss_price")),
+        "trail": _num_or_none(trade.get("trailing_stop_price")),
+        "rr": _num_or_none(trade.get("risk_reward_ratio")),
         "tags": tags,
         "reasons": trade.get("reasons") if isinstance(trade.get("reasons"), list) else [],
         "short_reason": (trade.get("reasons")[0] if isinstance(trade.get("reasons"), list) and trade.get("reasons") else ""),
@@ -136,6 +165,7 @@ def build_scanner_row(
         "score": basic.get("score"),
         "trend": basic.get("trend"),
         "momentum": basic.get("momentum"),
+        "snapshot": f"{action} setup from {bars_res.provider} bars",
     }
     row["buy_opportunity"] = rank_buy_opportunity(row)
     return row

@@ -131,6 +131,9 @@ const state = {
   scannerSources: null,
   scannerSourcesLoading: false,
   scannerSourcesSymbol: null,
+  scannerSourcesChannel: null,
+  scannerSourcesTimeframe: '1day',
+  scannerSourcesByKey: {},
 };
 
 const chartOverlayPlugin = {
@@ -298,7 +301,7 @@ function scannerScoreText(score) {
 
 function scannerPriceText(value) {
   const num = Number(value);
-  return Number.isFinite(num) ? `$${formatPrice(num)}` : '-';
+  return Number.isFinite(num) && num > 0 ? `$${formatPrice(num)}` : '—';
 }
 
 function resolveScannerSymbol(item, fallbackKey = '') {
@@ -324,8 +327,9 @@ function resolveScannerPrice(item) {
     item?.payload?.quote?.last,
   ];
   for (const c of candidates) {
+    if (c == null || c === '') continue;
     const n = Number(c);
-    if (Number.isFinite(n)) return n;
+    if (Number.isFinite(n) && n > 0) return n;
   }
   return null;
 }
@@ -357,13 +361,31 @@ function resolveScannerTarget(item) {
   const candidates = [
     item?.trade?.target_sell_price,
     item?.target,
+    item?.target_price,
     item?.payload?.trade?.target_sell_price,
   ];
   for (const c of candidates) {
+    if (c == null || c === '') continue;
     const n = Number(c);
-    if (Number.isFinite(n)) return n;
+    if (Number.isFinite(n) && n > 0) return n;
   }
   return null;
+}
+
+function resolveScannerLevelValue(...values) {
+  for (const v of values) {
+    if (v == null || v === '') continue;
+    const n = Number(v);
+    if (Number.isFinite(n) && n > 0) return n;
+  }
+  return null;
+}
+
+function scannerSourcesCacheKey(symbol, channel, timeframe = '1day') {
+  const sym = normalizeSymbol(symbol);
+  const ch = String(channel || 'overall').trim().toLowerCase();
+  const tf = String(timeframe || '1day').trim().toLowerCase();
+  return `${sym}:${ch}:${tf}`;
 }
 
 function normaliseSourcesPayload(rawPayload) {
@@ -529,9 +551,14 @@ function _buildScannerRowFromTrade(symbol, tradePayload) {
 
 async function refreshScannerData() {
   setSectionLoading('scanner', true);
-  const endpoint = `/scanner/latest?type=${encodeURIComponent(state.scannerAgent)}&limit=10`;
+  const endpoint = `/scanner/${encodeURIComponent(state.scannerAgent)}?interval=1day&bars=60&limit=10&refresh=true`;
   const result = await fetchJson(endpoint);
-  state.scannerRows = result.ok && Array.isArray(result.body?.rows) ? result.body.rows : [];
+  if (result.ok && Array.isArray(result.body?.rows) && result.body.rows.length) {
+    state.scannerRows = result.body.rows;
+  } else {
+    const snapshotResult = await fetchJson(`/scanner/latest?type=${encodeURIComponent(state.scannerAgent)}&limit=10`);
+    state.scannerRows = snapshotResult.ok && Array.isArray(snapshotResult.body?.rows) ? snapshotResult.body.rows : [];
+  }
   setSectionLoading('scanner', false);
   renderScanner();
 }
@@ -564,11 +591,11 @@ function renderScannerRows(rows) {
     const rrText = row.rr != null ? `RR ${Number(row.rr).toFixed(2)}` : null;
     const confText = `${Math.round((Number(row.confidence) || 0) * 100)}%`;
     const scoreValue = resolveScannerScore(row);
-    const entryLow = row.entry_low != null ? row.entry_low : row.entryLow;
-    const entryHigh = row.entry_high != null ? row.entry_high : row.entryHigh;
+    const entryLow = resolveScannerLevelValue(row.entry_low, row.entryLow, row?.entry_zone?.low, row?.trade?.entry_zone?.low);
+    const entryHigh = resolveScannerLevelValue(row.entry_high, row.entryHigh, row?.entry_zone?.high, row?.trade?.entry_zone?.high);
     const target = resolveScannerTarget(row);
-    const stop = row.stop;
-    const trail = row.trail;
+    const stop = resolveScannerLevelValue(row.stop, row?.trade?.stop_loss_price);
+    const trail = resolveScannerLevelValue(row.trail, row?.trade?.trailing_stop_price);
     const name = typeof row.name === 'string'
       ? row.name.trim()
       : (typeof row.company_name === 'string' ? row.company_name.trim() : '');
@@ -576,7 +603,7 @@ function renderScannerRows(rows) {
     const resolvedPrice = resolveScannerPrice(row);
     const entryText = entryLow != null && entryHigh != null
       ? `${formatPrice(entryLow)}-${formatPrice(entryHigh)}`
-      : '-';
+      : '—';
     const reasons = (Array.isArray(row.reasons) ? row.reasons : []).map((r) => String(r || '').trim()).filter(Boolean).slice(0, 2);
 
     return `
@@ -589,7 +616,7 @@ function renderScannerRows(rows) {
           </div>
           <div class="scan-price">${scannerPriceText(resolvedPrice)}</div>
         </div>
-        <div class="scan-subline">${provider} • ${timeframe}</div>
+          <div class="scan-subline">${provider} • ${timeframe}</div>
         <div class="scan-badges">
           <span class="pill pill-action ${actionPillClass}">${action || 'HOLD'}</span>
           <span class="pill">Score ${scoreValue != null ? scoreValue : '-'}</span>
@@ -599,11 +626,11 @@ function renderScannerRows(rows) {
         </div>
         <div class="scan-levels">
           <div class="kv"><span>Entry</span><strong>${entryText}</strong></div>
-          <div class="kv"><span>Target</span><strong>${target != null ? formatPrice(target) : '-'}</strong></div>
-          <div class="kv"><span>Stop</span><strong>${stop != null ? formatPrice(stop) : '-'}</strong></div>
-          <div class="kv"><span>Trail</span><strong>${trail != null ? formatPrice(trail) : '-'}</strong></div>
+          <div class="kv"><span>Target</span><strong>${target != null ? formatPrice(target) : '—'}</strong></div>
+          <div class="kv"><span>Stop</span><strong>${stop != null ? formatPrice(stop) : '—'}</strong></div>
+          <div class="kv"><span>Trail</span><strong>${trail != null ? formatPrice(trail) : '—'}</strong></div>
         </div>
-        ${reasons.length ? `<div class="scan-reasons">${reasons.map((r) => `<div class="reason">• ${r}</div>`).join('')}</div>` : ''}
+        ${reasons.length ? `<div class="scan-reasons">${reasons.map((r) => `<div class="reason">• ${r}</div>`).join('')}</div>` : (row.snapshot ? `<div class="scan-reasons"><div class="reason">• ${String(row.snapshot)}</div></div>` : '')}
       </button>
       <div class="scan-actions">
         <button type="button" class="button-ghost scanner-monitor-btn" data-action="scanner-buy-now" data-symbol="${symbol}" data-price="${resolvedPrice != null ? Number(resolvedPrice) : ''}">BUY NOW</button>
@@ -893,11 +920,16 @@ function addMonitorFromCurrentTrade() {
 
 function renderScannerSourcesModal() {
   if (!scannerSourcesList || !scannerSourcesTotals) return;
-  const payload = state.scannerSources;
+  const activeKey = scannerSourcesCacheKey(
+    state.scannerSourcesSymbol,
+    state.scannerSourcesChannel || state.scannerAgent || 'overall',
+    state.scannerSourcesTimeframe || '1day'
+  );
+  const payload = state.scannerSourcesByKey[activeKey] || state.scannerSources;
   const sources = normaliseSourcesPayload(payload);
   const totals = payload?.totals || {};
   const symbol = state.scannerSourcesSymbol || '-';
-  const scannerType = state.scannerAgent || 'overall';
+  const scannerType = state.scannerSourcesChannel || state.scannerAgent || 'overall';
 
   if (scannerSourcesTitle) {
     scannerSourcesTitle.textContent = `Sources • ${symbol} (${scannerType})`;
@@ -967,7 +999,10 @@ function renderScannerSourcesModal() {
 function openScannerSourcesModal(symbol) {
   if (!scannerSourcesModal) return;
   state.scannerSourcesSymbol = normalizeSymbol(symbol);
+  state.scannerSourcesChannel = String(state.scannerAgent || 'overall').toLowerCase();
+  state.scannerSourcesTimeframe = getInterval();
   state.scannerSources = null;
+  state.scannerSourcesLoading = false;
   if (scannerSourcesError) {
     scannerSourcesError.textContent = '';
     scannerSourcesError.hidden = true;
@@ -992,9 +1027,17 @@ function closeScannerSourcesModal() {
 async function fetchScannerSources() {
   const symbol = state.scannerSourcesSymbol;
   if (!symbol || state.scannerSourcesLoading) return;
+  const channel = state.scannerSourcesChannel || state.scannerAgent || 'overall';
+  const timeframe = state.scannerSourcesTimeframe || getInterval();
+  const key = scannerSourcesCacheKey(symbol, channel, timeframe);
+  if (state.scannerSourcesByKey[key]) {
+    state.scannerSources = state.scannerSourcesByKey[key];
+    renderScannerSourcesModal();
+    return;
+  }
   state.scannerSourcesLoading = true;
   try {
-    const url = `/scanner/sources?symbol=${encodeURIComponent(symbol)}&type=${encodeURIComponent(state.scannerAgent || 'overall')}`;
+    const url = `/scanner/sources?symbol=${encodeURIComponent(symbol)}&channel=${encodeURIComponent(channel)}&timeframe=${encodeURIComponent(timeframe)}`;
     const result = await fetchJson(url);
     if (!result.ok) {
       if (scannerSourcesError) {
@@ -1006,6 +1049,7 @@ async function fetchScannerSources() {
       return;
     }
     state.scannerSources = result.body || { sources: [], totals: {} };
+    state.scannerSourcesByKey[key] = state.scannerSources;
     renderScannerSourcesModal();
   } catch (error) {
     if (scannerSourcesError) {
