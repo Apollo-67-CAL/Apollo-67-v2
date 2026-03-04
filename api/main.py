@@ -28,6 +28,7 @@ from app.validation.market_data import ValidationError, validate_bars
 from core.config import get_config, initialise_config
 from core.repositories.curated_datasets import CuratedDatasetsRepository
 from core.repositories.monitor_positions import MonitorPositionsRepository
+from core.repositories.paper_trading import PaperTradingRepository
 from core.repositories.strategies_dashboard import StrategiesDashboardRepository
 from core.repositories.scanner_source_controls import (
     ScannerSourceControlsRepository,
@@ -40,6 +41,14 @@ from core.strategies.library import STRATEGY_LIBRARY, strategy_by_id, strategy_l
 from core.scanners.connectors.registry import get_default_connector_registry, registry_by_group
 from core.scanners.pipeline import fetch_items
 from core.scanners.analyse import analyse_items_openai
+from core.papertrading.engine import (
+    EVAL_INTERVAL_SECONDS,
+    MAX_POSITIONS,
+    NOTIONAL_PER_TRADE,
+    ROTATE_INTERVAL_SECONDS,
+    ROTATE_N,
+    PaperTradingEngine,
+)
 from core.storage.db import DB_DRIVER_MARKER, check_db_connectivity, get_connection, init_db
 
 logger = logging.getLogger(__name__)
@@ -50,6 +59,8 @@ load_dotenv(BASE_DIR / ".env")
 load_dotenv()
 
 app = FastAPI(title="Apollo 67")
+# Local start command:
+# uvicorn api.main:app --reload --port 8000
 app.mount("/static", StaticFiles(directory="api/static"), name="static")
 templates = Jinja2Templates(directory="api/templates")
 
@@ -62,6 +73,8 @@ _SCANNER_UNIVERSE_PATH = BASE_DIR / "app" / "data" / "universe.json"
 _SCANNER_UNIVERSE_CACHE: Optional[List[Dict[str, Any]]] = None
 _curated_repo = CuratedDatasetsRepository()
 _monitor_repo = MonitorPositionsRepository()
+_paper_repo = PaperTradingRepository()
+_paper_engine = PaperTradingEngine(_paper_repo)
 _scanner_sources_repo = ScannerSourceBreakdownsRepository()
 _scanner_source_controls_repo = ScannerSourceControlsRepository()
 _scanner_connectors_repo = ScannerConnectorsRepository()
@@ -79,6 +92,13 @@ _ADMIN_DEFAULT_STATE = {
         "social": {"weight": 50, "influence": "medium"},
     },
     "active_tactic_version": "none",
+    "paper": {
+        "notional_per_trade": NOTIONAL_PER_TRADE,
+        "max_positions": MAX_POSITIONS,
+        "rotate_n": ROTATE_N,
+        "eval_interval_seconds": EVAL_INTERVAL_SECONDS,
+        "rotate_interval_seconds": ROTATE_INTERVAL_SECONDS,
+    },
     "updated_at": None,
 }
 
@@ -178,6 +198,26 @@ def _normalise_admin_state(payload: Optional[Dict[str, Any]]) -> dict[str, Any]:
 
     active_tactic_version = str(incoming.get("active_tactic_version", "none") or "none")
     state["active_tactic_version"] = active_tactic_version
+    incoming_paper = incoming.get("paper") if isinstance(incoming.get("paper"), dict) else {}
+    try:
+        notional = float(incoming_paper.get("notional_per_trade", state["paper"]["notional_per_trade"]))
+    except Exception:
+        notional = float(state["paper"]["notional_per_trade"])
+    try:
+        max_positions = int(incoming_paper.get("max_positions", state["paper"]["max_positions"]))
+    except Exception:
+        max_positions = int(state["paper"]["max_positions"])
+    try:
+        rotate_n = int(incoming_paper.get("rotate_n", state["paper"]["rotate_n"]))
+    except Exception:
+        rotate_n = int(state["paper"]["rotate_n"])
+    state["paper"] = {
+        "notional_per_trade": max(10.0, float(notional)),
+        "max_positions": max(1, int(max_positions)),
+        "rotate_n": max(0, int(rotate_n)),
+        "eval_interval_seconds": int(state["paper"]["eval_interval_seconds"]),
+        "rotate_interval_seconds": int(state["paper"]["rotate_interval_seconds"]),
+    }
     state["updated_at"] = str(incoming.get("updated_at") or _utc_iso_now())
     return state
 
@@ -379,10 +419,37 @@ def _recompute_source_totals(sources: List[Dict[str, Any]]) -> Dict[str, Any]:
 
 def _save_scanner_breakdown(symbol: str, scanner_type: str, row: Dict[str, Any]) -> None:
     sources = _build_sources_payload_from_row(row, scanner_type)
+    scanner_snapshot = {
+        "symbol": row.get("symbol"),
+        "price": row.get("price"),
+        "price_source": row.get("price_source"),
+        "timeframe": row.get("timeframe"),
+        "action": row.get("action"),
+        "recommendation": row.get("recommendation"),
+        "score": row.get("score"),
+        "confidence": row.get("confidence"),
+        "entry_zone": row.get("entry_zone") if isinstance(row.get("entry_zone"), dict) else {
+            "low": row.get("entry_low"),
+            "high": row.get("entry_high"),
+        },
+        "entry_low": row.get("entry_low"),
+        "entry_high": row.get("entry_high"),
+        "target": row.get("target"),
+        "target_price": row.get("target_price"),
+        "stop": row.get("stop"),
+        "trail": row.get("trail"),
+        "rr": row.get("rr"),
+        "tags": row.get("tags") if isinstance(row.get("tags"), list) else [],
+        "reasons": row.get("reasons") if isinstance(row.get("reasons"), list) else [],
+        "snapshot": row.get("snapshot"),
+        "provider_used": row.get("provider_used") or row.get("provider"),
+        "trade_provider_used": row.get("trade_provider_used") or row.get("provider"),
+    }
     payload = {
         "symbol": symbol,
         "scanner_type": scanner_type,
         "ts": _utc_iso_now(),
+        "scanner_row": scanner_snapshot,
         "sources": sources,
         "totals": _recompute_source_totals(sources),
     }
@@ -1421,6 +1488,39 @@ def scanner_social(interval: str = "1day", bars: int = 60, limit: int = 10, refr
 
 
 def _row_from_breakdown_snapshot(symbol: str, scanner_type: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+    scanner_row = payload.get("scanner_row") if isinstance(payload.get("scanner_row"), dict) else {}
+    if scanner_row:
+        merged = dict(scanner_row)
+        merged["symbol"] = str(merged.get("symbol") or symbol).strip().upper()
+        merged["ok"] = True
+        merged["from_snapshot"] = True
+        if "target" not in merged and merged.get("target_price") is not None:
+            merged["target"] = merged.get("target_price")
+        if "entry_zone" not in merged or not isinstance(merged.get("entry_zone"), dict):
+            merged["entry_zone"] = {
+                "low": merged.get("entry_low"),
+                "high": merged.get("entry_high"),
+            }
+        return merged
+
+    symbol_u = str(symbol or "").strip().upper()
+    if symbol_u:
+        try:
+            cfg = get_config()
+            live_row = build_scanner_row(
+                symbol_u,
+                interval="1day",
+                bars=60,
+                allow_live=True,
+                bars_ttl_seconds=int(cfg.scanner_bars_ttl_seconds),
+                quote_ttl_seconds=int(cfg.scanner_quote_ttl_seconds),
+            )
+            live_row["ok"] = True
+            live_row["from_snapshot"] = False
+            return live_row
+        except Exception:
+            pass
+
     totals = payload.get("totals") if isinstance(payload.get("totals"), dict) else {}
     avg_score = _as_float_or_none(totals.get("avg_score"))
     avg_conf = _as_float_or_none(totals.get("avg_confidence"))
@@ -1528,12 +1628,12 @@ def _source_to_response_row(source: Dict[str, Any], control: Optional[Dict[str, 
     return row
 
 
-def _scanner_sources_cache_key(symbol: str, scanner_type: str) -> str:
-    return f"{symbol}:{scanner_type}"
+def _scanner_sources_cache_key(symbol: str, scanner_type: str, timeframe: str) -> str:
+    return f"sources:{scanner_type}:{timeframe}:{symbol}"
 
 
-def _get_cached_scanner_sources(symbol: str, scanner_type: str) -> Optional[Dict[str, Any]]:
-    key = _scanner_sources_cache_key(symbol, scanner_type)
+def _get_cached_scanner_sources(symbol: str, scanner_type: str, timeframe: str) -> Optional[Dict[str, Any]]:
+    key = _scanner_sources_cache_key(symbol, scanner_type, timeframe)
     with _SCANNER_SOURCES_CACHE_LOCK:
         cached = _SCANNER_SOURCES_CACHE.get(key)
         if not cached:
@@ -1545,8 +1645,8 @@ def _get_cached_scanner_sources(symbol: str, scanner_type: str) -> Optional[Dict
         return payload
 
 
-def _set_cached_scanner_sources(symbol: str, scanner_type: str, payload: Dict[str, Any]) -> None:
-    key = _scanner_sources_cache_key(symbol, scanner_type)
+def _set_cached_scanner_sources(symbol: str, scanner_type: str, timeframe: str, payload: Dict[str, Any]) -> None:
+    key = _scanner_sources_cache_key(symbol, scanner_type, timeframe)
     with _SCANNER_SOURCES_CACHE_LOCK:
         _SCANNER_SOURCES_CACHE[key] = (time.time(), payload)
 
@@ -1573,10 +1673,29 @@ def _connector_specs_for_group(scanner_type: str) -> List[Dict[str, Any]]:
     return out
 
 
-def _build_runtime_scanner_sources(symbol: str, scanner_type: str) -> Dict[str, Any]:
+def _build_runtime_scanner_sources(symbol: str, scanner_type: str, timeframe: str = "1day") -> Dict[str, Any]:
     specs = _connector_specs_for_group(scanner_type)
     enabled_map = {spec["id"]: bool(spec.get("enabled")) for spec in specs}
-    items, runtime = fetch_items(symbol=symbol, group=scanner_type, connectors_enabled=enabled_map)
+
+    items: List[Dict[str, Any]] = []
+    runtime: Dict[str, Dict[str, Any]] = {}
+    if scanner_type == "overall":
+        for group_name in ("social", "news", "institution"):
+            group_items, group_runtime = fetch_items(
+                symbol=symbol,
+                group=group_name,
+                connectors_enabled=enabled_map,
+                timeframe=timeframe,
+            )
+            items.extend(group_items)
+            runtime.update(group_runtime)
+    else:
+        items, runtime = fetch_items(
+            symbol=symbol,
+            group=scanner_type,
+            connectors_enabled=enabled_map,
+            timeframe=timeframe,
+        )
     analysis = analyse_items_openai(items)
 
     per_source = analysis.get("per_source") if isinstance(analysis.get("per_source"), dict) else {}
@@ -1618,7 +1737,9 @@ def _build_runtime_scanner_sources(symbol: str, scanner_type: str) -> Dict[str, 
     _SCANNER_CONNECTOR_RUNTIME[scanner_type] = runtime
     return {
         "symbol": symbol,
+        "channel": scanner_type,
         "scanner_type": scanner_type,
+        "timeframe": timeframe,
         "ts": _utc_iso_now(),
         "sources": rows,
         "totals": {
@@ -1637,18 +1758,38 @@ def _build_runtime_scanner_sources(symbol: str, scanner_type: str) -> Dict[str, 
 
 
 @app.get("/scanner/sources")
-def scanner_sources(symbol: str, type: Optional[str] = None, group: Optional[str] = None):
+def scanner_sources(
+    symbol: str,
+    channel: Optional[str] = None,
+    type: Optional[str] = None,
+    group: Optional[str] = None,
+    timeframe: str = "1day",
+):
     symbol_value = str(symbol or "").strip().upper()
-    scanner_type = str(group or type or "").strip().lower()
+    scanner_type = str(channel or group or type or "").strip().lower()
+    timeframe_value = str(timeframe or "1day").strip() or "1day"
     if not symbol_value or not scanner_type:
-        return JSONResponse(status_code=400, content={"error": "symbol and type/group are required"})
+        return JSONResponse(status_code=400, content={"error": "symbol and channel/type/group are required"})
 
     runtime_payload: Optional[Dict[str, Any]] = None
-    if scanner_type in {"social", "news", "institution"}:
-        runtime_payload = _get_cached_scanner_sources(symbol=symbol_value, scanner_type=scanner_type)
+    if scanner_type in {"social", "news", "institution", "overall"}:
+        runtime_payload = _get_cached_scanner_sources(
+            symbol=symbol_value,
+            scanner_type=scanner_type,
+            timeframe=timeframe_value,
+        )
         if runtime_payload is None:
-            runtime_payload = _build_runtime_scanner_sources(symbol=symbol_value, scanner_type=scanner_type)
-            _set_cached_scanner_sources(symbol=symbol_value, scanner_type=scanner_type, payload=runtime_payload)
+            runtime_payload = _build_runtime_scanner_sources(
+                symbol=symbol_value,
+                scanner_type=scanner_type,
+                timeframe=timeframe_value,
+            )
+            _set_cached_scanner_sources(
+                symbol=symbol_value,
+                scanner_type=scanner_type,
+                timeframe=timeframe_value,
+                payload=runtime_payload,
+            )
 
     raw_sources: List[Dict[str, Any]] = []
     ts_value = _utc_iso_now()
@@ -1755,13 +1896,16 @@ def scanner_sources(symbol: str, type: Optional[str] = None, group: Optional[str
 
     return {
         "symbol": symbol_value,
+        "channel": scanner_type,
         "group": scanner_type,
         "scanner_type": scanner_type,
+        "timeframe": timeframe_value,
         "ts": ts_value,
         "totals": totals,
         "sources": filtered_sources,
         "connectors": filtered_sources,
         "controls_applied": True,
+        "meta": {"discovery": "automatic", "notes": ["Display filters may apply."]},
         "notes": ["Discovery is automatic. Display filters may apply."],
     }
 
@@ -1785,6 +1929,7 @@ def scanner_sources_meta(limit: int = 300):
             bucket.add(normalize_source_key(name))
     for spec in get_default_connector_registry():
         grouped.setdefault(spec.group, set()).add(normalize_source_key(spec.id))
+        grouped.setdefault("overall", set()).add(normalize_source_key(spec.id))
     return {scanner_type: sorted(list(keys)) for scanner_type, keys in grouped.items()}
 
 
@@ -2233,6 +2378,114 @@ def _entry_reference_for_position(row: Dict[str, Any]) -> Optional[float]:
     except Exception:
         return None
     return None
+
+
+def _paper_config() -> Dict[str, Any]:
+    row = _curated_repo.get("admin_state", "v1")
+    state = _normalise_admin_state(row.get("payload") if row else None)
+    paper = state.get("paper") if isinstance(state.get("paper"), dict) else {}
+    return {
+        "notional_per_trade": float(paper.get("notional_per_trade") or NOTIONAL_PER_TRADE),
+        "max_positions": int(paper.get("max_positions") or MAX_POSITIONS),
+        "rotate_n": int(paper.get("rotate_n") or ROTATE_N),
+        "eval_interval_seconds": int(paper.get("eval_interval_seconds") or EVAL_INTERVAL_SECONDS),
+        "rotate_interval_seconds": int(paper.get("rotate_interval_seconds") or ROTATE_INTERVAL_SECONDS),
+    }
+
+
+@app.get("/paper/status")
+def paper_status():
+    positions = _paper_repo.list_positions(limit=1000)
+    open_orders = _paper_repo.list_orders(status="OPEN", limit=2000)
+    closed_orders = _paper_repo.list_orders(status="CLOSED", limit=2000)
+    runs = _paper_repo.list_runs(limit=20)
+    total_unreal = 0.0
+    total_real = 0.0
+    for row in positions:
+        try:
+            total_unreal += float(row.get("unrealised_pnl") or 0.0)
+        except Exception:
+            pass
+        try:
+            total_real += float(row.get("realised_pnl") or 0.0)
+        except Exception:
+            pass
+    closed_wins = 0
+    for row in closed_orders:
+        try:
+            if float(row.get("pnl") or 0.0) > 0:
+                closed_wins += 1
+        except Exception:
+            pass
+    return {
+        "ok": True,
+        "positions_count": len(positions),
+        "open_orders_count": len(open_orders),
+        "closed_orders_count": len(closed_orders),
+        "closed_wins": closed_wins,
+        "totals": {
+            "unrealised_pnl": total_unreal,
+            "realised_pnl": total_real,
+            "net_pnl": total_unreal + total_real,
+        },
+        "leaderboard": runs,
+        "config": _paper_config(),
+    }
+
+
+@app.get("/paper/positions")
+def paper_positions():
+    return {"ok": True, "rows": _paper_repo.list_positions(limit=2000)}
+
+
+@app.get("/paper/orders")
+def paper_orders(status: Optional[str] = None):
+    status_value = str(status or "").strip().upper() or None
+    if status_value not in {None, "OPEN", "CLOSED", "CANCELLED"}:
+        return JSONResponse(status_code=400, content={"ok": False, "error": "status must be open|closed|cancelled"})
+    return {"ok": True, "rows": _paper_repo.list_orders(status=status_value, limit=3000)}
+
+
+@app.post("/paper/config")
+def paper_config_update(payload: dict[str, Any]):
+    cfg = _paper_config()
+    try:
+        notional = float(payload.get("notional_per_trade", cfg["notional_per_trade"]))
+    except Exception:
+        return JSONResponse(status_code=400, content={"ok": False, "error": "notional_per_trade must be numeric"})
+    try:
+        max_positions = int(payload.get("max_positions", cfg["max_positions"]))
+    except Exception:
+        return JSONResponse(status_code=400, content={"ok": False, "error": "max_positions must be int"})
+    try:
+        rotate_n = int(payload.get("rotate_n", cfg["rotate_n"]))
+    except Exception:
+        return JSONResponse(status_code=400, content={"ok": False, "error": "rotate_n must be int"})
+
+    row = _curated_repo.get("admin_state", "v1")
+    state = _normalise_admin_state(row.get("payload") if row else None)
+    state["paper"] = {
+        "notional_per_trade": max(10.0, notional),
+        "max_positions": max(1, max_positions),
+        "rotate_n": max(0, rotate_n),
+        "eval_interval_seconds": int(cfg["eval_interval_seconds"]),
+        "rotate_interval_seconds": int(cfg["rotate_interval_seconds"]),
+    }
+    state["updated_at"] = _utc_iso_now()
+    _curated_repo.upsert("admin_state", "v1", state, status="active")
+    return {"ok": True, "data": state["paper"]}
+
+
+# NOTE: dev-only reset endpoint used for local paper-trading iteration.
+@app.post("/paper/reset")
+def paper_reset(confirm: Optional[bool] = False):
+    if not confirm:
+        return JSONResponse(status_code=400, content={"ok": False, "error": "confirm=true is required"})
+    app_env = os.getenv("APP_ENV", "local").strip().lower()
+    if app_env not in {"local", "dev", "development"}:
+        return JSONResponse(status_code=403, content={"ok": False, "error": "reset is only allowed in local/dev"})
+    _paper_repo.clear_all()
+    return {"ok": True}
 
 
 @app.post("/monitor/create")

@@ -248,6 +248,67 @@
             <span class="label" id="chartOhlc">O:- H:- L:- C:-</span>
           </div>
         </section>
+
+        <section class="card">
+          <div class="panel-head">
+            <h2>Paper Trading</h2>
+            <div class="scanner-controls">
+              <button id="paperRefreshBtn" type="button" class="button-ghost">Refresh</button>
+            </div>
+          </div>
+          <div id="paperSummary" class="monitor-totals"></div>
+          <details class="details" open>
+            <summary>Positions</summary>
+            <div class="scanner-sources-list">
+              <table class="source-table">
+                <thead>
+                  <tr>
+                    <th>Symbol</th>
+                    <th>Qty</th>
+                    <th>Avg</th>
+                    <th>Last</th>
+                    <th>Unrealised</th>
+                    <th>Realised</th>
+                    <th>Tactic</th>
+                  </tr>
+                </thead>
+                <tbody id="paperPositionsBody"></tbody>
+              </table>
+            </div>
+          </details>
+          <details class="details" open>
+            <summary>Recent Closed Orders</summary>
+            <div class="scanner-sources-list">
+              <table class="source-table">
+                <thead>
+                  <tr>
+                    <th>Symbol</th>
+                    <th>P/L</th>
+                    <th>Closed</th>
+                  </tr>
+                </thead>
+                <tbody id="paperClosedBody"></tbody>
+              </table>
+            </div>
+          </details>
+          <details class="details" open>
+            <summary>Leaderboard</summary>
+            <div class="scanner-sources-list">
+              <table class="source-table">
+                <thead>
+                  <tr>
+                    <th>Tactic</th>
+                    <th>Wins</th>
+                    <th>Losses</th>
+                    <th>Win Rate</th>
+                    <th>Net P/L</th>
+                  </tr>
+                </thead>
+                <tbody id="paperRunsBody"></tbody>
+              </table>
+            </div>
+          </details>
+        </section>
       </section>
     </section>
   </main>

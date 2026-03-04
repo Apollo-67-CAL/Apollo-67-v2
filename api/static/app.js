@@ -40,6 +40,11 @@ const scannerSourcesError = document.getElementById('scannerSourcesError');
 const scannerSourcesCloseBtn = document.getElementById('scannerSourcesCloseBtn');
 const portfolioAddBtn = document.getElementById('portfolioAddBtn');
 const portfolioList = document.getElementById('portfolioList');
+const paperRefreshBtn = document.getElementById('paperRefreshBtn');
+const paperSummary = document.getElementById('paperSummary');
+const paperPositionsBody = document.getElementById('paperPositionsBody');
+const paperClosedBody = document.getElementById('paperClosedBody');
+const paperRunsBody = document.getElementById('paperRunsBody');
 const scannerLoading = document.getElementById('scannerLoading');
 const watchlistLoading = document.getElementById('watchlistLoading');
 const monitorLoading = document.getElementById('monitorLoading');
@@ -134,6 +139,9 @@ const state = {
   scannerSourcesChannel: null,
   scannerSourcesTimeframe: '1day',
   scannerSourcesByKey: {},
+  paperStatus: null,
+  paperPositions: [],
+  paperClosedOrders: [],
 };
 
 const chartOverlayPlugin = {
@@ -904,6 +912,22 @@ async function submitMonitorModal() {
 async function refreshMonitor() {
   await fetchJson('/monitor/refresh', { method: 'POST' });
   await loadMonitorList();
+}
+
+async function refreshPaperTrading() {
+  const [statusResult, positionsResult, closedResult] = await Promise.all([
+    fetchJson('/paper/status'),
+    fetchJson('/paper/positions'),
+    fetchJson('/paper/orders?status=closed'),
+  ]);
+  state.paperStatus = statusResult.ok ? (statusResult.body || {}) : {};
+  state.paperPositions = positionsResult.ok && Array.isArray(positionsResult.body?.rows)
+    ? positionsResult.body.rows
+    : [];
+  state.paperClosedOrders = closedResult.ok && Array.isArray(closedResult.body?.rows)
+    ? closedResult.body.rows
+    : [];
+  renderPaperTrading();
 }
 
 function addMonitorFromCurrentTrade() {
@@ -2081,11 +2105,63 @@ function renderMonitor() {
   renderMonitorPanel();
 }
 
+function renderPaperTrading() {
+  if (!paperSummary || !paperPositionsBody || !paperClosedBody || !paperRunsBody) return;
+  const status = state.paperStatus || {};
+  const totals = status.totals || {};
+  const leaderboard = Array.isArray(status.leaderboard) ? status.leaderboard : [];
+  const positions = Array.isArray(state.paperPositions) ? state.paperPositions : [];
+  const closed = Array.isArray(state.paperClosedOrders) ? state.paperClosedOrders : [];
+
+  paperSummary.innerHTML = `
+    <div class="monitor-total-item"><span>Open Positions</span><strong>${positions.length}</strong></div>
+    <div class="monitor-total-item"><span>Open Orders</span><strong>${Number(status.open_orders_count || 0)}</strong></div>
+    <div class="monitor-total-item"><span>Net P/L</span><strong class="${Number(totals.net_pnl || 0) >= 0 ? 'up' : 'down'}">$${formatPrice(Number(totals.net_pnl || 0))}</strong></div>
+  `;
+
+  paperPositionsBody.innerHTML = positions.length
+    ? positions.map((row) => `
+      <tr>
+        <td>${row.symbol || '-'}</td>
+        <td>${row.qty != null ? formatPrice(row.qty) : '-'}</td>
+        <td>${row.avg_price != null ? `$${formatPrice(row.avg_price)}` : '-'}</td>
+        <td>${row.last_price != null ? `$${formatPrice(row.last_price)}` : '-'}</td>
+        <td class="${Number(row.unrealised_pnl || 0) >= 0 ? 'up' : 'down'}">$${formatPrice(Number(row.unrealised_pnl || 0))}</td>
+        <td class="${Number(row.realised_pnl || 0) >= 0 ? 'up' : 'down'}">$${formatPrice(Number(row.realised_pnl || 0))}</td>
+        <td>${row.tactic_id || '-'}</td>
+      </tr>
+    `).join('')
+    : '<tr><td colspan="7" class="empty">No paper positions.</td></tr>';
+
+  paperClosedBody.innerHTML = closed.length
+    ? closed.slice(0, 20).map((row) => `
+      <tr>
+        <td>${row.symbol || '-'}</td>
+        <td class="${Number(row.pnl || 0) >= 0 ? 'up' : 'down'}">$${formatPrice(Number(row.pnl || 0))}</td>
+        <td>${row.closed_at ? String(row.closed_at).slice(0, 19).replace('T', ' ') : '-'}</td>
+      </tr>
+    `).join('')
+    : '<tr><td colspan="3" class="empty">No closed paper orders.</td></tr>';
+
+  paperRunsBody.innerHTML = leaderboard.length
+    ? leaderboard.slice(0, 10).map((row) => `
+      <tr>
+        <td>${row.tactic_id || '-'}</td>
+        <td>${Number(row.wins || 0)}</td>
+        <td>${Number(row.losses || 0)}</td>
+        <td>${formatPct(Number(row.win_rate || 0) * 100)}</td>
+        <td class="${Number(row.net_pnl || 0) >= 0 ? 'up' : 'down'}">$${formatPrice(Number(row.net_pnl || 0))}</td>
+      </tr>
+    `).join('')
+    : '<tr><td colspan="5" class="empty">No runs yet.</td></tr>';
+}
+
 function renderPanels() {
   renderScanner();
   renderWatchlist();
   renderMonitor();
   renderPortfolio();
+  renderPaperTrading();
 }
 
 async function selectSymbol(symbol, { force = false } = {}) {
@@ -2177,6 +2253,12 @@ if (watchlistAddBtn) {
 if (monitorRefreshBtn) {
   monitorRefreshBtn.addEventListener('click', () => {
     refreshMonitor();
+  });
+}
+
+if (paperRefreshBtn) {
+  paperRefreshBtn.addEventListener('click', () => {
+    refreshPaperTrading();
   });
 }
 
@@ -2353,6 +2435,10 @@ window.addEventListener('DOMContentLoaded', async () => {
   await refreshMonitor();
   window.setInterval(() => {
     refreshMonitor();
+  }, 60000);
+  await refreshPaperTrading();
+  window.setInterval(() => {
+    refreshPaperTrading();
   }, 60000);
   await safeSelectSymbol(initial);
 

@@ -280,6 +280,49 @@ CREATE TABLE IF NOT EXISTS monitors (
 );
 CREATE INDEX IF NOT EXISTS idx_monitors_strategy_id ON monitors(strategy_id);
 CREATE INDEX IF NOT EXISTS idx_monitors_symbol ON monitors(symbol);
+
+CREATE TABLE IF NOT EXISTS paper_orders (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    symbol TEXT NOT NULL,
+    side TEXT NOT NULL,
+    qty REAL NOT NULL,
+    notional REAL NOT NULL,
+    price REAL NOT NULL,
+    status TEXT NOT NULL,
+    opened_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    closed_at TEXT,
+    close_price REAL,
+    pnl REAL,
+    meta TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_paper_orders_status_opened_at ON paper_orders(status, opened_at);
+CREATE INDEX IF NOT EXISTS idx_paper_orders_symbol ON paper_orders(symbol);
+
+CREATE TABLE IF NOT EXISTS paper_positions (
+    symbol TEXT PRIMARY KEY,
+    qty REAL NOT NULL,
+    avg_price REAL NOT NULL,
+    opened_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    last_price REAL,
+    unrealised_pnl REAL NOT NULL DEFAULT 0,
+    realised_pnl REAL NOT NULL DEFAULT 0,
+    tactic_id TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_paper_positions_updated_at ON paper_positions(updated_at);
+
+CREATE TABLE IF NOT EXISTS paper_runs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    tactic_id TEXT NOT NULL,
+    started_at TEXT NOT NULL,
+    ended_at TEXT,
+    wins INTEGER NOT NULL DEFAULT 0,
+    losses INTEGER NOT NULL DEFAULT 0,
+    net_pnl REAL NOT NULL DEFAULT 0,
+    win_rate REAL NOT NULL DEFAULT 0,
+    notes TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_paper_runs_tactic_started_at ON paper_runs(tactic_id, started_at);
 """
 
 POSTGRES_SCHEMA_SQL = """
@@ -554,6 +597,49 @@ CREATE TABLE IF NOT EXISTS monitors (
 );
 CREATE INDEX IF NOT EXISTS idx_monitors_strategy_id ON monitors(strategy_id);
 CREATE INDEX IF NOT EXISTS idx_monitors_symbol ON monitors(symbol);
+
+CREATE TABLE IF NOT EXISTS paper_orders (
+    id BIGSERIAL PRIMARY KEY,
+    symbol TEXT NOT NULL,
+    side TEXT NOT NULL,
+    qty DOUBLE PRECISION NOT NULL,
+    notional DOUBLE PRECISION NOT NULL,
+    price DOUBLE PRECISION NOT NULL,
+    status TEXT NOT NULL,
+    opened_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    closed_at TIMESTAMPTZ,
+    close_price DOUBLE PRECISION,
+    pnl DOUBLE PRECISION,
+    meta JSONB
+);
+CREATE INDEX IF NOT EXISTS idx_paper_orders_status_opened_at ON paper_orders(status, opened_at);
+CREATE INDEX IF NOT EXISTS idx_paper_orders_symbol ON paper_orders(symbol);
+
+CREATE TABLE IF NOT EXISTS paper_positions (
+    symbol TEXT PRIMARY KEY,
+    qty DOUBLE PRECISION NOT NULL,
+    avg_price DOUBLE PRECISION NOT NULL,
+    opened_at TIMESTAMPTZ NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL,
+    last_price DOUBLE PRECISION,
+    unrealised_pnl DOUBLE PRECISION NOT NULL DEFAULT 0,
+    realised_pnl DOUBLE PRECISION NOT NULL DEFAULT 0,
+    tactic_id TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_paper_positions_updated_at ON paper_positions(updated_at);
+
+CREATE TABLE IF NOT EXISTS paper_runs (
+    id BIGSERIAL PRIMARY KEY,
+    tactic_id TEXT NOT NULL,
+    started_at TIMESTAMPTZ NOT NULL,
+    ended_at TIMESTAMPTZ,
+    wins INTEGER NOT NULL DEFAULT 0,
+    losses INTEGER NOT NULL DEFAULT 0,
+    net_pnl DOUBLE PRECISION NOT NULL DEFAULT 0,
+    win_rate DOUBLE PRECISION NOT NULL DEFAULT 0,
+    notes JSONB
+);
+CREATE INDEX IF NOT EXISTS idx_paper_runs_tactic_started_at ON paper_runs(tactic_id, started_at);
 """
 
 
@@ -778,6 +864,10 @@ def init_db() -> None:
                 "INSERT OR IGNORE INTO schema_migrations(version) VALUES (?)",
                 ("v8_scanner_connectors_registry",),
             )
+            conn.execute(
+                "INSERT OR IGNORE INTO schema_migrations(version) VALUES (?)",
+                ("v9_paper_trading_v1",),
+            )
         if backend == "postgres":
             conn.execute(
                 """
@@ -826,6 +916,14 @@ def init_db() -> None:
                 ON CONFLICT (version) DO NOTHING
                 """,
                 ("v8_scanner_connectors_registry",),
+            )
+            conn.execute(
+                """
+                INSERT INTO schema_migrations(version)
+                VALUES (?)
+                ON CONFLICT (version) DO NOTHING
+                """,
+                ("v9_paper_trading_v1",),
             )
 
 

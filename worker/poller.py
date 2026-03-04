@@ -9,6 +9,15 @@ from typing import Any, Optional
 from app.providers.alphavantage import AlphaVantageClient
 from app.providers.twelvedata import ProviderError, TwelveDataClient
 from app.services.basic_signal import compute_basic_signal
+from app.services.trade_signal import compute_trade_signal
+from core.papertrading.engine import (
+    EVAL_INTERVAL_SECONDS,
+    MAX_POSITIONS,
+    ROTATE_INTERVAL_SECONDS,
+    ROTATE_N,
+    PaperTradingEngine,
+)
+from core.repositories.paper_trading import PaperTradingRepository
 from core.storage.db import get_connection
 
 logger = logging.getLogger(__name__)
@@ -74,6 +83,16 @@ class MarketPoller:
         self._provider_clients: dict[str, Any] = {}
 
         self._bars_cache: dict[str, dict[str, Any]] = {}
+        self._last_prices_by_symbol: dict[str, float] = {}
+        self._last_trade_params_by_symbol: dict[str, dict[str, Any]] = {}
+        self._scanner_buy_candidates: list[dict[str, Any]] = []
+        self._paper_engine = PaperTradingEngine(PaperTradingRepository())
+        self._last_eval_ts = 0.0
+        self._last_rotate_ts = 0.0
+        self._paper_eval_interval = EVAL_INTERVAL_SECONDS
+        self._paper_rotate_interval = ROTATE_INTERVAL_SECONDS
+        self._paper_max_positions = MAX_POSITIONS
+        self._paper_rotate_n = ROTATE_N
 
     def run_forever(self) -> None:
         logger.info("poller_start interval=%ss", self.poll_interval_seconds)
@@ -90,6 +109,9 @@ class MarketPoller:
 
     def run_once(self) -> None:
         started = time.monotonic()
+        self._last_prices_by_symbol = {}
+        self._last_trade_params_by_symbol = {}
+        self._scanner_buy_candidates = []
         symbols = self._load_watchlist_symbols()
         if not symbols:
             logger.info("poller_cycle symbols=0 message=no watchlist symbols")
@@ -114,12 +136,40 @@ class MarketPoller:
             duration_ms,
         )
 
+        now = time.monotonic()
+        try:
+            self._load_paper_runtime_config()
+            if now - self._last_eval_ts >= self._paper_eval_interval:
+                self._paper_engine.evaluate_positions(
+                    prices_by_symbol=self._last_prices_by_symbol,
+                    trade_params_by_symbol=self._last_trade_params_by_symbol,
+                )
+                self._last_eval_ts = now
+
+            if now - self._last_rotate_ts >= self._paper_rotate_interval:
+                current_positions = self._paper_engine.repo.list_positions(limit=1000)
+                self._paper_engine.rotation_cycle(
+                    scanner_buy_candidates=self._scanner_buy_candidates,
+                    current_positions=current_positions,
+                    max_positions=self._paper_max_positions,
+                    rotate_n=self._paper_rotate_n,
+                )
+                self._last_rotate_ts = now
+        except Exception as exc:
+            logger.warning("poller_paper_cycle_failed error=%s", exc)
+
     def _poll_symbol(self, symbol: str) -> None:
         quote, quote_provider = self._fetch_quote(symbol)
         bars, bars_provider = self._fetch_bars(symbol)
 
         if quote is not None and quote_provider is not None:
             self._persist_quote_event(symbol, quote_provider, quote)
+            try:
+                last_price = float(getattr(quote, "last", None))
+                if last_price > 0:
+                    self._last_prices_by_symbol[symbol] = last_price
+            except Exception:
+                pass
 
         if bars is not None and bars_provider is not None:
             self._persist_bars(bars)
@@ -132,6 +182,26 @@ class MarketPoller:
         signal_payload = self._compute_signal_from_cached_bars(symbol)
         if signal_payload is not None:
             self._persist_signal(symbol, signal_payload)
+
+        trade_payload = self._compute_trade_from_cached_bars(symbol, provider_used=bars_provider or quote_provider or "poller")
+        if isinstance(trade_payload, dict):
+            self._last_trade_params_by_symbol[symbol] = trade_payload
+            if str(trade_payload.get("action") or "").upper() == "BUY":
+                self._scanner_buy_candidates.append(
+                    {
+                        "symbol": symbol,
+                        "action": "BUY",
+                        "confidence": trade_payload.get("confidence"),
+                        "rr": trade_payload.get("risk_reward_ratio"),
+                        "score": signal_payload.get("score") if isinstance(signal_payload, dict) else None,
+                        "price": self._last_prices_by_symbol.get(symbol),
+                        "target": trade_payload.get("target_sell_price"),
+                        "stop": trade_payload.get("stop_loss_price"),
+                        "trail": trade_payload.get("trailing_stop_price"),
+                        "entry_zone": trade_payload.get("entry_zone"),
+                        "provider_used": provider_used if (provider_used := bars_provider or quote_provider) else "poller",
+                    }
+                )
 
     def _fetch_quote(self, symbol: str):
         now = time.monotonic()
@@ -201,6 +271,52 @@ class MarketPoller:
             return None
 
         return compute_basic_signal(bars_payload)
+
+    def _compute_trade_from_cached_bars(self, symbol: str, provider_used: str) -> Optional[dict[str, Any]]:
+        cached = self._bars_cache.get(symbol)
+        if cached is None:
+            return None
+        bars = cached["bars"]
+        bars_payload = [bar.model_dump(mode="json") if hasattr(bar, "model_dump") else bar for bar in bars]
+        if not bars_payload:
+            return None
+        try:
+            return compute_trade_signal(
+                bars_payload,
+                symbol=symbol,
+                provider_used=provider_used,
+                timeframe=self.bars_interval,
+            )
+        except Exception:
+            return None
+
+    def _load_paper_runtime_config(self) -> None:
+        try:
+            with get_connection() as conn:
+                rows = conn.execute(
+                    """
+                    SELECT payload
+                    FROM curated_datasets
+                    WHERE dataset_name = ? AND dataset_version = ?
+                    ORDER BY id DESC
+                    LIMIT 1
+                    """,
+                    ("admin_state", "v1"),
+                ).fetchall()
+            if not rows:
+                return
+            payload = rows[0].get("payload")
+            if isinstance(payload, str):
+                payload = json.loads(payload)
+            if not isinstance(payload, dict):
+                return
+            paper = payload.get("paper") if isinstance(payload.get("paper"), dict) else {}
+            self._paper_eval_interval = max(10, int(float(paper.get("eval_interval_seconds", EVAL_INTERVAL_SECONDS))))
+            self._paper_rotate_interval = max(30, int(float(paper.get("rotate_interval_seconds", ROTATE_INTERVAL_SECONDS))))
+            self._paper_max_positions = max(1, int(float(paper.get("max_positions", MAX_POSITIONS))))
+            self._paper_rotate_n = max(0, int(float(paper.get("rotate_n", ROTATE_N))))
+        except Exception:
+            return
 
     def _mark_provider_failure(self, provider_name: str, exc: Exception) -> None:
         now = time.monotonic()
