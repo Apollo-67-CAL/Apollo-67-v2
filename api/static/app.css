@@ -101,6 +101,8 @@ html, body {
   max-width: 1400px;
   margin: 0 auto;
   padding: 20px 18px 32px;
+  min-height: calc(100vh - 80px);
+  overflow: hidden;
 }
 
 .dashboard-grid {
@@ -108,12 +110,16 @@ html, body {
   grid-template-columns: 360px minmax(0, 1fr);
   gap: 16px;
   align-items: start;
+  min-height: calc(100vh - 80px);
+  overflow: hidden;
 }
 
 .left-panels,
 .right-detail {
   display: grid;
   gap: 14px;
+  min-width: 0;
+  min-height: 0;
 }
 
 .panel,
@@ -219,15 +225,40 @@ html, body {
 .scanner-panel {
   min-width: 360px;
   max-width: 100%;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  position: relative;
+  z-index: 1;
   overflow: hidden;
   box-sizing: border-box;
 }
 
+.scanner-panel details {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.scanner-panel .panel-summary {
+  flex: 0 0 auto;
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--surface);
+}
+
 .scanner-panel .scanner-list {
-  overflow: visible;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
   padding-right: 6px;
   width: 100%;
   box-sizing: border-box;
+  max-height: none;
 }
 
 .scanner-panel .scan-card {
@@ -238,7 +269,7 @@ html, body {
   border-radius: 14px;
   background: #fff;
   border: 1px solid rgba(15, 23, 42, 0.08);
-  overflow: visible;
+  overflow: hidden;
   min-height: 220px;
   width: 100%;
   box-sizing: border-box;
@@ -258,7 +289,7 @@ html, body {
   display: grid;
   gap: 10px;
   min-width: 0;
-  overflow: visible;
+  overflow: hidden;
 }
 
 .scanner-panel .scan-head {
@@ -377,13 +408,14 @@ html, body {
 }
 
 .scanner-panel .scan-actions {
-  display: flex;
-  justify-content: flex-end;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  justify-content: stretch;
   gap: 8px;
-  flex-wrap: wrap;
   align-items: center;
   padding-bottom: 6px;
-  overflow: visible;
+  overflow: hidden;
+  min-width: 0;
 }
 
 .scanner-panel .scan-actions .scanner-monitor-btn {
@@ -391,7 +423,7 @@ html, body {
   padding: 6px 10px;
   white-space: nowrap;
   min-width: 110px;
-  flex: 0 0 auto;
+  width: 100%;
 }
 
 h2 {
@@ -1155,6 +1187,8 @@ pre {
 @media (max-width: 1120px) {
   .dashboard-grid {
     grid-template-columns: 1fr;
+    min-height: auto;
+    overflow: visible;
   }
 
   .controls-row {
@@ -1182,6 +1216,7 @@ pre {
 @media (max-width: 1100px) {
   .scanner-panel {
     min-width: 0;
+    height: auto;
   }
 
   .scanner-panel .scan-levels {
@@ -1189,7 +1224,7 @@ pre {
   }
 
   .scanner-panel .scan-actions {
-    justify-content: flex-start;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .scanner-panel .scan-actions .scanner-monitor-btn {
@@ -1275,21 +1310,27 @@ pre {
     grid-template-columns: 1fr;
   }
 
-  .scanner-actions {
-    justify-content: stretch;
+  .scanner-panel .scan-actions {
+    grid-template-columns: 1fr;
   }
 
-  .scanner-actions .scanner-monitor-btn {
-    width: 100%;
+  .container,
+  .dashboard-grid {
+    min-height: auto;
+    overflow: visible;
   }
 }
 
 
 /* Scanner overflow fixes for symbols/actions */
 .scanner-panel,
-.scanner-panel .scanner-list,
 .scanner-panel .scan-card {
-  overflow: visible;
+  overflow: hidden;
+}
+
+.scanner-panel .scanner-list {
+  overflow-x: hidden;
+  overflow-y: auto;
 }
 
 .scanner-panel .scan-symbol,
@@ -1300,15 +1341,16 @@ pre {
 }
 
 .scanner-panel .scan-actions {
-  display: flex;
-  flex-wrap: wrap;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px;
-  align-items: center;
+  align-items: stretch;
 }
 
 .scanner-panel .scan-actions .scanner-monitor-btn {
   min-width: 110px;
   white-space: nowrap;
+  width: 100%;
 }
 
 .scanner-sources-list .source-table td,
@@ -1320,4 +1362,51 @@ pre {
   .scanner-panel .scan-levels {
     grid-template-columns: 1fr;
   }
+}
+
+/* === Scanner card text visibility fix (do not change layout) === */
+.scanner-panel .scan-card {
+  color: var(--text, rgba(15, 23, 42, 0.92));
+}
+
+.scanner-panel .scan-symbol,
+.scanner-panel .scan-price,
+.scanner-panel .scan-name,
+.scanner-panel .scan-subline,
+.scanner-panel .scan-levels .kv span,
+.scanner-panel .scan-levels .kv strong,
+.scanner-panel .scan-reasons .reason {
+  color: var(--text, rgba(15, 23, 42, 0.92));
+  opacity: 1;
+  -webkit-text-fill-color: currentColor;
+}
+
+.scanner-panel .scan-name,
+.scanner-panel .scan-subline,
+.scanner-panel .scan-levels .kv span,
+.scanner-panel .scan-reasons .reason {
+  color: var(--muted, rgba(15, 23, 42, 0.62));
+  opacity: 1;
+  -webkit-text-fill-color: currentColor;
+}
+
+.scanner-panel .scan-card .pill,
+.scanner-panel .scan-card .chip {
+  color: rgba(15, 23, 42, 0.86);
+  -webkit-text-fill-color: currentColor;
+}
+
+.scanner-panel .scan-card * {
+  mix-blend-mode: normal;
+}
+
+.scanner-panel .scan-card .scan-main,
+.scanner-panel .scan-card .scan-levels,
+.scanner-panel .scan-card .scan-reasons {
+  opacity: 1;
+}
+
+.scanner-panel .scan-card::before,
+.scanner-panel .scan-card::after {
+  pointer-events: none;
 }
