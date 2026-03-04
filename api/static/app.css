@@ -725,6 +725,29 @@ h2 {
   padding-right: 4px;
 }
 
+.source-table-wrap {
+  overflow-x: auto;
+}
+
+.source-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.82rem;
+}
+
+.source-table th,
+.source-table td {
+  padding: 8px;
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+  white-space: nowrap;
+}
+
+.source-table tfoot th {
+  font-weight: 700;
+  background: #f8fafc;
+}
+
 .source-row {
   border: 1px solid var(--border);
   border-radius: 10px;

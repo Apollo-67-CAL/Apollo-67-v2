@@ -301,6 +301,126 @@ function scannerPriceText(value) {
   return Number.isFinite(num) ? `$${formatPrice(num)}` : '-';
 }
 
+function resolveScannerSymbol(item, fallbackKey = '') {
+  const raw = item?.symbol
+    || item?.ticker
+    || item?.instrument
+    || item?.instrument_id
+    || item?.data?.symbol
+    || item?.quote?.symbol
+    || item?.payload?.symbol
+    || fallbackKey
+    || '';
+  const sym = String(raw).trim().toUpperCase();
+  return sym || 'UNKNOWN';
+}
+
+function resolveScannerPrice(item) {
+  const candidates = [
+    item?.price,
+    item?.last,
+    item?.last_close,
+    item?.quote?.last,
+    item?.payload?.quote?.last,
+  ];
+  for (const c of candidates) {
+    const n = Number(c);
+    if (Number.isFinite(n)) return n;
+  }
+  return null;
+}
+
+function resolveScannerScore(item) {
+  const candidates = [
+    item?.score,
+    item?.signal_score,
+    item?.signal?.score,
+    item?.payload?.score,
+    item?.payload?.signal?.score,
+  ];
+  for (const c of candidates) {
+    const n = Number(c);
+    if (Number.isFinite(n)) return Math.round(n);
+  }
+  const conf = Number(item?.confidence);
+  const action = String(item?.action || '').toUpperCase();
+  if (Number.isFinite(conf)) {
+    let derived = Math.round(conf * 100);
+    if (action === 'BUY') derived += 10;
+    if (action === 'SELL') derived -= 10;
+    return derived;
+  }
+  return null;
+}
+
+function resolveScannerTarget(item) {
+  const candidates = [
+    item?.trade?.target_sell_price,
+    item?.target,
+    item?.payload?.trade?.target_sell_price,
+  ];
+  for (const c of candidates) {
+    const n = Number(c);
+    if (Number.isFinite(n)) return n;
+  }
+  return null;
+}
+
+function normaliseSourcesPayload(rawPayload) {
+  const payload = rawPayload && typeof rawPayload === 'object' ? rawPayload : {};
+  const rawSources = payload.sources
+    || payload.source_breakdown
+    || payload?.payload?.sources
+    || payload?.payload?.source_breakdown
+    || payload?.explanation?.sources
+    || payload?.debug?.sources
+    || null;
+  const rows = [];
+
+  if (Array.isArray(rawSources)) {
+    rawSources.forEach((entry) => {
+      if (!entry || typeof entry !== 'object') return;
+      const source = String(entry.source || entry.name || entry.id || entry.key || '').trim();
+      if (!source) return;
+      const posts = Number(entry.count ?? entry.posts ?? entry.mentions ?? 0);
+      const positive = Number(entry.pos ?? entry.positive ?? 0);
+      const negative = Number(entry.neg ?? entry.negative ?? 0);
+      rows.push({
+        source,
+        posts: Number.isFinite(posts) ? posts : 0,
+        positive: Number.isFinite(positive) ? positive : null,
+        negative: Number.isFinite(negative) ? negative : null,
+      });
+    });
+  } else if (rawSources && typeof rawSources === 'object') {
+    Object.keys(rawSources).forEach((key) => {
+      const val = rawSources[key];
+      if (val && typeof val === 'object' && !Array.isArray(val)) {
+        const posts = Number(val.count ?? val.posts ?? val.mentions ?? 0);
+        const positive = Number(val.pos ?? val.positive ?? 0);
+        const negative = Number(val.neg ?? val.negative ?? 0);
+        rows.push({
+          source: key,
+          posts: Number.isFinite(posts) ? posts : 0,
+          positive: Number.isFinite(positive) ? positive : null,
+          negative: Number.isFinite(negative) ? negative : null,
+        });
+      } else {
+        const posts = Number(val);
+        rows.push({
+          source: key,
+          posts: Number.isFinite(posts) ? posts : 0,
+          positive: null,
+          negative: null,
+        });
+      }
+    });
+  }
+
+  rows.sort((a, b) => (Number(b.posts) || 0) - (Number(a.posts) || 0));
+  return rows;
+}
+
 function initScannerModeToggle() {
   const root = document.querySelector('.scanner-toggle');
   if (!root) return;
@@ -419,9 +539,8 @@ function renderScannerRows(rows) {
   }
 
   scannerList.innerHTML = rows.map((row) => {
-    let symbol = normalizeSymbol(row.symbol || row.ticker || row.instrument_id);
-    if (!symbol) {
-      symbol = normalizeSymbol(row.key || row.id) || 'UNKNOWN';
+    const symbol = resolveScannerSymbol(row, row?.key || row?.id);
+    if (symbol === 'UNKNOWN') {
       console.warn('Scanner row missing symbol', row);
     }
     const action = String(row.action || '').toUpperCase();
@@ -430,19 +549,21 @@ function renderScannerRows(rows) {
     const timeframe = row.timeframe || '1day';
     const rrText = row.rr != null ? `RR ${Number(row.rr).toFixed(2)}` : null;
     const confText = `${Math.round((Number(row.confidence) || 0) * 100)}%`;
+    const scoreValue = resolveScannerScore(row);
     const entryLow = row.entry_low != null ? row.entry_low : row.entryLow;
     const entryHigh = row.entry_high != null ? row.entry_high : row.entryHigh;
-    const target = row.target;
+    const target = resolveScannerTarget(row);
     const stop = row.stop;
     const trail = row.trail;
     const name = typeof row.name === 'string'
       ? row.name.trim()
       : (typeof row.company_name === 'string' ? row.company_name.trim() : '');
     const nearEntry = Array.isArray(row.tags) && row.tags.includes('Near Entry');
+    const resolvedPrice = resolveScannerPrice(row);
     const entryText = entryLow != null && entryHigh != null
       ? `${formatPrice(entryLow)}-${formatPrice(entryHigh)}`
       : '-';
-    const reasons = Array.isArray(row.reasons) ? row.reasons.slice(0, 2) : [];
+    const reasons = (Array.isArray(row.reasons) ? row.reasons : []).map((r) => String(r || '').trim()).filter(Boolean).slice(0, 2);
 
     return `
     <article class="scan-card ${state.selectedSymbol === symbol ? 'selected' : ''}" data-panel="scanner" data-symbol="${symbol}">
@@ -452,11 +573,12 @@ function renderScannerRows(rows) {
             <div class="scan-symbol">${symbol}</div>
             ${name ? `<div class="scan-name" title="${name}">${name}</div>` : ''}
           </div>
-          <div class="scan-price">${scannerPriceText(row.price)}</div>
+          <div class="scan-price">${scannerPriceText(resolvedPrice)}</div>
         </div>
         <div class="scan-subline">${provider} • ${timeframe}</div>
         <div class="scan-badges">
           <span class="pill pill-action ${actionPillClass}">${action || 'HOLD'}</span>
+          <span class="pill">Score ${scoreValue != null ? scoreValue : '-'}</span>
           <span class="pill">Conf ${confText}</span>
           ${rrText ? `<span class="pill">${rrText}</span>` : ''}
           ${nearEntry ? '<span class="pill pill-muted">Near Entry</span>' : ''}
@@ -467,15 +589,12 @@ function renderScannerRows(rows) {
           <div class="kv"><span>Stop</span><strong>${stop != null ? formatPrice(stop) : '-'}</strong></div>
           <div class="kv"><span>Trail</span><strong>${trail != null ? formatPrice(trail) : '-'}</strong></div>
         </div>
-        <div class="scan-reasons">
-          <div class="reason">${reasons[0] ? `• ${reasons[0]}` : '• -'}</div>
-          <div class="reason">${reasons[1] ? `• ${reasons[1]}` : '• -'}</div>
-        </div>
+        ${reasons.length ? `<div class="scan-reasons">${reasons.map((r) => `<div class="reason">• ${r}</div>`).join('')}</div>` : ''}
       </button>
       <div class="scan-actions">
-        <button type="button" class="button-ghost scanner-monitor-btn" data-action="scanner-buy-now" data-symbol="${symbol}" data-price="${row.price != null ? Number(row.price) : ''}">BUY NOW</button>
+        <button type="button" class="button-ghost scanner-monitor-btn" data-action="scanner-buy-now" data-symbol="${symbol}" data-price="${resolvedPrice != null ? Number(resolvedPrice) : ''}">BUY NOW</button>
         <button type="button" class="button-ghost scanner-monitor-btn" data-action="scanner-watch" data-symbol="${symbol}" data-entry-low="${entryLow != null ? Number(entryLow) : ''}" data-entry-high="${entryHigh != null ? Number(entryHigh) : ''}">WATCH</button>
-        <button type="button" class="button-ghost scanner-monitor-btn" data-action="scanner-monitor" data-symbol="${symbol}" data-price="${row.price != null ? Number(row.price) : ''}" data-entry-low="${entryLow != null ? Number(entryLow) : ''}" data-entry-high="${entryHigh != null ? Number(entryHigh) : ''}">MONITOR</button>
+        <button type="button" class="button-ghost scanner-monitor-btn" data-action="scanner-monitor" data-symbol="${symbol}" data-price="${resolvedPrice != null ? Number(resolvedPrice) : ''}" data-entry-low="${entryLow != null ? Number(entryLow) : ''}" data-entry-high="${entryHigh != null ? Number(entryHigh) : ''}">MONITOR</button>
         <button type="button" class="button-ghost scanner-monitor-btn" data-action="scanner-sources" data-symbol="${symbol}">SOURCES</button>
       </div>
     </article>
@@ -761,7 +880,7 @@ function addMonitorFromCurrentTrade() {
 function renderScannerSourcesModal() {
   if (!scannerSourcesList || !scannerSourcesTotals) return;
   const payload = state.scannerSources;
-  const sources = Array.isArray(payload?.sources) ? payload.sources : [];
+  const sources = normaliseSourcesPayload(payload);
   const totals = payload?.totals || {};
   const symbol = state.scannerSourcesSymbol || '-';
   const scannerType = state.scannerAgent || 'overall';
@@ -769,44 +888,62 @@ function renderScannerSourcesModal() {
   if (scannerSourcesTitle) {
     scannerSourcesTitle.textContent = `Sources • ${symbol} (${scannerType})`;
   }
-  if (scannerSourcesTotals) {
-    scannerSourcesTotals.innerHTML = `
-      <span class="pill">Mentions ${totals.mentions ?? 0}</span>
-      <span class="pill">Positive ${totals.positive ?? 0}</span>
-      <span class="pill">Negative ${totals.negative ?? 0}</span>
-      <span class="pill">Neutral ${totals.neutral ?? 0}</span>
-    `;
-  }
-
   if (!sources.length) {
-    scannerSourcesList.innerHTML = '<div class="empty">No source breakdown available yet.</div>';
+    if (scannerSourcesTotals) {
+      scannerSourcesTotals.innerHTML = '<span class="pill">No source breakdown available for this item yet</span>';
+    }
+    scannerSourcesList.innerHTML = `
+      <div class="empty">No source breakdown available for this item yet.</div>
+      <details class="details">
+        <summary>Raw JSON</summary>
+        <pre>${asJson(payload || {})}</pre>
+      </details>
+    `;
     return;
   }
 
-  scannerSourcesList.innerHTML = sources.map((src) => {
-    const conf = Number(src.confidence);
-    const confText = Number.isFinite(conf) ? `${Math.round(conf * 100)}%` : '-';
-    const score = Number(src.score);
+  const totalsPosts = sources.reduce((acc, src) => acc + (Number(src.posts) || 0), 0);
+  const totalsPos = sources.reduce((acc, src) => acc + (Number(src.positive) || 0), 0);
+  const totalsNeg = sources.reduce((acc, src) => acc + (Number(src.negative) || 0), 0);
+  const totalsNet = totalsPos - totalsNeg;
+
+  if (scannerSourcesTotals) {
+    scannerSourcesTotals.innerHTML = `
+      <span class="pill">Posts ${totalsPosts}</span>
+      <span class="pill">Positive ${totalsPos}</span>
+      <span class="pill">Negative ${totalsNeg}</span>
+      <span class="pill">Net ${totalsNet >= 0 ? '+' : ''}${totalsNet}</span>
+      ${totals?.mentions != null ? `<span class="pill">Mentions ${totals.mentions}</span>` : ''}
+    `;
+  }
+
+  const tableRows = sources.map((src) => {
+    const pos = src.positive;
+    const neg = src.negative;
+    const net = (Number(pos) || 0) - (Number(neg) || 0);
     return `
-      <article class="source-row">
-        <div class="source-main">
-          <div class="source-name">${src.name || src.source_key || '-'}</div>
-          <div class="source-meta">
-            <span>key ${src.source_key || '-'}</span>
-            <span>mentions ${src.mentions ?? 0}</span>
-            <span>score ${Number.isFinite(score) ? score.toFixed(3) : '-'}</span>
-            <span>confidence ${confText}</span>
-            <span>weight ${src.weight ?? 1}</span>
-          </div>
-        </div>
-        <div class="source-stats">
-          <span class="badge bull">+${src.positive ?? 0}</span>
-          <span class="badge bear">-${src.negative ?? 0}</span>
-          <span class="badge neutral">=${src.neutral ?? 0}</span>
-        </div>
-      </article>
+      <tr>
+        <td>${src.source}</td>
+        <td>${Number(src.posts) || 0}</td>
+        <td>${pos == null ? '-' : Number(pos)}</td>
+        <td>${neg == null ? '-' : Number(neg)}</td>
+        <td>${(pos == null && neg == null) ? '-' : `${net >= 0 ? '+' : ''}${net}`}</td>
+      </tr>
     `;
   }).join('');
+  scannerSourcesList.innerHTML = `
+    <div class="table-wrap source-table-wrap">
+      <table class="source-table">
+        <thead>
+          <tr><th>Source</th><th>Posts</th><th>Positive</th><th>Negative</th><th>Net</th></tr>
+        </thead>
+        <tbody>${tableRows}</tbody>
+        <tfoot>
+          <tr><th>Totals</th><th>${totalsPosts}</th><th>${totalsPos}</th><th>${totalsNeg}</th><th>${totalsNet >= 0 ? '+' : ''}${totalsNet}</th></tr>
+        </tfoot>
+      </table>
+    </div>
+  `;
 }
 
 function openScannerSourcesModal(symbol) {
