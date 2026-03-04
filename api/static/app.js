@@ -368,7 +368,8 @@ function resolveScannerTarget(item) {
 
 function normaliseSourcesPayload(rawPayload) {
   const payload = rawPayload && typeof rawPayload === 'object' ? rawPayload : {};
-  const rawSources = payload.sources
+  const rawSources = payload.connectors
+    || payload.sources
     || payload.source_breakdown
     || payload?.payload?.sources
     || payload?.payload?.source_breakdown
@@ -388,8 +389,13 @@ function normaliseSourcesPayload(rawPayload) {
       rows.push({
         source,
         posts: Number.isFinite(posts) ? posts : 0,
-        positive: Number.isFinite(positive) ? positive : null,
-        negative: Number.isFinite(negative) ? negative : null,
+        positive: Number.isFinite(positive) ? positive : 0,
+        negative: Number.isFinite(negative) ? negative : 0,
+        neutral: Number.isFinite(Number(entry.neutral))
+          ? Number(entry.neutral)
+          : Math.max(0, (Number.isFinite(posts) ? posts : 0) - (Number.isFinite(positive) ? positive : 0) - (Number.isFinite(negative) ? negative : 0)),
+        status: String(entry.status || entry.origin || 'auto'),
+        enabled: entry.enabled != null ? Boolean(entry.enabled) : null,
       });
     });
   } else if (rawSources && typeof rawSources === 'object') {
@@ -402,16 +408,24 @@ function normaliseSourcesPayload(rawPayload) {
         rows.push({
           source: key,
           posts: Number.isFinite(posts) ? posts : 0,
-          positive: Number.isFinite(positive) ? positive : null,
-          negative: Number.isFinite(negative) ? negative : null,
+          positive: Number.isFinite(positive) ? positive : 0,
+          negative: Number.isFinite(negative) ? negative : 0,
+          neutral: Number.isFinite(Number(val.neutral))
+            ? Number(val.neutral)
+            : Math.max(0, (Number.isFinite(posts) ? posts : 0) - (Number.isFinite(positive) ? positive : 0) - (Number.isFinite(negative) ? negative : 0)),
+          status: String(val.status || val.origin || 'auto'),
+          enabled: val.enabled != null ? Boolean(val.enabled) : null,
         });
       } else {
         const posts = Number(val);
         rows.push({
           source: key,
           posts: Number.isFinite(posts) ? posts : 0,
-          positive: null,
-          negative: null,
+          positive: 0,
+          negative: 0,
+          neutral: Number.isFinite(posts) ? posts : 0,
+          status: 'auto',
+          enabled: null,
         });
       }
     });
@@ -918,16 +932,20 @@ function renderScannerSourcesModal() {
   }
 
   const tableRows = sources.map((src) => {
-    const pos = src.positive;
-    const neg = src.negative;
-    const net = (Number(pos) || 0) - (Number(neg) || 0);
+    const pos = Number(src.positive) || 0;
+    const neg = Number(src.negative) || 0;
+    const neu = Number(src.neutral) || 0;
+    const net = pos - neg;
+    const statusText = `${src.status || 'auto'}${src.enabled === null ? '' : (src.enabled ? ' • enabled' : ' • disabled')}`;
     return `
       <tr>
         <td>${src.source}</td>
         <td>${Number(src.posts) || 0}</td>
-        <td>${pos == null ? '-' : Number(pos)}</td>
-        <td>${neg == null ? '-' : Number(neg)}</td>
-        <td>${(pos == null && neg == null) ? '-' : `${net >= 0 ? '+' : ''}${net}`}</td>
+        <td>${pos}</td>
+        <td>${neg}</td>
+        <td>${neu}</td>
+        <td>${net >= 0 ? '+' : ''}${net}</td>
+        <td>${statusText}</td>
       </tr>
     `;
   }).join('');
@@ -935,11 +953,11 @@ function renderScannerSourcesModal() {
     <div class="table-wrap source-table-wrap">
       <table class="source-table">
         <thead>
-          <tr><th>Source</th><th>Posts</th><th>Positive</th><th>Negative</th><th>Net</th></tr>
+          <tr><th>Source</th><th>Posts</th><th>Positive</th><th>Negative</th><th>Neutral</th><th>Net</th><th>Status</th></tr>
         </thead>
         <tbody>${tableRows}</tbody>
         <tfoot>
-          <tr><th>Totals</th><th>${totalsPosts}</th><th>${totalsPos}</th><th>${totalsNeg}</th><th>${totalsNet >= 0 ? '+' : ''}${totalsNet}</th></tr>
+          <tr><th>Totals</th><th>${totalsPosts}</th><th>${totalsPos}</th><th>${totalsNeg}</th><th>${Math.max(0, totalsPosts - totalsPos - totalsNeg)}</th><th>${totalsNet >= 0 ? '+' : ''}${totalsNet}</th><th>-</th></tr>
         </tfoot>
       </table>
     </div>

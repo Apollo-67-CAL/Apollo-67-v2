@@ -1283,3 +1283,41 @@ pre {
     width: 100%;
   }
 }
+
+
+/* Scanner overflow fixes for symbols/actions */
+.scanner-panel,
+.scanner-panel .scanner-list,
+.scanner-panel .scan-card {
+  overflow: visible;
+}
+
+.scanner-panel .scan-symbol,
+.scanner-panel .scan-price {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.scanner-panel .scan-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.scanner-panel .scan-actions .scanner-monitor-btn {
+  min-width: 110px;
+  white-space: nowrap;
+}
+
+.scanner-sources-list .source-table td,
+.scanner-sources-list .source-table th {
+  white-space: nowrap;
+}
+
+@media (max-width: 900px) {
+  .scanner-panel .scan-levels {
+    grid-template-columns: 1fr;
+  }
+}

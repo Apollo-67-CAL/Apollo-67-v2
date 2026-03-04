@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 # api/main.py
 
 import json
@@ -26,11 +28,18 @@ from app.validation.market_data import ValidationError, validate_bars
 from core.config import get_config, initialise_config
 from core.repositories.curated_datasets import CuratedDatasetsRepository
 from core.repositories.monitor_positions import MonitorPositionsRepository
+from core.repositories.strategies_dashboard import StrategiesDashboardRepository
 from core.repositories.scanner_source_controls import (
     ScannerSourceControlsRepository,
     normalize_source_key,
 )
+from core.repositories.scanner_connectors import ScannerConnectorsRepository
 from core.repositories.scanner_sources import ScannerSourceBreakdownsRepository
+from core.strategies.backtest import run_backtest
+from core.strategies.library import STRATEGY_LIBRARY, strategy_by_id, strategy_list
+from core.scanners.connectors.registry import get_default_connector_registry, registry_by_group
+from core.scanners.pipeline import fetch_items
+from core.scanners.analyse import analyse_items_openai
 from core.storage.db import DB_DRIVER_MARKER, check_db_connectivity, get_connection, init_db
 
 logger = logging.getLogger(__name__)
@@ -55,6 +64,12 @@ _curated_repo = CuratedDatasetsRepository()
 _monitor_repo = MonitorPositionsRepository()
 _scanner_sources_repo = ScannerSourceBreakdownsRepository()
 _scanner_source_controls_repo = ScannerSourceControlsRepository()
+_scanner_connectors_repo = ScannerConnectorsRepository()
+_strategies_repo = StrategiesDashboardRepository()
+_SCANNER_SOURCES_CACHE_TTL_SECONDS = 300
+_SCANNER_SOURCES_CACHE: Dict[str, tuple[float, Dict[str, Any]]] = {}
+_SCANNER_SOURCES_CACHE_LOCK = Lock()
+_SCANNER_CONNECTOR_RUNTIME: Dict[str, Dict[str, Any]] = {}
 
 _ADMIN_DEFAULT_STATE = {
     "sentiment": {
@@ -374,6 +389,90 @@ def _save_scanner_breakdown(symbol: str, scanner_type: str, row: Dict[str, Any])
     _scanner_sources_repo.insert_breakdown(symbol=symbol, scanner_type=scanner_type, payload=payload)
 
 
+def _strategy_instruction_to_payload(instruction: str, preset_id: Optional[str] = None) -> Dict[str, Any]:
+    text = str(instruction or "").strip()
+    lower = text.lower()
+    spec = strategy_by_id(preset_id or "buffett_value")
+    title = spec.name
+    timeframe = "1day"
+    risk = "medium"
+    rules: List[str] = []
+
+    if "swing" in lower or "1h" in lower:
+        timeframe = "1h"
+    if "intraday" in lower or "15min" in lower or "30min" in lower:
+        timeframe = "30min"
+    if any(k in lower for k in ("low risk", "conservative", "capital preserve")):
+        risk = "low"
+    if any(k in lower for k in ("aggressive", "high risk", "conviction")):
+        risk = "high"
+
+    if "breakout" in lower or "trend" in lower:
+        rules.append("Prefer breakout confirmation above recent highs")
+    if "mean reversion" in lower or "rsi" in lower:
+        rules.append("Use RSI pullback entries and fade extremes")
+    if "stop" in lower:
+        rules.append("Apply strict stop discipline with volatility-aware exits")
+    if "hold" in lower or "long-term" in lower:
+        rules.append("Allow longer hold windows while trend remains valid")
+    if not rules:
+        rules = list(spec.rules_summary[:3])
+
+    if ":" in text:
+        maybe_title = text.split(":", 1)[0].strip()
+        if maybe_title and len(maybe_title) <= 60:
+            title = maybe_title
+    elif len(text) > 0:
+        title = text[:60]
+
+    return {
+        "title": title,
+        "instruction": text,
+        "timeframe_preference": timeframe,
+        "risk_preference": risk,
+        "rules": rules,
+        "strategy_spec_id": spec.id,
+        "derived_from": "heuristics_v1",
+    }
+
+
+def _monitor_summary_by_strategy(rows: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    grouped: Dict[str, Dict[str, Any]] = {}
+    for row in rows:
+        sid = str(row.get("strategy_id") or "unassigned")
+        bucket = grouped.setdefault(
+            sid,
+            {
+                "positions": 0,
+                "total_pnl": 0.0,
+                "wins": 0,
+                "pnl_pct_sum": 0.0,
+                "pnl_pct_count": 0,
+            },
+        )
+        bucket["positions"] += 1
+        pnl = _as_float_or_none(row.get("pnl")) or 0.0
+        bucket["total_pnl"] += pnl
+        pnl_pct = _as_float_or_none(row.get("pnl_pct"))
+        if pnl_pct is not None:
+            bucket["pnl_pct_sum"] += pnl_pct
+            bucket["pnl_pct_count"] += 1
+            if pnl_pct > 0:
+                bucket["wins"] += 1
+
+    out: Dict[str, Dict[str, Any]] = {}
+    for sid, bucket in grouped.items():
+        positions = int(bucket["positions"])
+        pnl_pct_count = int(bucket["pnl_pct_count"])
+        out[sid] = {
+            "positions": positions,
+            "total_pnl": round(float(bucket["total_pnl"]), 6),
+            "win_rate": round((float(bucket["wins"]) / positions) * 100.0, 4) if positions > 0 else 0.0,
+            "avg_pnl_pct": round((float(bucket["pnl_pct_sum"]) / pnl_pct_count), 4) if pnl_pct_count > 0 else 0.0,
+        }
+    return out
+
+
 @app.on_event("startup")
 def startup() -> None:
     cfg = initialise_config()
@@ -387,6 +486,10 @@ def startup() -> None:
         cfg.config_lock_enabled,
         cfg.config_override_enabled,
     )
+    try:
+        _scanner_connectors_repo.initialise_defaults_if_missing(get_default_connector_registry())
+    except Exception as exc:
+        logger.warning("scanner connectors init failed: %s", exc)
     print(f"DB_DRIVER={DB_DRIVER_MARKER}")
 
 
@@ -427,6 +530,16 @@ def admin_scanner_sources_ui(request: Request):
 @app.get("/admin/sources")
 def admin_scanner_sources_ui_alias(request: Request):
     return templates.TemplateResponse("admin_scanner_sources.html", {"request": request})
+
+
+@app.get("/admin/connectors")
+def admin_connectors_ui(request: Request):
+    return templates.TemplateResponse("admin_connectors.html", {"request": request})
+
+
+@app.get("/admin/strategies-dashboard")
+def admin_strategies_dashboard(request: Request):
+    return templates.TemplateResponse("admin_strategies.html", {"request": request})
 
 
 @app.get("/admin/state")
@@ -726,6 +839,178 @@ def admin_delete_scanner_source_control(scanner_type: str, source_key: str):
         )
     _scanner_source_controls_repo.delete_control(scanner_type_value, source_key_value)
     return {"ok": True}
+
+
+@app.get("/admin/api/connectors")
+def admin_list_connectors():
+    registry = get_default_connector_registry()
+    enabled_map = _scanner_connectors_repo.get_all_enabled_map()
+    output: List[Dict[str, Any]] = []
+    for spec in registry:
+        runtime = _SCANNER_CONNECTOR_RUNTIME.get(spec.group, {}).get(spec.id, {})
+        key_present = None
+        if spec.requires_key and spec.key_env:
+            key_present = bool(os.getenv(spec.key_env, "").strip())
+        output.append(
+            {
+                "id": spec.id,
+                "group": spec.group,
+                "label": spec.label,
+                "status": spec.status,
+                "enabled": bool(enabled_map.get(spec.id, False)),
+                "requires_key": spec.requires_key,
+                "key_env": spec.key_env,
+                "key_present": key_present,
+                "last_run": runtime.get("last_run"),
+                "last_error": runtime.get("last_error"),
+                "notes": spec.notes,
+            }
+        )
+    return {"ok": True, "data": output}
+
+
+@app.post("/admin/api/connectors/toggle")
+def admin_toggle_connector(payload: dict[str, Any]):
+    connector_id = str(payload.get("id") or "").strip()
+    if not connector_id:
+        return JSONResponse(status_code=400, content={"ok": False, "error": "id is required"})
+    enabled = bool(payload.get("enabled"))
+    known = {spec.id for spec in get_default_connector_registry()}
+    if connector_id not in known:
+        return JSONResponse(status_code=404, content={"ok": False, "error": f"unknown connector {connector_id}"})
+    _scanner_connectors_repo.set_enabled(connector_id, enabled)
+    return {"ok": True, "data": {"id": connector_id, "enabled": enabled}}
+
+
+@app.get("/admin/strategies")
+def admin_list_strategies(limit: int = 200):
+    rows = _strategies_repo.list_strategies(limit=limit)
+    return {"ok": True, "data": rows}
+
+
+@app.post("/admin/strategies")
+def admin_create_strategy(payload: dict[str, Any]):
+    instruction = str(payload.get("instruction") or "").strip()
+    if not instruction:
+        return JSONResponse(status_code=400, content={"ok": False, "error": "instruction is required"})
+    preset_id = str(payload.get("preset_id") or "buffett_value").strip()
+    derived = _strategy_instruction_to_payload(instruction=instruction, preset_id=preset_id)
+    strategy_name = str(payload.get("name") or derived.get("title") or "Custom Strategy").strip()
+    spec = strategy_by_id(str(derived.get("strategy_spec_id") or preset_id))
+    created = _strategies_repo.create_strategy(
+        name=strategy_name,
+        strategy_group=spec.group,
+        payload=derived,
+    )
+    return {"ok": True, "data": created}
+
+
+@app.get("/admin/strategies/{strategy_id}")
+def admin_get_strategy(strategy_id: str):
+    row = _strategies_repo.get_strategy(strategy_id)
+    if not row:
+        return JSONResponse(status_code=404, content={"ok": False, "error": "strategy not found"})
+    return {"ok": True, "data": row}
+
+
+@app.get("/admin/strategies/library")
+def admin_strategies_library():
+    return {"ok": True, "data": strategy_list()}
+
+
+@app.get("/admin/monitors")
+def admin_list_monitors(strategy_id: Optional[str] = None, limit: int = 500):
+    rows = _strategies_repo.list_monitors(strategy_id=strategy_id, limit=limit)
+    return {"ok": True, "data": rows, "summary_by_strategy": _monitor_summary_by_strategy(rows)}
+
+
+@app.post("/admin/monitors")
+def admin_create_monitor(payload: dict[str, Any]):
+    symbol = str(payload.get("symbol") or "").strip().upper()
+    if not symbol:
+        return JSONResponse(status_code=400, content={"ok": False, "error": "symbol is required"})
+    strategy_id = str(payload.get("strategy_id") or "").strip() or None
+    notes = str(payload.get("notes") or "").strip() or None
+    entry_price = _as_float_or_none(payload.get("entry_price"))
+    quantity = _as_float_or_none(payload.get("quantity"))
+    buy_amount = _as_float_or_none(payload.get("buy_amount"))
+
+    if entry_price is None or entry_price <= 0:
+        try:
+            quote_result = get_quote_with_fallback(symbol=symbol, freshness_seconds=get_config().scanner_quote_ttl_seconds)
+            entry_price = float(quote_result.quote.last)
+        except Exception as exc:
+            return JSONResponse(status_code=400, content={"ok": False, "error": f"Unable to resolve entry price: {exc}"})
+
+    if quantity is None or quantity <= 0:
+        if buy_amount is None or buy_amount <= 0:
+            return JSONResponse(
+                status_code=400,
+                content={"ok": False, "error": "Provide quantity or buy_amount > 0"},
+            )
+        quantity = float(buy_amount) / float(entry_price)
+
+    created = _strategies_repo.create_monitor(
+        strategy_id=strategy_id,
+        symbol=symbol,
+        entry_price=float(entry_price),
+        quantity=float(quantity),
+        notes=notes,
+    )
+    return {"ok": True, "data": created}
+
+
+@app.post("/admin/monitors/{monitor_id}/refresh")
+def admin_refresh_monitor(monitor_id: int):
+    row = _strategies_repo.get_monitor(monitor_id)
+    if not row:
+        return JSONResponse(status_code=404, content={"ok": False, "error": "monitor not found"})
+    symbol = str(row.get("symbol") or "").strip().upper()
+    if not symbol:
+        return JSONResponse(status_code=400, content={"ok": False, "error": "monitor symbol is invalid"})
+    try:
+        quote_result = get_quote_with_fallback(symbol=symbol, freshness_seconds=get_config().scanner_quote_ttl_seconds)
+        refreshed = _strategies_repo.refresh_monitor(monitor_id=monitor_id, last_price=float(quote_result.quote.last))
+        return {"ok": True, "data": refreshed}
+    except Exception as exc:
+        return JSONResponse(status_code=503, content={"ok": False, "error": str(exc)})
+
+
+@app.get("/backtest/run")
+def backtest_run(symbol: str, strategy_id: str, interval: str = "1day", lookback: int = 500):
+    symbol_value = str(symbol or "").strip().upper()
+    if not symbol_value:
+        return JSONResponse(status_code=400, content={"ok": False, "error": "symbol is required"})
+
+    strategy_row = _strategies_repo.get_strategy(strategy_id)
+    if not strategy_row:
+        spec = strategy_by_id(strategy_id)
+        strategy_payload = dict(spec.default_params)
+        strategy_meta = {"id": spec.id, "name": spec.name, "group": spec.group}
+    else:
+        strategy_payload = strategy_row.get("payload") if isinstance(strategy_row.get("payload"), dict) else {}
+        strategy_meta = {"id": strategy_row.get("id"), "name": strategy_row.get("name"), "group": strategy_row.get("group")}
+
+    try:
+        bars_result = get_bars_with_fallback(symbol=symbol_value, interval=interval, outputsize=max(50, min(int(lookback), 2000)))
+        bars_data: List[Dict[str, Any]] = []
+        for bar in bars_result.bars or []:
+            if hasattr(bar, "model_dump"):
+                bars_data.append(bar.model_dump(mode="json"))
+            elif isinstance(bar, dict):
+                bars_data.append(bar)
+        metrics = run_backtest(strategy_payload=strategy_payload, bars=bars_data)
+        return {
+            "ok": True,
+            "symbol": symbol_value,
+            "strategy": strategy_meta,
+            "provider": bars_result.provider,
+            "interval": interval,
+            "lookback": lookback,
+            "metrics": metrics,
+        }
+    except Exception as exc:
+        return JSONResponse(status_code=503, content={"ok": False, "error": str(exc)})
 
 
 @app.get("/config")
@@ -1243,45 +1528,194 @@ def _source_to_response_row(source: Dict[str, Any], control: Optional[Dict[str, 
     return row
 
 
+def _scanner_sources_cache_key(symbol: str, scanner_type: str) -> str:
+    return f"{symbol}:{scanner_type}"
+
+
+def _get_cached_scanner_sources(symbol: str, scanner_type: str) -> Optional[Dict[str, Any]]:
+    key = _scanner_sources_cache_key(symbol, scanner_type)
+    with _SCANNER_SOURCES_CACHE_LOCK:
+        cached = _SCANNER_SOURCES_CACHE.get(key)
+        if not cached:
+            return None
+        ts, payload = cached
+        if (time.time() - ts) > _SCANNER_SOURCES_CACHE_TTL_SECONDS:
+            _SCANNER_SOURCES_CACHE.pop(key, None)
+            return None
+        return payload
+
+
+def _set_cached_scanner_sources(symbol: str, scanner_type: str, payload: Dict[str, Any]) -> None:
+    key = _scanner_sources_cache_key(symbol, scanner_type)
+    with _SCANNER_SOURCES_CACHE_LOCK:
+        _SCANNER_SOURCES_CACHE[key] = (time.time(), payload)
+
+
+def _connector_specs_for_group(scanner_type: str) -> List[Dict[str, Any]]:
+    grouped = registry_by_group()
+    specs = grouped.get(scanner_type, [])
+    out: List[Dict[str, Any]] = []
+    enabled_map = _scanner_connectors_repo.get_all_enabled_map()
+    for spec in specs:
+        out.append(
+            {
+                "id": spec.id,
+                "group": spec.group,
+                "label": spec.label,
+                "status": spec.status,
+                "requires_key": spec.requires_key,
+                "key_env": spec.key_env,
+                "key_present": bool(os.getenv(spec.key_env or "", "").strip()) if spec.requires_key and spec.key_env else None,
+                "notes": spec.notes,
+                "enabled": bool(enabled_map.get(spec.id, False)),
+            }
+        )
+    return out
+
+
+def _build_runtime_scanner_sources(symbol: str, scanner_type: str) -> Dict[str, Any]:
+    specs = _connector_specs_for_group(scanner_type)
+    enabled_map = {spec["id"]: bool(spec.get("enabled")) for spec in specs}
+    items, runtime = fetch_items(symbol=symbol, group=scanner_type, connectors_enabled=enabled_map)
+    analysis = analyse_items_openai(items)
+
+    per_source = analysis.get("per_source") if isinstance(analysis.get("per_source"), dict) else {}
+    rows: List[Dict[str, Any]] = []
+    for spec in specs:
+        source_id = str(spec.get("id"))
+        source_counts = per_source.get(source_id) if isinstance(per_source.get(source_id), dict) else {}
+        posts = int(source_counts.get("posts") or 0)
+        positive = int(source_counts.get("positive") or 0)
+        negative = int(source_counts.get("negative") or 0)
+        neutral = int(source_counts.get("neutral") or max(0, posts - positive - negative))
+        net = int(source_counts.get("net") or (positive - negative))
+        runtime_row = runtime.get(source_id) if isinstance(runtime.get(source_id), dict) else {}
+
+        rows.append(
+            {
+                "id": source_id,
+                "source_key": normalize_source_key(source_id),
+                "name": str(spec.get("label") or source_id),
+                "origin": "auto",
+                "mentions": posts,
+                "positive": positive,
+                "negative": negative,
+                "neutral": neutral,
+                "score": float(net),
+                "confidence": float(analysis.get("confidence") or 0.0),
+                "weight": 1.0,
+                "status": spec.get("status") or "stub",
+                "enabled": bool(spec.get("enabled")),
+                "requires_key": bool(spec.get("requires_key")),
+                "key_env": spec.get("key_env"),
+                "key_present": spec.get("key_present"),
+                "last_run": runtime_row.get("last_run"),
+                "last_error": runtime_row.get("last_error"),
+                "notes": spec.get("notes"),
+            }
+        )
+
+    _SCANNER_CONNECTOR_RUNTIME[scanner_type] = runtime
+    return {
+        "symbol": symbol,
+        "scanner_type": scanner_type,
+        "ts": _utc_iso_now(),
+        "sources": rows,
+        "totals": {
+            "posts": int(analysis.get("posts_total") or 0),
+            "positive": int(analysis.get("positive_count") or 0),
+            "negative": int(analysis.get("negative_count") or 0),
+            "neutral": int(analysis.get("neutral_count") or 0),
+            "net": int(analysis.get("net") or 0),
+            "score": int(analysis.get("score") or 0),
+            "confidence": float(analysis.get("confidence") or 0.0),
+            "recommendation": str(analysis.get("recommendation") or "WATCH"),
+            "target_price": analysis.get("target_price"),
+        },
+        "top_reasons": analysis.get("top_reasons") if isinstance(analysis.get("top_reasons"), list) else [],
+    }
+
+
 @app.get("/scanner/sources")
-def scanner_sources(symbol: str, type: str):
+def scanner_sources(symbol: str, type: Optional[str] = None, group: Optional[str] = None):
     symbol_value = str(symbol or "").strip().upper()
-    scanner_type = str(type or "").strip().lower()
+    scanner_type = str(group or type or "").strip().lower()
     if not symbol_value or not scanner_type:
-        return JSONResponse(status_code=400, content={"error": "symbol and type are required"})
+        return JSONResponse(status_code=400, content={"error": "symbol and type/group are required"})
 
-    latest = _scanner_sources_repo.get_latest_breakdown(symbol=symbol_value, scanner_type=scanner_type)
-    if not latest:
-        synthetic = []
-        for name in _SCANNER_SYNTHETIC_SOURCES.get(scanner_type, []):
-            key = normalize_source_key(name)
-            synthetic.append(
-                {
-                    "id": key,
-                    "source_key": key,
-                    "name": str(name),
-                    "origin": "synthetic",
-                    "mentions": 1,
-                    "positive": 0,
-                    "negative": 0,
-                    "neutral": 1,
-                    "score": 0.0,
-                    "confidence": 0.2,
-                    "meta": {"generator": "scanner_synthetic_v1"},
-                    "weight": 1.0,
-                }
-            )
-        return {
-            "symbol": symbol_value,
-            "scanner_type": scanner_type,
-            "ts": _utc_iso_now(),
-            "totals": _recompute_source_totals(synthetic),
-            "sources": synthetic,
-            "controls_applied": True,
-        }
+    runtime_payload: Optional[Dict[str, Any]] = None
+    if scanner_type in {"social", "news", "institution"}:
+        runtime_payload = _get_cached_scanner_sources(symbol=symbol_value, scanner_type=scanner_type)
+        if runtime_payload is None:
+            runtime_payload = _build_runtime_scanner_sources(symbol=symbol_value, scanner_type=scanner_type)
+            _set_cached_scanner_sources(symbol=symbol_value, scanner_type=scanner_type, payload=runtime_payload)
 
-    payload = latest.get("payload") if isinstance(latest.get("payload"), dict) else {}
-    raw_sources = payload.get("sources") if isinstance(payload.get("sources"), list) else []
+    raw_sources: List[Dict[str, Any]] = []
+    ts_value = _utc_iso_now()
+    payload_totals: Dict[str, Any] = {}
+
+    if runtime_payload:
+        ts_value = str(runtime_payload.get("ts") or ts_value)
+        payload_totals = runtime_payload.get("totals") if isinstance(runtime_payload.get("totals"), dict) else {}
+        rows = runtime_payload.get("sources") if isinstance(runtime_payload.get("sources"), list) else []
+        for row in rows:
+            if isinstance(row, dict):
+                raw_sources.append(row)
+    else:
+        latest = _scanner_sources_repo.get_latest_breakdown(symbol=symbol_value, scanner_type=scanner_type)
+        if latest:
+            payload = latest.get("payload") if isinstance(latest.get("payload"), dict) else {}
+            ts_value = str(payload.get("ts") or latest.get("created_at") or ts_value)
+            rows = payload.get("sources") if isinstance(payload.get("sources"), list) else []
+            for row in rows:
+                if isinstance(row, dict):
+                    raw_sources.append(row)
+
+    if not raw_sources:
+        connector_specs = _connector_specs_for_group(scanner_type)
+        if connector_specs:
+            for spec in connector_specs:
+                raw_sources.append(
+                    {
+                        "id": spec.get("id"),
+                        "source_key": normalize_source_key(str(spec.get("id") or "")),
+                        "name": spec.get("label"),
+                        "origin": "registry",
+                        "mentions": 0,
+                        "positive": 0,
+                        "negative": 0,
+                        "neutral": 0,
+                        "score": 0.0,
+                        "confidence": 0.0,
+                        "status": spec.get("status"),
+                        "enabled": spec.get("enabled"),
+                        "requires_key": spec.get("requires_key"),
+                        "key_env": spec.get("key_env"),
+                        "key_present": spec.get("key_present"),
+                        "last_run": None,
+                        "last_error": None,
+                        "notes": spec.get("notes"),
+                    }
+                )
+        else:
+            for name in _SCANNER_SYNTHETIC_SOURCES.get(scanner_type, []):
+                key = normalize_source_key(name)
+                raw_sources.append(
+                    {
+                        "id": key,
+                        "source_key": key,
+                        "name": str(name),
+                        "origin": "synthetic",
+                        "mentions": 1,
+                        "positive": 0,
+                        "negative": 0,
+                        "neutral": 1,
+                        "score": 0.0,
+                        "confidence": 0.2,
+                        "meta": {"generator": "scanner_synthetic_v1"},
+                    }
+                )
+
     controls = _scanner_source_controls_repo.list_controls(scanner_type)
     control_by_key = {str(c.get("source_key")): c for c in controls}
 
@@ -1293,17 +1727,42 @@ def scanner_sources(symbol: str, type: str):
         key = normalize_source_key(str(source_name or "unknown"))
         control = control_by_key.get(key)
         row = _source_to_response_row(source, control)
-        if row is not None:
-            filtered_sources.append(row)
+        if row is None:
+            continue
+        row["status"] = source.get("status") or source.get("origin") or "auto"
+        row["enabled"] = bool(source.get("enabled"))
+        row["requires_key"] = bool(source.get("requires_key"))
+        row["key_env"] = source.get("key_env")
+        row["key_present"] = source.get("key_present")
+        row["last_run"] = source.get("last_run")
+        row["last_error"] = source.get("last_error")
+        row["notes"] = source.get("notes")
+        row["posts"] = row.get("mentions")
+        row["net"] = int(row.get("positive") or 0) - int(row.get("negative") or 0)
+        filtered_sources.append(row)
 
     totals = _recompute_source_totals(filtered_sources)
+    if payload_totals:
+        totals["posts"] = int(payload_totals.get("posts") or totals.get("mentions") or 0)
+        totals["net"] = int(payload_totals.get("net") or (int(totals.get("positive") or 0) - int(totals.get("negative") or 0)))
+        totals["score"] = int(payload_totals.get("score") or 0)
+        totals["confidence"] = float(payload_totals.get("confidence") or 0.0)
+        totals["recommendation"] = str(payload_totals.get("recommendation") or "WATCH")
+        totals["target_price"] = payload_totals.get("target_price")
+    else:
+        totals["posts"] = int(totals.get("mentions") or 0)
+        totals["net"] = int(totals.get("positive") or 0) - int(totals.get("negative") or 0)
+
     return {
         "symbol": symbol_value,
+        "group": scanner_type,
         "scanner_type": scanner_type,
-        "ts": payload.get("ts") or latest.get("created_at") or _utc_iso_now(),
+        "ts": ts_value,
         "totals": totals,
         "sources": filtered_sources,
+        "connectors": filtered_sources,
         "controls_applied": True,
+        "notes": ["Discovery is automatic. Display filters may apply."],
     }
 
 
@@ -1324,6 +1783,8 @@ def scanner_sources_meta(limit: int = 300):
         bucket = grouped.setdefault(scanner_type, set())
         for name in names:
             bucket.add(normalize_source_key(name))
+    for spec in get_default_connector_registry():
+        grouped.setdefault(spec.group, set()).add(normalize_source_key(spec.id))
     return {scanner_type: sorted(list(keys)) for scanner_type, keys in grouped.items()}
 
 

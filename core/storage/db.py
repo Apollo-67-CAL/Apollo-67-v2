@@ -205,6 +205,23 @@ CREATE TABLE IF NOT EXISTS monitor_positions (
 CREATE INDEX IF NOT EXISTS idx_monitor_positions_symbol ON monitor_positions(symbol);
 CREATE INDEX IF NOT EXISTS idx_monitor_positions_status ON monitor_positions(status);
 
+
+CREATE TABLE IF NOT EXISTS source_snapshots (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    symbol TEXT NOT NULL,
+    agent TEXT NOT NULL,
+    source TEXT NOT NULL,
+    posts INTEGER NOT NULL,
+    positive INTEGER NOT NULL,
+    negative INTEGER NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_source_snapshots_symbol_agent_created
+    ON source_snapshots(symbol, agent, created_at);
+
+
+
+
 CREATE TABLE IF NOT EXISTS scanner_source_breakdowns (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     symbol TEXT NOT NULL,
@@ -229,6 +246,40 @@ CREATE TABLE IF NOT EXISTS scanner_source_controls (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_scanner_source_controls_type_key
     ON scanner_source_controls(scanner_type, source_key);
+
+CREATE TABLE IF NOT EXISTS scanner_connectors (
+    id TEXT PRIMARY KEY,
+    enabled INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_scanner_connectors_updated_at
+    ON scanner_connectors(updated_at);
+
+CREATE TABLE IF NOT EXISTS strategies (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    strategy_group TEXT NOT NULL,
+    payload TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_strategies_group_created_at ON strategies(strategy_group, created_at);
+
+CREATE TABLE IF NOT EXISTS monitors (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    strategy_id TEXT,
+    symbol TEXT NOT NULL,
+    entry_price REAL NOT NULL,
+    quantity REAL NOT NULL,
+    entry_date TEXT NOT NULL,
+    notes TEXT,
+    last_price REAL,
+    pnl REAL,
+    pnl_pct REAL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_monitors_strategy_id ON monitors(strategy_id);
+CREATE INDEX IF NOT EXISTS idx_monitors_symbol ON monitors(symbol);
 """
 
 POSTGRES_SCHEMA_SQL = """
@@ -432,6 +483,19 @@ CREATE TABLE IF NOT EXISTS monitor_positions (
 CREATE INDEX IF NOT EXISTS idx_monitor_positions_symbol ON monitor_positions(symbol);
 CREATE INDEX IF NOT EXISTS idx_monitor_positions_status ON monitor_positions(status);
 
+CREATE TABLE IF NOT EXISTS source_snapshots (
+    id BIGSERIAL PRIMARY KEY,
+    symbol TEXT NOT NULL,
+    agent TEXT NOT NULL,
+    source TEXT NOT NULL,
+    posts INTEGER NOT NULL,
+    positive INTEGER NOT NULL,
+    negative INTEGER NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_source_snapshots_symbol_agent_created
+    ON source_snapshots(symbol, agent, created_at);
+
 CREATE TABLE IF NOT EXISTS scanner_source_breakdowns (
     id BIGSERIAL PRIMARY KEY,
     symbol TEXT NOT NULL,
@@ -456,6 +520,40 @@ CREATE TABLE IF NOT EXISTS scanner_source_controls (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_scanner_source_controls_type_key
     ON scanner_source_controls(scanner_type, source_key);
+
+CREATE TABLE IF NOT EXISTS scanner_connectors (
+    id TEXT PRIMARY KEY,
+    enabled INTEGER NOT NULL DEFAULT 0,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_scanner_connectors_updated_at
+    ON scanner_connectors(updated_at);
+
+CREATE TABLE IF NOT EXISTS strategies (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    strategy_group TEXT NOT NULL,
+    payload JSONB NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_strategies_group_created_at ON strategies(strategy_group, created_at);
+
+CREATE TABLE IF NOT EXISTS monitors (
+    id BIGSERIAL PRIMARY KEY,
+    strategy_id TEXT,
+    symbol TEXT NOT NULL,
+    entry_price DOUBLE PRECISION NOT NULL,
+    quantity DOUBLE PRECISION NOT NULL,
+    entry_date TIMESTAMPTZ NOT NULL,
+    notes TEXT,
+    last_price DOUBLE PRECISION,
+    pnl DOUBLE PRECISION,
+    pnl_pct DOUBLE PRECISION,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_monitors_strategy_id ON monitors(strategy_id);
+CREATE INDEX IF NOT EXISTS idx_monitors_symbol ON monitors(symbol);
 """
 
 
@@ -668,6 +766,18 @@ def init_db() -> None:
                 "INSERT OR IGNORE INTO schema_migrations(version) VALUES (?)",
                 ("v5_scanner_sources_overlay",),
             )
+            conn.execute(
+                "INSERT OR IGNORE INTO schema_migrations(version) VALUES (?)",
+                ("v6_strategies_monitor_dashboard",),
+            )
+            conn.execute(
+                "INSERT OR IGNORE INTO schema_migrations(version) VALUES (?)",
+                ("v7_source_snapshots_rss",),
+            )
+            conn.execute(
+                "INSERT OR IGNORE INTO schema_migrations(version) VALUES (?)",
+                ("v8_scanner_connectors_registry",),
+            )
         if backend == "postgres":
             conn.execute(
                 """
@@ -692,6 +802,30 @@ def init_db() -> None:
                 ON CONFLICT (version) DO NOTHING
                 """,
                 ("v5_scanner_sources_overlay",),
+            )
+            conn.execute(
+                """
+                INSERT INTO schema_migrations(version)
+                VALUES (?)
+                ON CONFLICT (version) DO NOTHING
+                """,
+                ("v6_strategies_monitor_dashboard",),
+            )
+            conn.execute(
+                """
+                INSERT INTO schema_migrations(version)
+                VALUES (?)
+                ON CONFLICT (version) DO NOTHING
+                """,
+                ("v7_source_snapshots_rss",),
+            )
+            conn.execute(
+                """
+                INSERT INTO schema_migrations(version)
+                VALUES (?)
+                ON CONFLICT (version) DO NOTHING
+                """,
+                ("v8_scanner_connectors_registry",),
             )
 
 
