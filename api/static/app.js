@@ -419,9 +419,9 @@ function renderScannerRows(rows) {
   }
 
   scannerList.innerHTML = rows.map((row) => {
-    let symbol = normalizeSymbol(row.symbol);
+    let symbol = normalizeSymbol(row.symbol || row.ticker || row.instrument_id);
     if (!symbol) {
-      symbol = 'UNKNOWN';
+      symbol = normalizeSymbol(row.key || row.id) || 'UNKNOWN';
       console.warn('Scanner row missing symbol', row);
     }
     const action = String(row.action || '').toUpperCase();
@@ -435,7 +435,9 @@ function renderScannerRows(rows) {
     const target = row.target;
     const stop = row.stop;
     const trail = row.trail;
-    const name = typeof row.name === 'string' ? row.name.trim() : '';
+    const name = typeof row.name === 'string'
+      ? row.name.trim()
+      : (typeof row.company_name === 'string' ? row.company_name.trim() : '');
     const nearEntry = Array.isArray(row.tags) && row.tags.includes('Near Entry');
     const entryText = entryLow != null && entryHigh != null
       ? `${formatPrice(entryLow)}-${formatPrice(entryHigh)}`

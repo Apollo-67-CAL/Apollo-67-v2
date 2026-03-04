@@ -224,9 +224,7 @@ html, body {
 }
 
 .scanner-panel .scanner-list {
-  overflow: hidden;
-  overflow-y: auto;
-  max-height: calc(100vh - 220px);
+  overflow: visible;
   padding-right: 6px;
   width: 100%;
   box-sizing: border-box;
@@ -240,7 +238,7 @@ html, body {
   border-radius: 14px;
   background: #fff;
   border: 1px solid rgba(15, 23, 42, 0.08);
-  overflow: hidden;
+  overflow: visible;
   min-height: 220px;
   width: 100%;
   box-sizing: border-box;
@@ -260,6 +258,7 @@ html, body {
   display: grid;
   gap: 10px;
   min-width: 0;
+  overflow: visible;
 }
 
 .scanner-panel .scan-head {
@@ -282,7 +281,7 @@ html, body {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  max-width: 180px;
+  max-width: 100%;
 }
 
 .scanner-panel .scan-name {
@@ -359,7 +358,7 @@ html, body {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  max-width: 120px;
+  max-width: 100%;
 }
 
 .scanner-panel .scan-reasons {
@@ -372,7 +371,9 @@ html, body {
   color: rgba(15, 23, 42, 0.72);
   overflow: hidden;
   text-overflow: ellipsis;
-  white-space: nowrap;
+  white-space: normal;
+  word-break: break-word;
+  overflow-wrap: anywhere;
 }
 
 .scanner-panel .scan-actions {
@@ -381,13 +382,15 @@ html, body {
   gap: 8px;
   flex-wrap: wrap;
   align-items: center;
+  padding-bottom: 6px;
+  overflow: visible;
 }
 
 .scanner-panel .scan-actions .scanner-monitor-btn {
   font-size: 12px;
   padding: 6px 10px;
   white-space: nowrap;
-  min-width: 82px;
+  min-width: 110px;
   flex: 0 0 auto;
 }
 
@@ -1167,7 +1170,7 @@ pre {
   }
 
   .scanner-panel .scan-actions .scanner-monitor-btn {
-    min-width: 96px;
+    min-width: 110px;
   }
 
   #scannerList .symbol-main {
