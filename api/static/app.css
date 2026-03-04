@@ -217,7 +217,10 @@ html, body {
 }
 
 .scanner-panel {
-  min-width: 340px;
+  min-width: 360px;
+  max-width: 100%;
+  overflow: hidden;
+  box-sizing: border-box;
 }
 
 .scanner-panel .scanner-list {
@@ -225,6 +228,8 @@ html, body {
   overflow-y: auto;
   max-height: calc(100vh - 220px);
   padding-right: 6px;
+  width: 100%;
+  box-sizing: border-box;
 }
 
 .scanner-panel .scan-card {
@@ -237,6 +242,8 @@ html, body {
   border: 1px solid rgba(15, 23, 42, 0.08);
   overflow: hidden;
   min-height: 220px;
+  width: 100%;
+  box-sizing: border-box;
 }
 
 .scanner-panel .scan-card.selected {
@@ -273,6 +280,9 @@ html, body {
   letter-spacing: 0.2px;
   line-height: 1.1;
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 180px;
 }
 
 .scanner-panel .scan-name {
@@ -290,6 +300,9 @@ html, body {
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
   flex-shrink: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 140px;
 }
 
 .scanner-panel .scan-subline {
@@ -344,6 +357,9 @@ html, body {
   font-size: 13px;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 120px;
 }
 
 .scanner-panel .scan-reasons {
@@ -362,15 +378,17 @@ html, body {
 .scanner-panel .scan-actions {
   display: flex;
   justify-content: flex-end;
-  gap: 10px;
-  flex-wrap: nowrap;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: center;
 }
 
 .scanner-panel .scan-actions .scanner-monitor-btn {
   font-size: 12px;
   padding: 6px 10px;
   white-space: nowrap;
-  min-width: 78px;
+  min-width: 82px;
+  flex: 0 0 auto;
 }
 
 h2 {
@@ -1136,6 +1154,22 @@ pre {
 }
 
 @media (max-width: 1100px) {
+  .scanner-panel {
+    min-width: 0;
+  }
+
+  .scanner-panel .scan-levels {
+    grid-template-columns: 1fr;
+  }
+
+  .scanner-panel .scan-actions {
+    justify-content: flex-start;
+  }
+
+  .scanner-panel .scan-actions .scanner-monitor-btn {
+    min-width: 96px;
+  }
+
   #scannerList .symbol-main {
     flex-direction: column;
     align-items: flex-start;

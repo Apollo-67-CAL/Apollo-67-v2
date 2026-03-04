@@ -72,6 +72,12 @@ class AppConfig:
     calendar_session_start: str
     calendar_session_end: str
     scanner_discovery_enabled: bool
+    scanner_cache_mode: str
+    scanner_bars_ttl_seconds: int
+    scanner_quote_ttl_seconds: int
+    scanner_refresh_batch_limit: int
+    provider_calls_per_minute_limit: int
+    provider_twelvedata_cooldown_enabled: bool
 
     def to_public_dict(self) -> Dict[str, Any]:
         payload = asdict(self)
@@ -126,6 +132,16 @@ def _validate_config(cfg: AppConfig) -> None:
         errors.append("DATA_PROVIDER_PRIMARY cannot be empty.")
     if not cfg.data_provider_fallback:
         errors.append("DATA_PROVIDER_FALLBACK cannot be empty.")
+    if cfg.scanner_cache_mode not in {"cache_only", "cache_then_live"}:
+        errors.append("SCANNER_CACHE_MODE must be cache_only or cache_then_live.")
+    if cfg.scanner_bars_ttl_seconds <= 0:
+        errors.append("SCANNER_BARS_TTL_SECONDS must be > 0.")
+    if cfg.scanner_quote_ttl_seconds <= 0:
+        errors.append("SCANNER_QUOTE_TTL_SECONDS must be > 0.")
+    if cfg.scanner_refresh_batch_limit <= 0:
+        errors.append("SCANNER_REFRESH_BATCH_LIMIT must be > 0.")
+    if cfg.provider_calls_per_minute_limit <= 0:
+        errors.append("PROVIDER_CALLS_PER_MINUTE_LIMIT must be > 0.")
 
     start_error = _validate_clock_hhmm("CALENDAR_SESSION_START", cfg.calendar_session_start)
     if start_error:
@@ -188,6 +204,12 @@ def load_config() -> AppConfig:
         calendar_session_start=_env_str("CALENDAR_SESSION_START", "09:30"),
         calendar_session_end=_env_str("CALENDAR_SESSION_END", "16:00"),
         scanner_discovery_enabled=_env_bool("SCANNER_DISCOVERY_ENABLED", True),
+        scanner_cache_mode=_env_str("SCANNER_CACHE_MODE", "cache_only").lower(),
+        scanner_bars_ttl_seconds=_env_int("SCANNER_BARS_TTL_SECONDS", 21600),
+        scanner_quote_ttl_seconds=_env_int("SCANNER_QUOTE_TTL_SECONDS", 900),
+        scanner_refresh_batch_limit=_env_int("SCANNER_REFRESH_BATCH_LIMIT", 10),
+        provider_calls_per_minute_limit=_env_int("PROVIDER_CALLS_PER_MINUTE_LIMIT", 20),
+        provider_twelvedata_cooldown_enabled=_env_bool("PROVIDER_TWELVEDATA_COOLDOWN_ENABLED", True),
     )
     _validate_config(cfg)
     return cfg

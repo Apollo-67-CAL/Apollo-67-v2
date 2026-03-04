@@ -2,7 +2,10 @@ from __future__ import annotations
 
 from typing import Any, Dict, List
 
-from app.providers.selector import get_bars_with_fallback, get_quote_with_fallback
+from app.providers.selector import (
+    get_bars_cached_first,
+    get_quote_cached_first,
+)
 from app.services.basic_signal import compute_basic_signal
 from app.services.trade_signal import compute_trade_signal
 
@@ -55,13 +58,31 @@ def rank_buy_opportunity(row: Dict[str, Any]) -> float:
     return score
 
 
-def build_scanner_row(symbol: str, interval: str = "1day", bars: int = 60) -> Dict[str, Any]:
+def build_scanner_row(
+    symbol: str,
+    interval: str = "1day",
+    bars: int = 60,
+    allow_live: bool = False,
+    bars_ttl_seconds: int = 21600,
+    quote_ttl_seconds: int = 900,
+) -> Dict[str, Any]:
     symbol_u = (symbol or "").strip().upper()
     if not symbol_u:
         raise ValueError("Missing symbol")
 
-    quote_res = get_quote_with_fallback(symbol=symbol_u, freshness_seconds=60)
-    bars_res = get_bars_with_fallback(symbol=symbol_u, interval=interval, outputsize=int(bars))
+    quote_res = get_quote_cached_first(
+        symbol=symbol_u,
+        max_age_seconds=int(quote_ttl_seconds),
+        allow_live=allow_live,
+        freshness_seconds=60,
+    )
+    bars_res = get_bars_cached_first(
+        symbol=symbol_u,
+        interval=interval,
+        outputsize=int(bars),
+        max_age_seconds=int(bars_ttl_seconds),
+        allow_live=allow_live,
+    )
     bars_dicts = _bars_to_dicts(bars_res.bars if hasattr(bars_res, "bars") else [])
     if not bars_dicts:
         raise ValueError(f"No bars for {symbol_u}")

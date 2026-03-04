@@ -91,6 +91,7 @@ const scannerTradeQueue = [];
 let scannerTradeActive = 0;
 const SCANNER_TRADE_CACHE_TTL_MS = 60 * 1000;
 const SCANNER_MAX_INFLIGHT = 4;
+let openModalCount = 0;
 
 const state = {
   scannerExpanded: false,
@@ -394,7 +395,16 @@ function _buildScannerRowFromTrade(symbol, tradePayload) {
 
 async function refreshScannerData() {
   setSectionLoading('scanner', true);
-  const endpoint = `/scanner/${encodeURIComponent(state.scannerAgent)}?interval=1day&bars=60&limit=10`;
+  const endpoint = `/scanner/latest?type=${encodeURIComponent(state.scannerAgent)}&limit=10`;
+  const result = await fetchJson(endpoint);
+  state.scannerRows = result.ok && Array.isArray(result.body?.rows) ? result.body.rows : [];
+  setSectionLoading('scanner', false);
+  renderScanner();
+}
+
+async function refreshScannerDataLive() {
+  setSectionLoading('scanner', true);
+  const endpoint = `/scanner/${encodeURIComponent(state.scannerAgent)}?interval=1day&bars=60&limit=10&refresh=true`;
   const result = await fetchJson(endpoint);
   state.scannerRows = result.ok && Array.isArray(result.body?.rows) ? result.body.rows : [];
   setSectionLoading('scanner', false);
@@ -409,7 +419,11 @@ function renderScannerRows(rows) {
   }
 
   scannerList.innerHTML = rows.map((row) => {
-    const symbol = normalizeSymbol(row.symbol);
+    let symbol = normalizeSymbol(row.symbol);
+    if (!symbol) {
+      symbol = 'UNKNOWN';
+      console.warn('Scanner row missing symbol', row);
+    }
     const action = String(row.action || '').toUpperCase();
     const actionPillClass = action === 'BUY' ? 'bull' : action === 'SELL' ? 'bear' : 'neutral';
     const provider = row.provider || '-';
@@ -604,13 +618,15 @@ function openMonitorModal(draft) {
     monitorModalSubmit.disabled = false;
     monitorModalSubmit.textContent = 'Save';
   }
+  openModalCount += 1;
   document.body.style.overflow = 'hidden';
   monitorModal.hidden = false;
 }
 
 function closeMonitorModal() {
   if (monitorModal) monitorModal.hidden = true;
-  document.body.style.overflow = '';
+  openModalCount = Math.max(0, openModalCount - 1);
+  document.body.style.overflow = openModalCount > 0 ? 'hidden' : '';
   if (monitorModalError) {
     monitorModalError.textContent = '';
     monitorModalError.hidden = true;
@@ -802,6 +818,7 @@ function openScannerSourcesModal(symbol) {
   if (scannerSourcesList) {
     scannerSourcesList.innerHTML = '<div class="empty">Loading sources...</div>';
   }
+  openModalCount += 1;
   document.body.style.overflow = 'hidden';
   scannerSourcesModal.hidden = false;
   fetchScannerSources();
@@ -810,7 +827,8 @@ function openScannerSourcesModal(symbol) {
 function closeScannerSourcesModal() {
   if (!scannerSourcesModal) return;
   scannerSourcesModal.hidden = true;
-  document.body.style.overflow = '';
+  openModalCount = Math.max(0, openModalCount - 1);
+  document.body.style.overflow = openModalCount > 0 ? 'hidden' : '';
   state.scannerSourcesLoading = false;
 }
 
@@ -1931,7 +1949,7 @@ function addPortfolioEntry() {
 
 if (scannerToggleBtn) {
   scannerToggleBtn.addEventListener('click', () => {
-    refreshScannerData();
+    refreshScannerDataLive();
   });
 }
 

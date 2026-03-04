@@ -131,6 +131,13 @@ _SCANNER_AGENT_UNIVERSES: Dict[str, List[str]] = {
     "social": ["TSLA", "NVDA", "PLTR", "AMD", "SOFI", "COIN", "META", "GME", "AAPL", "MSFT"],
 }
 
+_SCANNER_SYNTHETIC_SOURCES: Dict[str, List[str]] = {
+    "social": ["x", "reddit", "hotcopper", "youtube", "tiktok"],
+    "news": ["reuters", "bloomberg", "sec_filings", "company_pr"],
+    "institution": ["analyst_ratings", "13f_filings", "insider_trades"],
+    "overall": ["composite"],
+}
+
 
 def _utc_iso_now() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -291,42 +298,38 @@ def _build_sources_payload_from_row(row: Dict[str, Any], scanner_type: str) -> L
     if sources_payload:
         return sources_payload
 
-    default_names = {
-        "overall": "Composite",
-        "institution": "Institutional Flow",
-        "news": "News Feed",
-        "social": "Social Feed",
-    }
-    source_name = default_names.get(scanner_type, "Unclassified")
-    source_key = normalize_source_key(source_name)
+    names = _SCANNER_SYNTHETIC_SOURCES.get(scanner_type, ["unclassified"])
     score = _as_float_or_none(row.get("score"))
     confidence = _as_float_or_none(row.get("confidence"))
     trend = str(row.get("trend") or "").lower()
     momentum = str(row.get("momentum") or "").lower()
-    positive = 0
-    negative = 0
-    neutral = 1
-    if "bull" in trend or "positive" in momentum:
-        positive = 1
-        neutral = 0
-    elif "bear" in trend or "negative" in momentum:
-        negative = 1
-        neutral = 0
-    mentions = max(1, len(row.get("reasons") if isinstance(row.get("reasons"), list) else []))
-    return [
-        {
-            "id": source_key,
-            "name": source_name,
-            "origin": "auto",
-            "mentions": mentions,
-            "positive": positive,
-            "negative": negative,
-            "neutral": neutral,
-            "score": score if score is not None else 0.0,
-            "confidence": confidence,
-            "meta": {},
-        }
-    ]
+    is_pos = "bull" in trend or "positive" in momentum
+    is_neg = "bear" in trend or "negative" in momentum
+    reason_count = len(row.get("reasons") if isinstance(row.get("reasons"), list) else [])
+    base_mentions = max(1, reason_count or int(abs(score or 0) // 25) + 1)
+
+    synthetic: List[Dict[str, Any]] = []
+    for idx, name in enumerate(names):
+        key = normalize_source_key(name)
+        mentions = max(1, base_mentions - (idx % 2))
+        positive = mentions if is_pos else 0
+        negative = mentions if is_neg else 0
+        neutral = mentions if not is_pos and not is_neg else 0
+        synthetic.append(
+            {
+                "id": key,
+                "name": str(name).upper() if scanner_type == "social" else str(name),
+                "origin": "synthetic",
+                "mentions": mentions,
+                "positive": positive,
+                "negative": negative,
+                "neutral": neutral,
+                "score": score if score is not None else 0.0,
+                "confidence": confidence if confidence is not None else 0.35,
+                "meta": {"generator": "scanner_synthetic_v1"},
+            }
+        )
+    return synthetic
 
 
 def _recompute_source_totals(sources: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -418,6 +421,11 @@ def admin_ui(request: Request):
 
 @app.get("/admin/scanner-sources")
 def admin_scanner_sources_ui(request: Request):
+    return templates.TemplateResponse("admin_scanner_sources.html", {"request": request})
+
+
+@app.get("/admin/sources")
+def admin_scanner_sources_ui_alias(request: Request):
     return templates.TemplateResponse("admin_scanner_sources.html", {"request": request})
 
 
@@ -1025,24 +1033,45 @@ def scanner_sector():
     }
 
 
-def _scanner_agent(agent: str, interval: str = "1day", bars: int = 60, limit: int = 10):
+def _scanner_agent(
+    agent: str,
+    interval: str = "1day",
+    bars: int = 60,
+    limit: int = 10,
+    refresh: bool = False,
+):
     agent_key = str(agent or "overall").strip().lower()
     symbols = _SCANNER_AGENT_UNIVERSES.get(agent_key)
     if symbols is None:
         return JSONResponse(status_code=404, content={"error": f"Unknown scanner agent: {agent_key}"})
 
+    cfg = get_config()
     bars_value = max(20, min(int(bars), 500))
     limit_value = max(1, min(int(limit), 50))
-    cache_key = f"scanner:{agent_key}:{interval}:{bars_value}:{limit_value}"
+    refresh_limit = max(1, int(cfg.scanner_refresh_batch_limit))
+    allow_live = bool(refresh)
+    if cfg.scanner_cache_mode == "cache_then_live" and not refresh:
+        allow_live = True
+
+    cache_key = f"scanner:{agent_key}:{interval}:{bars_value}:{limit_value}:live={1 if allow_live else 0}"
     cached = _batch_cache_get(cache_key)
     if cached is not None:
         return cached
 
+    symbols_to_scan = symbols[:refresh_limit] if allow_live else symbols
     rows: List[Dict[str, Any]] = []
     with ThreadPoolExecutor(max_workers=4) as pool:
         futures = {
-            pool.submit(build_scanner_row, symbol, interval, bars_value): symbol
-            for symbol in symbols
+            pool.submit(
+                build_scanner_row,
+                symbol,
+                interval,
+                bars_value,
+                allow_live,
+                int(cfg.scanner_bars_ttl_seconds),
+                int(cfg.scanner_quote_ttl_seconds),
+            ): symbol
+            for symbol in symbols_to_scan
         }
         for future in as_completed(futures):
             symbol = futures[future]
@@ -1066,6 +1095,7 @@ def _scanner_agent(agent: str, interval: str = "1day", bars: int = 60, limit: in
                         "symbol": symbol,
                         "ok": False,
                         "error": str(exc),
+                        "needs_refresh": True,
                     }
                 )
 
@@ -1076,6 +1106,9 @@ def _scanner_agent(agent: str, interval: str = "1day", bars: int = 60, limit: in
         "interval": interval,
         "bars": bars_value,
         "generated_at": datetime.now(timezone.utc).isoformat(),
+        "cache_mode": cfg.scanner_cache_mode,
+        "refresh_used": allow_live,
+        "refresh_limit": refresh_limit,
         "rows": ok_rows[:limit_value] + [r for r in rows if not r.get("ok")],
     }
     _batch_cache_set(cache_key, payload)
@@ -1083,23 +1116,97 @@ def _scanner_agent(agent: str, interval: str = "1day", bars: int = 60, limit: in
 
 
 @app.get("/scanner/overall")
-def scanner_overall(interval: str = "1day", bars: int = 60, limit: int = 10):
-    return _scanner_agent("overall", interval=interval, bars=bars, limit=limit)
+def scanner_overall(interval: str = "1day", bars: int = 60, limit: int = 10, refresh: bool = False):
+    return _scanner_agent("overall", interval=interval, bars=bars, limit=limit, refresh=refresh)
 
 
 @app.get("/scanner/institution")
-def scanner_institution(interval: str = "1day", bars: int = 60, limit: int = 10):
-    return _scanner_agent("institution", interval=interval, bars=bars, limit=limit)
+def scanner_institution(interval: str = "1day", bars: int = 60, limit: int = 10, refresh: bool = False):
+    return _scanner_agent("institution", interval=interval, bars=bars, limit=limit, refresh=refresh)
 
 
 @app.get("/scanner/news")
-def scanner_news(interval: str = "1day", bars: int = 60, limit: int = 10):
-    return _scanner_agent("news", interval=interval, bars=bars, limit=limit)
+def scanner_news(interval: str = "1day", bars: int = 60, limit: int = 10, refresh: bool = False):
+    return _scanner_agent("news", interval=interval, bars=bars, limit=limit, refresh=refresh)
 
 
 @app.get("/scanner/social")
-def scanner_social(interval: str = "1day", bars: int = 60, limit: int = 10):
-    return _scanner_agent("social", interval=interval, bars=bars, limit=limit)
+def scanner_social(interval: str = "1day", bars: int = 60, limit: int = 10, refresh: bool = False):
+    return _scanner_agent("social", interval=interval, bars=bars, limit=limit, refresh=refresh)
+
+
+def _row_from_breakdown_snapshot(symbol: str, scanner_type: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+    totals = payload.get("totals") if isinstance(payload.get("totals"), dict) else {}
+    avg_score = _as_float_or_none(totals.get("avg_score"))
+    avg_conf = _as_float_or_none(totals.get("avg_confidence"))
+    score = avg_score if avg_score is not None else 0.0
+    confidence = avg_conf if avg_conf is not None else 0.35
+    action = "HOLD"
+    if score > 15:
+        action = "BUY"
+    elif score < -20:
+        action = "SELL"
+    return {
+        "symbol": symbol,
+        "action": action,
+        "confidence": confidence,
+        "score": score,
+        "price": None,
+        "timeframe": "1day",
+        "entry_low": None,
+        "entry_high": None,
+        "target": None,
+        "stop": None,
+        "trail": None,
+        "rr": None,
+        "reasons": [f"Snapshot derived from {scanner_type} source breakdown"],
+        "tags": ["Synthetic"] if scanner_type in {"news", "social"} else [],
+        "ok": True,
+        "from_snapshot": True,
+    }
+
+
+@app.get("/scanner/latest")
+def scanner_latest(type: str = "overall", limit: int = 10):
+    scanner_type = str(type or "overall").strip().lower()
+    if scanner_type not in _SCANNER_AGENT_UNIVERSES:
+        return JSONResponse(status_code=404, content={"error": f"Unknown scanner type: {scanner_type}"})
+
+    recent = _scanner_sources_repo.list_recent_breakdowns(scanner_type=scanner_type, limit=1000)
+    latest_by_symbol: Dict[str, Dict[str, Any]] = {}
+    for row in recent:
+        symbol = str(row.get("symbol") or "").strip().upper()
+        payload = row.get("payload") if isinstance(row.get("payload"), dict) else {}
+        if not symbol or symbol in latest_by_symbol:
+            continue
+        latest_by_symbol[symbol] = _row_from_breakdown_snapshot(symbol=symbol, scanner_type=scanner_type, payload=payload)
+
+    rows = list(latest_by_symbol.values())
+    if not rows and scanner_type in {"social", "news"}:
+        for symbol in _SCANNER_AGENT_UNIVERSES.get(scanner_type, [])[:max(1, min(int(limit), 10))]:
+            payload = {
+                "totals": {
+                    "avg_score": 5.0 if scanner_type == "news" else 3.0,
+                    "avg_confidence": 0.32 if scanner_type == "news" else 0.28,
+                }
+            }
+            rows.append(_row_from_breakdown_snapshot(symbol=symbol, scanner_type=scanner_type, payload=payload))
+
+    rows.sort(key=lambda x: float(x.get("score") or 0.0), reverse=True)
+    limit_value = max(1, min(int(limit), 50))
+    if rows:
+        return {
+            "agent": scanner_type,
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "rows": rows[:limit_value],
+            "message": None,
+        }
+    return {
+        "agent": scanner_type,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "rows": [],
+        "message": "No snapshots yet. Click Refresh.",
+    }
 
 
 def _source_to_response_row(source: Dict[str, Any], control: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
@@ -1145,12 +1252,31 @@ def scanner_sources(symbol: str, type: str):
 
     latest = _scanner_sources_repo.get_latest_breakdown(symbol=symbol_value, scanner_type=scanner_type)
     if not latest:
+        synthetic = []
+        for name in _SCANNER_SYNTHETIC_SOURCES.get(scanner_type, []):
+            key = normalize_source_key(name)
+            synthetic.append(
+                {
+                    "id": key,
+                    "source_key": key,
+                    "name": str(name),
+                    "origin": "synthetic",
+                    "mentions": 1,
+                    "positive": 0,
+                    "negative": 0,
+                    "neutral": 1,
+                    "score": 0.0,
+                    "confidence": 0.2,
+                    "meta": {"generator": "scanner_synthetic_v1"},
+                    "weight": 1.0,
+                }
+            )
         return {
             "symbol": symbol_value,
             "scanner_type": scanner_type,
             "ts": _utc_iso_now(),
-            "totals": _recompute_source_totals([]),
-            "sources": [],
+            "totals": _recompute_source_totals(synthetic),
+            "sources": synthetic,
             "controls_applied": True,
         }
 
@@ -1194,6 +1320,10 @@ def scanner_sources_meta(limit: int = 300):
                 continue
             key = normalize_source_key(str(source.get("id") or source.get("name") or source.get("source") or "unknown"))
             grouped.setdefault(scanner_type, set()).add(key)
+    for scanner_type, names in _SCANNER_SYNTHETIC_SOURCES.items():
+        bucket = grouped.setdefault(scanner_type, set())
+        for name in names:
+            bucket.add(normalize_source_key(name))
     return {scanner_type: sorted(list(keys)) for scanner_type, keys in grouped.items()}
 
 
