@@ -26,6 +26,11 @@ from app.validation.market_data import ValidationError, validate_bars
 from core.config import get_config, initialise_config
 from core.repositories.curated_datasets import CuratedDatasetsRepository
 from core.repositories.monitor_positions import MonitorPositionsRepository
+from core.repositories.scanner_source_controls import (
+    ScannerSourceControlsRepository,
+    normalize_source_key,
+)
+from core.repositories.scanner_sources import ScannerSourceBreakdownsRepository
 from core.storage.db import DB_DRIVER_MARKER, check_db_connectivity, get_connection, init_db
 
 logger = logging.getLogger(__name__)
@@ -48,6 +53,8 @@ _SCANNER_UNIVERSE_PATH = BASE_DIR / "app" / "data" / "universe.json"
 _SCANNER_UNIVERSE_CACHE: Optional[List[Dict[str, Any]]] = None
 _curated_repo = CuratedDatasetsRepository()
 _monitor_repo = MonitorPositionsRepository()
+_scanner_sources_repo = ScannerSourceBreakdownsRepository()
+_scanner_source_controls_repo = ScannerSourceControlsRepository()
 
 _ADMIN_DEFAULT_STATE = {
     "sentiment": {
@@ -243,6 +250,127 @@ def _score_sort_value(row: Dict[str, Any]) -> float:
         return float("-inf")
 
 
+def _as_float_or_none(value: Any) -> Optional[float]:
+    try:
+        num = float(value)
+    except Exception:
+        return None
+    return num if num == num else None
+
+
+def _build_sources_payload_from_row(row: Dict[str, Any], scanner_type: str) -> List[Dict[str, Any]]:
+    candidate_sources = row.get("sources")
+    sources_payload: List[Dict[str, Any]] = []
+
+    if isinstance(candidate_sources, list):
+        for source in candidate_sources:
+            if not isinstance(source, dict):
+                continue
+            name = str(source.get("name") or source.get("source") or source.get("id") or "").strip()
+            if not name:
+                continue
+            source_key = normalize_source_key(str(source.get("id") or name))
+            mentions = int(source.get("mentions") or 0)
+            confidence = _as_float_or_none(source.get("confidence"))
+            score = _as_float_or_none(source.get("score"))
+            sources_payload.append(
+                {
+                    "id": source.get("id") or source_key,
+                    "name": name,
+                    "origin": str(source.get("origin") or "auto"),
+                    "mentions": mentions,
+                    "positive": int(source.get("positive") or 0),
+                    "negative": int(source.get("negative") or 0),
+                    "neutral": int(source.get("neutral") or 0),
+                    "score": score if score is not None else 0.0,
+                    "confidence": confidence,
+                    "meta": source.get("meta") if isinstance(source.get("meta"), dict) else {},
+                }
+            )
+
+    if sources_payload:
+        return sources_payload
+
+    default_names = {
+        "overall": "Composite",
+        "institution": "Institutional Flow",
+        "news": "News Feed",
+        "social": "Social Feed",
+    }
+    source_name = default_names.get(scanner_type, "Unclassified")
+    source_key = normalize_source_key(source_name)
+    score = _as_float_or_none(row.get("score"))
+    confidence = _as_float_or_none(row.get("confidence"))
+    trend = str(row.get("trend") or "").lower()
+    momentum = str(row.get("momentum") or "").lower()
+    positive = 0
+    negative = 0
+    neutral = 1
+    if "bull" in trend or "positive" in momentum:
+        positive = 1
+        neutral = 0
+    elif "bear" in trend or "negative" in momentum:
+        negative = 1
+        neutral = 0
+    mentions = max(1, len(row.get("reasons") if isinstance(row.get("reasons"), list) else []))
+    return [
+        {
+            "id": source_key,
+            "name": source_name,
+            "origin": "auto",
+            "mentions": mentions,
+            "positive": positive,
+            "negative": negative,
+            "neutral": neutral,
+            "score": score if score is not None else 0.0,
+            "confidence": confidence,
+            "meta": {},
+        }
+    ]
+
+
+def _recompute_source_totals(sources: List[Dict[str, Any]]) -> Dict[str, Any]:
+    mentions = 0
+    positive = 0
+    negative = 0
+    neutral = 0
+    score_values: List[float] = []
+    confidence_values: List[float] = []
+    for source in sources:
+        mentions += int(source.get("mentions") or 0)
+        positive += int(source.get("positive") or 0)
+        negative += int(source.get("negative") or 0)
+        neutral += int(source.get("neutral") or 0)
+        score = _as_float_or_none(source.get("score"))
+        confidence = _as_float_or_none(source.get("confidence"))
+        if score is not None:
+            score_values.append(score)
+        if confidence is not None:
+            confidence_values.append(confidence)
+    avg_score = (sum(score_values) / len(score_values)) if score_values else 0.0
+    avg_conf = (sum(confidence_values) / len(confidence_values)) if confidence_values else None
+    return {
+        "mentions": mentions,
+        "positive": positive,
+        "negative": negative,
+        "neutral": neutral,
+        "avg_score": round(avg_score, 6),
+        "avg_confidence": round(avg_conf, 6) if avg_conf is not None else None,
+    }
+
+
+def _save_scanner_breakdown(symbol: str, scanner_type: str, row: Dict[str, Any]) -> None:
+    sources = _build_sources_payload_from_row(row, scanner_type)
+    payload = {
+        "symbol": symbol,
+        "scanner_type": scanner_type,
+        "ts": _utc_iso_now(),
+        "sources": sources,
+        "totals": _recompute_source_totals(sources),
+    }
+    _scanner_sources_repo.insert_breakdown(symbol=symbol, scanner_type=scanner_type, payload=payload)
+
+
 @app.on_event("startup")
 def startup() -> None:
     cfg = initialise_config()
@@ -286,6 +414,11 @@ def ui(request: Request):
 @app.get("/admin")
 def admin_ui(request: Request):
     return templates.TemplateResponse("admin.html", {"request": request})
+
+
+@app.get("/admin/scanner-sources")
+def admin_scanner_sources_ui(request: Request):
+    return templates.TemplateResponse("admin_scanner_sources.html", {"request": request})
 
 
 @app.get("/admin/state")
@@ -522,6 +655,69 @@ def admin_set_sentiment_config(payload: dict[str, Any]):
                 ("sentiment_manager_config", version, "active", payload_json),
             )
     return {"ok": True, "data": {"dataset_name": "sentiment_manager_config", "dataset_version": version, "payload": config}}
+
+
+@app.get("/admin/api/scanner-source-controls")
+def admin_list_scanner_source_controls(scanner_type: str):
+    scanner_type_value = str(scanner_type or "").strip().lower()
+    if not scanner_type_value:
+        return JSONResponse(status_code=400, content={"ok": False, "error": "scanner_type is required"})
+    controls = _scanner_source_controls_repo.list_controls(scanner_type_value)
+    return {"ok": True, "data": controls}
+
+
+@app.post("/admin/api/scanner-source-controls")
+def admin_upsert_scanner_source_control(payload: dict[str, Any]):
+    scanner_type = str(payload.get("scanner_type") or "").strip().lower()
+    source_key = str(payload.get("source_key") or "").strip()
+    if not scanner_type or not source_key:
+        return JSONResponse(
+            status_code=400,
+            content={"ok": False, "error": "scanner_type and source_key are required"},
+        )
+
+    blocked = bool(payload.get("blocked", False))
+    display_name_raw = payload.get("display_name")
+    display_name = str(display_name_raw).strip() if isinstance(display_name_raw, str) and display_name_raw.strip() else None
+    notes_raw = payload.get("notes")
+    notes = str(notes_raw).strip() if isinstance(notes_raw, str) and notes_raw.strip() else None
+    try:
+        weight = float(payload.get("weight", 1.0))
+    except Exception:
+        weight = 1.0
+    try:
+        min_mentions = int(payload.get("min_mentions", 0))
+    except Exception:
+        min_mentions = 0
+    try:
+        min_confidence = float(payload.get("min_confidence", 0.0))
+    except Exception:
+        min_confidence = 0.0
+
+    row = _scanner_source_controls_repo.upsert_control(
+        scanner_type=scanner_type,
+        source_key=source_key,
+        display_name=display_name,
+        blocked=blocked,
+        weight=weight,
+        min_mentions=max(0, min_mentions),
+        min_confidence=max(0.0, min_confidence),
+        notes=notes,
+    )
+    return {"ok": True, "data": row}
+
+
+@app.delete("/admin/api/scanner-source-controls")
+def admin_delete_scanner_source_control(scanner_type: str, source_key: str):
+    scanner_type_value = str(scanner_type or "").strip().lower()
+    source_key_value = str(source_key or "").strip()
+    if not scanner_type_value or not source_key_value:
+        return JSONResponse(
+            status_code=400,
+            content={"ok": False, "error": "scanner_type and source_key are required"},
+        )
+    _scanner_source_controls_repo.delete_control(scanner_type_value, source_key_value)
+    return {"ok": True}
 
 
 @app.get("/config")
@@ -854,6 +1050,15 @@ def _scanner_agent(agent: str, interval: str = "1day", bars: int = 60, limit: in
                 row = future.result()
                 row["ok"] = True
                 row["buy_opportunity"] = rank_buy_opportunity(row)
+                try:
+                    _save_scanner_breakdown(symbol=symbol, scanner_type=agent_key, row=row)
+                except Exception as breakdown_exc:
+                    logger.warning(
+                        "scanner breakdown save failed symbol=%s type=%s err=%s",
+                        symbol,
+                        agent_key,
+                        breakdown_exc,
+                    )
                 rows.append(row)
             except Exception as exc:
                 rows.append(
@@ -895,6 +1100,137 @@ def scanner_news(interval: str = "1day", bars: int = 60, limit: int = 10):
 @app.get("/scanner/social")
 def scanner_social(interval: str = "1day", bars: int = 60, limit: int = 10):
     return _scanner_agent("social", interval=interval, bars=bars, limit=limit)
+
+
+def _source_to_response_row(source: Dict[str, Any], control: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    name_raw = source.get("name") or source.get("source") or source.get("id") or "Unknown"
+    source_key = normalize_source_key(str(source.get("id") or name_raw))
+    mentions = int(source.get("mentions") or 0)
+    confidence = _as_float_or_none(source.get("confidence"))
+
+    blocked = bool(control.get("blocked")) if control else False
+    min_mentions = int(control.get("min_mentions") or 0) if control else 0
+    min_confidence = float(control.get("min_confidence") or 0.0) if control else 0.0
+    if blocked:
+        return None
+    if min_mentions > 0 and mentions < min_mentions:
+        return None
+    if confidence is not None and min_confidence > 0 and confidence < min_confidence:
+        return None
+
+    display_name = control.get("display_name") if control and control.get("display_name") else source.get("name") or name_raw
+    row = {
+        "id": source.get("id") or source_key,
+        "source_key": source_key,
+        "name": display_name,
+        "origin": source.get("origin") or "auto",
+        "mentions": mentions,
+        "positive": int(source.get("positive") or 0),
+        "negative": int(source.get("negative") or 0),
+        "neutral": int(source.get("neutral") or 0),
+        "score": _as_float_or_none(source.get("score")) or 0.0,
+        "confidence": confidence,
+        "meta": source.get("meta") if isinstance(source.get("meta"), dict) else {},
+        "weight": float(control.get("weight") or 1.0) if control else 1.0,
+    }
+    return row
+
+
+@app.get("/scanner/sources")
+def scanner_sources(symbol: str, type: str):
+    symbol_value = str(symbol or "").strip().upper()
+    scanner_type = str(type or "").strip().lower()
+    if not symbol_value or not scanner_type:
+        return JSONResponse(status_code=400, content={"error": "symbol and type are required"})
+
+    latest = _scanner_sources_repo.get_latest_breakdown(symbol=symbol_value, scanner_type=scanner_type)
+    if not latest:
+        return {
+            "symbol": symbol_value,
+            "scanner_type": scanner_type,
+            "ts": _utc_iso_now(),
+            "totals": _recompute_source_totals([]),
+            "sources": [],
+            "controls_applied": True,
+        }
+
+    payload = latest.get("payload") if isinstance(latest.get("payload"), dict) else {}
+    raw_sources = payload.get("sources") if isinstance(payload.get("sources"), list) else []
+    controls = _scanner_source_controls_repo.list_controls(scanner_type)
+    control_by_key = {str(c.get("source_key")): c for c in controls}
+
+    filtered_sources: List[Dict[str, Any]] = []
+    for source in raw_sources:
+        if not isinstance(source, dict):
+            continue
+        source_name = source.get("id") or source.get("name") or source.get("source")
+        key = normalize_source_key(str(source_name or "unknown"))
+        control = control_by_key.get(key)
+        row = _source_to_response_row(source, control)
+        if row is not None:
+            filtered_sources.append(row)
+
+    totals = _recompute_source_totals(filtered_sources)
+    return {
+        "symbol": symbol_value,
+        "scanner_type": scanner_type,
+        "ts": payload.get("ts") or latest.get("created_at") or _utc_iso_now(),
+        "totals": totals,
+        "sources": filtered_sources,
+        "controls_applied": True,
+    }
+
+
+@app.get("/scanner/sources/meta")
+def scanner_sources_meta(limit: int = 300):
+    recent = _scanner_sources_repo.list_recent_breakdowns(limit=max(10, min(int(limit), 2000)))
+    grouped: Dict[str, set[str]] = {}
+    for row in recent:
+        scanner_type = str(row.get("scanner_type") or "overall")
+        payload = row.get("payload") if isinstance(row.get("payload"), dict) else {}
+        sources = payload.get("sources") if isinstance(payload.get("sources"), list) else []
+        for source in sources:
+            if not isinstance(source, dict):
+                continue
+            key = normalize_source_key(str(source.get("id") or source.get("name") or source.get("source") or "unknown"))
+            grouped.setdefault(scanner_type, set()).add(key)
+    return {scanner_type: sorted(list(keys)) for scanner_type, keys in grouped.items()}
+
+
+@app.get("/admin/api/scanner-source-discovered")
+def admin_scanner_source_discovered(limit: int = 500):
+    recent = _scanner_sources_repo.list_recent_breakdowns(limit=max(10, min(int(limit), 2000)))
+    stats: Dict[str, Dict[str, Dict[str, Any]]] = {}
+    for row in recent:
+        scanner_type = str(row.get("scanner_type") or "overall")
+        created_at = str(row.get("created_at") or "")
+        payload = row.get("payload") if isinstance(row.get("payload"), dict) else {}
+        sources = payload.get("sources") if isinstance(payload.get("sources"), list) else []
+        for source in sources:
+            if not isinstance(source, dict):
+                continue
+            key = normalize_source_key(str(source.get("id") or source.get("name") or source.get("source") or "unknown"))
+            bucket = stats.setdefault(scanner_type, {})
+            item = bucket.get(key)
+            if item is None:
+                bucket[key] = {
+                    "source_key": key,
+                    "scanner_type": scanner_type,
+                    "seen_count": 1,
+                    "first_seen": created_at,
+                    "last_seen": created_at,
+                }
+            else:
+                item["seen_count"] = int(item.get("seen_count") or 0) + 1
+                if created_at and (not item.get("first_seen") or created_at < item["first_seen"]):
+                    item["first_seen"] = created_at
+                if created_at and (not item.get("last_seen") or created_at > item["last_seen"]):
+                    item["last_seen"] = created_at
+
+    out: Dict[str, List[Dict[str, Any]]] = {}
+    for scanner_type, entries in stats.items():
+        out[scanner_type] = sorted(entries.values(), key=lambda x: str(x.get("source_key")))
+    return {"ok": True, "data": out}
 
 
 # -----------------------------------------------------------------------------

@@ -204,6 +204,31 @@ CREATE TABLE IF NOT EXISTS monitor_positions (
 );
 CREATE INDEX IF NOT EXISTS idx_monitor_positions_symbol ON monitor_positions(symbol);
 CREATE INDEX IF NOT EXISTS idx_monitor_positions_status ON monitor_positions(status);
+
+CREATE TABLE IF NOT EXISTS scanner_source_breakdowns (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    symbol TEXT NOT NULL,
+    scanner_type TEXT NOT NULL,
+    payload TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_scanner_source_breakdowns_symbol_type
+    ON scanner_source_breakdowns(symbol, scanner_type, created_at);
+
+CREATE TABLE IF NOT EXISTS scanner_source_controls (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    scanner_type TEXT NOT NULL,
+    source_key TEXT NOT NULL,
+    display_name TEXT,
+    blocked INTEGER NOT NULL DEFAULT 0,
+    weight REAL NOT NULL DEFAULT 1.0,
+    min_mentions INTEGER NOT NULL DEFAULT 0,
+    min_confidence REAL NOT NULL DEFAULT 0.0,
+    notes TEXT,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_scanner_source_controls_type_key
+    ON scanner_source_controls(scanner_type, source_key);
 """
 
 POSTGRES_SCHEMA_SQL = """
@@ -406,6 +431,31 @@ CREATE TABLE IF NOT EXISTS monitor_positions (
 );
 CREATE INDEX IF NOT EXISTS idx_monitor_positions_symbol ON monitor_positions(symbol);
 CREATE INDEX IF NOT EXISTS idx_monitor_positions_status ON monitor_positions(status);
+
+CREATE TABLE IF NOT EXISTS scanner_source_breakdowns (
+    id BIGSERIAL PRIMARY KEY,
+    symbol TEXT NOT NULL,
+    scanner_type TEXT NOT NULL,
+    payload JSONB NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_scanner_source_breakdowns_symbol_type
+    ON scanner_source_breakdowns(symbol, scanner_type, created_at);
+
+CREATE TABLE IF NOT EXISTS scanner_source_controls (
+    id BIGSERIAL PRIMARY KEY,
+    scanner_type TEXT NOT NULL,
+    source_key TEXT NOT NULL,
+    display_name TEXT,
+    blocked INTEGER NOT NULL DEFAULT 0,
+    weight DOUBLE PRECISION NOT NULL DEFAULT 1.0,
+    min_mentions INTEGER NOT NULL DEFAULT 0,
+    min_confidence DOUBLE PRECISION NOT NULL DEFAULT 0.0,
+    notes TEXT,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_scanner_source_controls_type_key
+    ON scanner_source_controls(scanner_type, source_key);
 """
 
 
@@ -614,6 +664,10 @@ def init_db() -> None:
                 "INSERT OR IGNORE INTO schema_migrations(version) VALUES (?)",
                 ("v4_monitor_positions",),
             )
+            conn.execute(
+                "INSERT OR IGNORE INTO schema_migrations(version) VALUES (?)",
+                ("v5_scanner_sources_overlay",),
+            )
         if backend == "postgres":
             conn.execute(
                 """
@@ -630,6 +684,14 @@ def init_db() -> None:
                 ON CONFLICT (version) DO NOTHING
                 """,
                 ("v4_monitor_positions",),
+            )
+            conn.execute(
+                """
+                INSERT INTO schema_migrations(version)
+                VALUES (?)
+                ON CONFLICT (version) DO NOTHING
+                """,
+                ("v5_scanner_sources_overlay",),
             )
 
 

@@ -284,6 +284,21 @@
     </div>
   </div>
 
+  <div id="scannerSourcesModal" class="monitor-modal scanner-sources-modal" hidden>
+    <div class="monitor-modal-card scanner-sources-card">
+      <div class="panel-head">
+        <h3 id="scannerSourcesTitle">Sources</h3>
+        <button id="scannerSourcesCloseBtn" type="button" class="button-ghost">Close</button>
+      </div>
+      <div id="scannerSourcesError" class="panel-error" hidden></div>
+      <div id="scannerSourcesTotals" class="scanner-sources-totals"></div>
+      <div id="scannerSourcesList" class="scanner-sources-list"></div>
+      <div class="scanner-sources-foot muted">
+        Discovery is automatic. Display filters may apply.
+      </div>
+    </div>
+  </div>
+
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom@2.0.1/dist/chartjs-plugin-zoom.min.js"></script>
   <script src="/static/app.js?v=20260303a"></script>

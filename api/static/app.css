@@ -648,6 +648,11 @@ h2 {
   pointer-events: none;
 }
 
+#scannerSourcesModal[hidden] {
+  display: none !important;
+  pointer-events: none;
+}
+
 .monitor-modal-card {
   width: min(460px, 100%);
   background: #fff;
@@ -678,6 +683,68 @@ h2 {
   border-radius: 8px;
   padding: 8px 10px;
   font-size: 0.8rem;
+}
+
+.scanner-sources-card {
+  width: min(640px, 100%);
+  max-height: min(80vh, 720px);
+}
+
+.scanner-sources-totals {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.scanner-sources-list {
+  display: grid;
+  gap: 8px;
+  overflow-y: auto;
+  max-height: 52vh;
+  padding-right: 4px;
+}
+
+.source-row {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  background: var(--surface-alt);
+}
+
+.source-main {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.source-name {
+  font-weight: 700;
+  font-size: 0.9rem;
+}
+
+.source-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 0.75rem;
+}
+
+.source-stats {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.scanner-sources-foot {
+  font-size: 0.76rem;
+  border-top: 1px solid var(--border);
+  padding-top: 8px;
 }
 
 .up { color: var(--good); }

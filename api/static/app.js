@@ -32,6 +32,12 @@ const monitorModalSubmit = document.getElementById('monitorModalSubmit');
 const monitorModalCancel = document.getElementById('monitorModalCancel');
 const monitorModalError = document.getElementById('monitorModalError');
 const monitorModalSuccess = document.getElementById('monitorModalSuccess');
+const scannerSourcesModal = document.getElementById('scannerSourcesModal');
+const scannerSourcesTitle = document.getElementById('scannerSourcesTitle');
+const scannerSourcesTotals = document.getElementById('scannerSourcesTotals');
+const scannerSourcesList = document.getElementById('scannerSourcesList');
+const scannerSourcesError = document.getElementById('scannerSourcesError');
+const scannerSourcesCloseBtn = document.getElementById('scannerSourcesCloseBtn');
 const portfolioAddBtn = document.getElementById('portfolioAddBtn');
 const portfolioList = document.getElementById('portfolioList');
 const scannerLoading = document.getElementById('scannerLoading');
@@ -121,6 +127,9 @@ const state = {
   hoveredChartIndex: null,
   monitorDraft: null,
   monitorModalSaving: false,
+  scannerSources: null,
+  scannerSourcesLoading: false,
+  scannerSourcesSymbol: null,
 };
 
 const chartOverlayPlugin = {
@@ -451,6 +460,7 @@ function renderScannerRows(rows) {
         <button type="button" class="button-ghost scanner-monitor-btn" data-action="scanner-buy-now" data-symbol="${symbol}" data-price="${row.price != null ? Number(row.price) : ''}">BUY NOW</button>
         <button type="button" class="button-ghost scanner-monitor-btn" data-action="scanner-watch" data-symbol="${symbol}" data-entry-low="${entryLow != null ? Number(entryLow) : ''}" data-entry-high="${entryHigh != null ? Number(entryHigh) : ''}">WATCH</button>
         <button type="button" class="button-ghost scanner-monitor-btn" data-action="scanner-monitor" data-symbol="${symbol}" data-price="${row.price != null ? Number(row.price) : ''}" data-entry-low="${entryLow != null ? Number(entryLow) : ''}" data-entry-high="${entryHigh != null ? Number(entryHigh) : ''}">MONITOR</button>
+        <button type="button" class="button-ghost scanner-monitor-btn" data-action="scanner-sources" data-symbol="${symbol}">SOURCES</button>
       </div>
     </article>
     `;
@@ -728,6 +738,108 @@ function addMonitorFromCurrentTrade() {
   if (Number.isFinite(entryLow)) draft.buy_zone_low = entryLow;
   if (Number.isFinite(entryHigh)) draft.buy_zone_high = entryHigh;
   openMonitorModal(draft);
+}
+
+function renderScannerSourcesModal() {
+  if (!scannerSourcesList || !scannerSourcesTotals) return;
+  const payload = state.scannerSources;
+  const sources = Array.isArray(payload?.sources) ? payload.sources : [];
+  const totals = payload?.totals || {};
+  const symbol = state.scannerSourcesSymbol || '-';
+  const scannerType = state.scannerAgent || 'overall';
+
+  if (scannerSourcesTitle) {
+    scannerSourcesTitle.textContent = `Sources • ${symbol} (${scannerType})`;
+  }
+  if (scannerSourcesTotals) {
+    scannerSourcesTotals.innerHTML = `
+      <span class="pill">Mentions ${totals.mentions ?? 0}</span>
+      <span class="pill">Positive ${totals.positive ?? 0}</span>
+      <span class="pill">Negative ${totals.negative ?? 0}</span>
+      <span class="pill">Neutral ${totals.neutral ?? 0}</span>
+    `;
+  }
+
+  if (!sources.length) {
+    scannerSourcesList.innerHTML = '<div class="empty">No source breakdown available yet.</div>';
+    return;
+  }
+
+  scannerSourcesList.innerHTML = sources.map((src) => {
+    const conf = Number(src.confidence);
+    const confText = Number.isFinite(conf) ? `${Math.round(conf * 100)}%` : '-';
+    const score = Number(src.score);
+    return `
+      <article class="source-row">
+        <div class="source-main">
+          <div class="source-name">${src.name || src.source_key || '-'}</div>
+          <div class="source-meta">
+            <span>key ${src.source_key || '-'}</span>
+            <span>mentions ${src.mentions ?? 0}</span>
+            <span>score ${Number.isFinite(score) ? score.toFixed(3) : '-'}</span>
+            <span>confidence ${confText}</span>
+            <span>weight ${src.weight ?? 1}</span>
+          </div>
+        </div>
+        <div class="source-stats">
+          <span class="badge bull">+${src.positive ?? 0}</span>
+          <span class="badge bear">-${src.negative ?? 0}</span>
+          <span class="badge neutral">=${src.neutral ?? 0}</span>
+        </div>
+      </article>
+    `;
+  }).join('');
+}
+
+function openScannerSourcesModal(symbol) {
+  if (!scannerSourcesModal) return;
+  state.scannerSourcesSymbol = normalizeSymbol(symbol);
+  state.scannerSources = null;
+  if (scannerSourcesError) {
+    scannerSourcesError.textContent = '';
+    scannerSourcesError.hidden = true;
+  }
+  if (scannerSourcesList) {
+    scannerSourcesList.innerHTML = '<div class="empty">Loading sources...</div>';
+  }
+  document.body.style.overflow = 'hidden';
+  scannerSourcesModal.hidden = false;
+  fetchScannerSources();
+}
+
+function closeScannerSourcesModal() {
+  if (!scannerSourcesModal) return;
+  scannerSourcesModal.hidden = true;
+  document.body.style.overflow = '';
+  state.scannerSourcesLoading = false;
+}
+
+async function fetchScannerSources() {
+  const symbol = state.scannerSourcesSymbol;
+  if (!symbol || state.scannerSourcesLoading) return;
+  state.scannerSourcesLoading = true;
+  try {
+    const url = `/scanner/sources?symbol=${encodeURIComponent(symbol)}&type=${encodeURIComponent(state.scannerAgent || 'overall')}`;
+    const result = await fetchJson(url);
+    if (!result.ok) {
+      if (scannerSourcesError) {
+        scannerSourcesError.textContent = getErrorMessage(result, 'Failed to load sources');
+        scannerSourcesError.hidden = false;
+      }
+      state.scannerSources = { sources: [], totals: {} };
+      renderScannerSourcesModal();
+      return;
+    }
+    state.scannerSources = result.body || { sources: [], totals: {} };
+    renderScannerSourcesModal();
+  } catch (error) {
+    if (scannerSourcesError) {
+      scannerSourcesError.textContent = error?.message || 'Failed to load sources';
+      scannerSourcesError.hidden = false;
+    }
+  } finally {
+    state.scannerSourcesLoading = false;
+  }
 }
 
 function displayError(el, message) {
@@ -1869,9 +1981,27 @@ if (monitorModal) {
   });
 }
 
+if (scannerSourcesCloseBtn) {
+  scannerSourcesCloseBtn.addEventListener('click', () => {
+    closeScannerSourcesModal();
+  });
+}
+
+if (scannerSourcesModal) {
+  scannerSourcesModal.addEventListener('click', (event) => {
+    if (event.target === scannerSourcesModal) {
+      closeScannerSourcesModal();
+    }
+  });
+}
+
 document.addEventListener('keydown', (event) => {
   if (event.key === 'Escape' && monitorModal && !monitorModal.hidden) {
     closeMonitorModal();
+    return;
+  }
+  if (event.key === 'Escape' && scannerSourcesModal && !scannerSourcesModal.hidden) {
+    closeScannerSourcesModal();
   }
 });
 
@@ -1928,6 +2058,15 @@ document.addEventListener('click', (event) => {
       buy_zone_low: Number.isFinite(low) ? low : undefined,
       buy_zone_high: Number.isFinite(high) ? high : undefined,
     });
+    return;
+  }
+
+  const scannerSources = event.target.closest('[data-action="scanner-sources"]');
+  if (scannerSources) {
+    const symbol = normalizeSymbol(scannerSources.dataset.symbol);
+    if (symbol) {
+      openScannerSourcesModal(symbol);
+    }
     return;
   }
 

@@ -71,6 +71,7 @@ class AppConfig:
     data_completeness_min_ratio: float
     calendar_session_start: str
     calendar_session_end: str
+    scanner_discovery_enabled: bool
 
     def to_public_dict(self) -> Dict[str, Any]:
         payload = asdict(self)
@@ -186,6 +187,7 @@ def load_config() -> AppConfig:
         data_completeness_min_ratio=_env_float("DATA_COMPLETENESS_MIN_RATIO", 0.98),
         calendar_session_start=_env_str("CALENDAR_SESSION_START", "09:30"),
         calendar_session_end=_env_str("CALENDAR_SESSION_END", "16:00"),
+        scanner_discovery_enabled=_env_bool("SCANNER_DISCOVERY_ENABLED", True),
     )
     _validate_config(cfg)
     return cfg

@@ -1,0 +1,253 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Apollo 67 Admin - Scanner Source Controls</title>
+  <link rel="stylesheet" href="/static/admin.css" />
+</head>
+<body>
+  <main class="admin-page">
+    <header class="admin-header card">
+      <div>
+        <h1>Scanner Source Controls</h1>
+        <p class="muted">Discovery is automatic. Controls only affect what you see (and later weighting if we choose).</p>
+      </div>
+      <a href="/admin" class="button button-secondary">Back to Admin</a>
+    </header>
+
+    <section class="card panel">
+      <h2>How Controls Work</h2>
+      <div class="help-panel">
+        <ul>
+          <li>Blocking hides a source from the scanner Sources popup.</li>
+          <li>Display name lets you alias labels (for example, Twitter to X).</li>
+          <li>Min mentions and min confidence filter noisy sources.</li>
+          <li>Weight is stored for transparency and future tuning; it does not change signal or trade logic now.</li>
+        </ul>
+      </div>
+    </section>
+
+    <section class="card panel">
+      <div class="panel-head">
+        <h2>Discovered Sources</h2>
+        <button id="refreshDiscoveredBtn" type="button" class="button">Refresh</button>
+      </div>
+      <div id="discoveredWrap" class="table-wrap"></div>
+    </section>
+
+    <section class="card panel">
+      <div class="panel-head">
+        <h2>Controls</h2>
+        <div class="button-row">
+          <select id="controlsTypeFilter">
+            <option value="overall">overall</option>
+            <option value="institution">institution</option>
+            <option value="news">news</option>
+            <option value="social">social</option>
+          </select>
+          <button id="newControlBtn" type="button" class="button">Create Control</button>
+        </div>
+      </div>
+      <div id="controlsWrap" class="table-wrap"></div>
+    </section>
+  </main>
+
+  <script>
+    const controlsTypeFilter = document.getElementById('controlsTypeFilter');
+    const discoveredWrap = document.getElementById('discoveredWrap');
+    const controlsWrap = document.getElementById('controlsWrap');
+    const refreshDiscoveredBtn = document.getElementById('refreshDiscoveredBtn');
+    const newControlBtn = document.getElementById('newControlBtn');
+
+    async function fetchJson(url, options) {
+      try {
+        const res = await fetch(url, options || {});
+        const txt = await res.text();
+        let body = {};
+        try { body = txt ? JSON.parse(txt) : {}; } catch { body = {}; }
+        return { ok: res.ok, body };
+      } catch {
+        return { ok: false, body: {} };
+      }
+    }
+
+    function esc(value) {
+      return String(value == null ? '' : value)
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;')
+        .replaceAll('"', '&quot;')
+        .replaceAll("'", '&#39;');
+    }
+
+    async function loadDiscovered() {
+      const result = await fetchJson('/admin/api/scanner-source-discovered?limit=500');
+      const data = result.ok && result.body && result.body.ok ? result.body.data || {} : {};
+      const groups = Object.keys(data).sort();
+      if (!groups.length) {
+        discoveredWrap.innerHTML = '<div class="empty">No discovered sources yet.</div>';
+        return;
+      }
+
+      discoveredWrap.innerHTML = groups.map((scannerType) => {
+        const rows = Array.isArray(data[scannerType]) ? data[scannerType] : [];
+        const body = rows.map((row) => `
+          <tr>
+            <td>${esc(row.source_key)}</td>
+            <td>${esc(row.last_seen || '-')}</td>
+            <td>${esc(row.seen_count || 0)}</td>
+            <td><button type="button" class="button button-secondary" data-action="prefill-control" data-type="${esc(scannerType)}" data-key="${esc(row.source_key)}">Create control</button></td>
+          </tr>
+        `).join('');
+        return `
+          <h3>${esc(scannerType)}</h3>
+          <table class="admin-table">
+            <thead>
+              <tr><th>Source Key</th><th>Last Seen</th><th>Seen Count</th><th>Action</th></tr>
+            </thead>
+            <tbody>${body || '<tr><td colspan="4">None</td></tr>'}</tbody>
+          </table>
+        `;
+      }).join('');
+    }
+
+    function renderControls(rows) {
+      if (!rows.length) {
+        controlsWrap.innerHTML = '<div class="empty">No controls yet for this scanner type.</div>';
+        return;
+      }
+
+      controlsWrap.innerHTML = `
+        <table class="admin-table">
+          <thead>
+            <tr>
+              <th>Source Key</th>
+              <th>Display Name</th>
+              <th>Blocked</th>
+              <th>Weight</th>
+              <th>Min Mentions</th>
+              <th>Min Confidence</th>
+              <th>Notes</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${rows.map((row) => `
+              <tr>
+                <td>${esc(row.source_key)}</td>
+                <td><input data-field="display_name" data-key="${esc(row.source_key)}" value="${esc(row.display_name || '')}" /></td>
+                <td><input type="checkbox" data-field="blocked" data-key="${esc(row.source_key)}" ${row.blocked ? 'checked' : ''} /></td>
+                <td><input type="number" step="0.1" min="0" data-field="weight" data-key="${esc(row.source_key)}" value="${esc(row.weight)}" /></td>
+                <td><input type="number" step="1" min="0" data-field="min_mentions" data-key="${esc(row.source_key)}" value="${esc(row.min_mentions)}" /></td>
+                <td><input type="number" step="0.01" min="0" data-field="min_confidence" data-key="${esc(row.source_key)}" value="${esc(row.min_confidence)}" /></td>
+                <td><input data-field="notes" data-key="${esc(row.source_key)}" value="${esc(row.notes || '')}" /></td>
+                <td>
+                  <button type="button" class="button button-secondary" data-action="save-control" data-key="${esc(row.source_key)}">Save</button>
+                  <button type="button" class="button button-secondary" data-action="delete-control" data-key="${esc(row.source_key)}">Delete</button>
+                </td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      `;
+    }
+
+    async function loadControls() {
+      const scannerType = controlsTypeFilter.value;
+      const result = await fetchJson(`/admin/api/scanner-source-controls?scanner_type=${encodeURIComponent(scannerType)}`);
+      const rows = result.ok && result.body && result.body.ok && Array.isArray(result.body.data)
+        ? result.body.data
+        : [];
+      renderControls(rows);
+    }
+
+    async function saveControlFromRow(sourceKey) {
+      const scannerType = controlsTypeFilter.value;
+      const query = `[data-key="${CSS.escape(sourceKey)}"]`;
+      const getField = (field) => document.querySelector(`${query}[data-field="${field}"]`);
+
+      const displayName = getField('display_name')?.value || '';
+      const blocked = Boolean(getField('blocked')?.checked);
+      const weight = Number(getField('weight')?.value || 1);
+      const minMentions = Number(getField('min_mentions')?.value || 0);
+      const minConfidence = Number(getField('min_confidence')?.value || 0);
+      const notes = getField('notes')?.value || '';
+
+      await fetchJson('/admin/api/scanner-source-controls', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          scanner_type: scannerType,
+          source_key: sourceKey,
+          display_name: displayName,
+          blocked,
+          weight,
+          min_mentions: minMentions,
+          min_confidence: minConfidence,
+          notes,
+        }),
+      });
+      await loadControls();
+    }
+
+    async function deleteControl(sourceKey) {
+      const scannerType = controlsTypeFilter.value;
+      await fetchJson(`/admin/api/scanner-source-controls?scanner_type=${encodeURIComponent(scannerType)}&source_key=${encodeURIComponent(sourceKey)}`, {
+        method: 'DELETE',
+      });
+      await loadControls();
+    }
+
+    function createControlPrompt(prefillType, prefillKey) {
+      const scannerType = prefillType || controlsTypeFilter.value;
+      const sourceKey = window.prompt('Source key', prefillKey || '');
+      if (!sourceKey) return;
+      const displayName = window.prompt('Display name (optional)', sourceKey) || '';
+      fetchJson('/admin/api/scanner-source-controls', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          scanner_type: scannerType,
+          source_key: sourceKey,
+          display_name: displayName,
+          blocked: false,
+          weight: 1,
+          min_mentions: 0,
+          min_confidence: 0,
+          notes: '',
+        }),
+      }).then(() => {
+        controlsTypeFilter.value = scannerType;
+        loadControls();
+      });
+    }
+
+    controlsTypeFilter.addEventListener('change', loadControls);
+    refreshDiscoveredBtn.addEventListener('click', loadDiscovered);
+    newControlBtn.addEventListener('click', () => createControlPrompt());
+
+    document.addEventListener('click', (event) => {
+      const saveBtn = event.target.closest('[data-action="save-control"]');
+      if (saveBtn) {
+        saveControlFromRow(saveBtn.dataset.key || '');
+        return;
+      }
+      const deleteBtn = event.target.closest('[data-action="delete-control"]');
+      if (deleteBtn) {
+        deleteControl(deleteBtn.dataset.key || '');
+        return;
+      }
+      const prefill = event.target.closest('[data-action="prefill-control"]');
+      if (prefill) {
+        createControlPrompt(prefill.dataset.type || controlsTypeFilter.value, prefill.dataset.key || '');
+      }
+    });
+
+    window.addEventListener('DOMContentLoaded', async () => {
+      await loadDiscovered();
+      await loadControls();
+    });
+  </script>
+</body>
+</html>

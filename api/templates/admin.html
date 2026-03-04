@@ -1,0 +1,191 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Apollo 67 Admin</title>
+  <link rel="stylesheet" href="/static/admin.css" />
+</head>
+<body>
+  <main class="admin-page">
+    <header class="admin-header card">
+      <div>
+        <h1>Apollo 67 Admin</h1>
+        <p class="muted">Sentiment Manager and Trading Tactic Engine (configuration only).</p>
+      </div>
+      <div class="header-status">
+        <span id="saveToast" class="toast" hidden>Saved</span>
+        <span id="activateToast" class="toast toast-active" hidden>Activated</span>
+      </div>
+    </header>
+
+    <div class="admin-layout">
+      <aside class="admin-nav card">
+        <h2>Sections</h2>
+        <a href="#sentimentPanel">Sentiment</a>
+        <a href="#tacticPanel">Trading Tactic</a>
+        <a href="#activePanel">Active Profile</a>
+        <a href="/admin/scanner-sources">Scanner Sources</a>
+        <a href="#helpPanel">Help</a>
+      </aside>
+
+      <section class="admin-content">
+        <article id="sentimentPanel" class="card panel">
+          <div class="panel-head">
+            <h2>Sentiment Manager</h2>
+            <button id="saveStateBtn" type="button" class="button">Save Now</button>
+          </div>
+          <p class="muted">These weights tune interpretation preferences only. They do not modify signal engine code.</p>
+
+          <details open class="sentiment-item">
+            <summary>Overall Sentiment</summary>
+            <div class="control-grid">
+              <label>Weight (0-100)
+                <input id="sentiment-overall-weight" type="range" min="0" max="100" step="1" value="50" />
+                <input id="sentiment-overall-weight-num" type="number" min="0" max="100" step="1" value="50" />
+              </label>
+              <label>Influence
+                <select id="sentiment-overall-influence">
+                  <option value="low">Low</option>
+                  <option value="medium" selected>Medium</option>
+                  <option value="high">High</option>
+                </select>
+              </label>
+            </div>
+            <div class="explain">
+              <p><strong>What it affects:</strong> Composite sentiment interpretation across all streams.</p>
+              <p><strong>How it changes interpretation:</strong> Adjusts aggregate sentiment emphasis against technical context.</p>
+              <p><strong>Impact on confidence:</strong> Higher influence increases confidence sensitivity to sentiment shifts.</p>
+            </div>
+          </details>
+
+          <details open class="sentiment-item">
+            <summary>Institutional Sentiment</summary>
+            <div class="control-grid">
+              <label>Weight (0-100)
+                <input id="sentiment-institution-weight" type="range" min="0" max="100" step="1" value="50" />
+                <input id="sentiment-institution-weight-num" type="number" min="0" max="100" step="1" value="50" />
+              </label>
+              <label>Influence
+                <select id="sentiment-institution-influence">
+                  <option value="low">Low</option>
+                  <option value="medium" selected>Medium</option>
+                  <option value="high">High</option>
+                </select>
+              </label>
+            </div>
+            <div class="explain">
+              <p><strong>What it affects:</strong> Influences long-term trend durability and continuation probability.</p>
+              <p><strong>How it changes interpretation:</strong> Raises or lowers trust in trend signals when institutional flow aligns.</p>
+              <p><strong>Impact on confidence:</strong> High influence can materially shift conviction in longer-horizon setups.</p>
+            </div>
+          </details>
+
+          <details open class="sentiment-item">
+            <summary>News Sentiment</summary>
+            <div class="control-grid">
+              <label>Weight (0-100)
+                <input id="sentiment-news-weight" type="range" min="0" max="100" step="1" value="50" />
+                <input id="sentiment-news-weight-num" type="number" min="0" max="100" step="1" value="50" />
+              </label>
+              <label>Influence
+                <select id="sentiment-news-influence">
+                  <option value="low">Low</option>
+                  <option value="medium" selected>Medium</option>
+                  <option value="high">High</option>
+                </select>
+              </label>
+            </div>
+            <div class="explain">
+              <p><strong>What it affects:</strong> Event-driven interpretation around headlines and macro narrative.</p>
+              <p><strong>How it changes interpretation:</strong> Makes the system more or less reactive to fresh news flow.</p>
+              <p><strong>Impact on confidence:</strong> Higher influence amplifies confidence adjustments during major events.</p>
+            </div>
+          </details>
+
+          <details open class="sentiment-item">
+            <summary>Social Sentiment</summary>
+            <div class="control-grid">
+              <label>Weight (0-100)
+                <input id="sentiment-social-weight" type="range" min="0" max="100" step="1" value="50" />
+                <input id="sentiment-social-weight-num" type="number" min="0" max="100" step="1" value="50" />
+              </label>
+              <label>Influence
+                <select id="sentiment-social-influence">
+                  <option value="low">Low</option>
+                  <option value="medium" selected>Medium</option>
+                  <option value="high">High</option>
+                </select>
+              </label>
+            </div>
+            <div class="explain">
+              <p><strong>What it affects:</strong> Near-term crowd positioning and participation pressure.</p>
+              <p><strong>How it changes interpretation:</strong> Biases interpretation toward short-term sentiment momentum.</p>
+              <p><strong>Impact on confidence:</strong> High influence increases confidence volatility in fast-moving names.</p>
+            </div>
+          </details>
+
+          <section class="summary-card" id="sentimentSummary"></section>
+        </article>
+
+        <article id="tacticPanel" class="card panel">
+          <h2>Trading Tactic Engine</h2>
+          <p class="muted">Defines behavioural trading style. Adjusts interpretation and risk appetite without modifying core signal logic.</p>
+          <div class="control-grid tactic-controls">
+            <label>Strategy Preset
+              <select id="tacticPreset">
+                <option>Conservative Value</option>
+                <option>Momentum Breakout</option>
+                <option>Swing Trader</option>
+                <option>Institutional Accumulation</option>
+                <option>Quant Mean Reversion</option>
+                <option>Custom</option>
+              </select>
+            </label>
+            <label>Natural Language Instruction
+              <textarea id="tacticInstruction" rows="4" placeholder="Example: Use momentum breakouts but keep tight stops and slightly lower risk."></textarea>
+            </label>
+          </div>
+
+          <div class="button-row">
+            <button id="generateBtn" type="button" class="button">Generate Profile</button>
+            <button id="activateBtn" type="button" class="button button-secondary">Activate Tactic</button>
+          </div>
+
+          <div class="table-wrap">
+            <table id="previewTable">
+              <thead>
+                <tr>
+                  <th>Parameter</th>
+                  <th>Current</th>
+                  <th>Proposed</th>
+                  <th>Effect</th>
+                </tr>
+              </thead>
+              <tbody id="previewBody"></tbody>
+            </table>
+          </div>
+        </article>
+
+        <article id="activePanel" class="card panel">
+          <h2>Active Profile</h2>
+          <p class="muted">The currently activated tactic profile version used by the override layer.</p>
+          <pre id="activeProfileJson">{}</pre>
+        </article>
+
+        <article id="helpPanel" class="card panel">
+          <h2>Help</h2>
+          <ul>
+            <li>Sentiment streams represent interpretive weighting, not direct changes to compute engine internals.</li>
+            <li>Create a tactic by selecting a preset and adding natural-language instructions, then generate and review the diff table.</li>
+            <li>Activation stores the tactic profile and marks it as active in admin state.</li>
+            <li>This does not change `compute_basic_signal` or `compute_trade_signal` execution logic.</li>
+          </ul>
+        </article>
+      </section>
+    </div>
+  </main>
+
+  <script src="/static/admin.js"></script>
+</body>
+</html>
