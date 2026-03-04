@@ -10,7 +10,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
 from threading import Lock
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request, status
@@ -41,6 +41,7 @@ from core.strategies.library import STRATEGY_LIBRARY, strategy_by_id, strategy_l
 from core.scanners.connectors.registry import get_default_connector_registry, registry_by_group
 from core.scanners.pipeline import fetch_items
 from core.scanners.analyse import analyse_items_openai
+from core.scanners.discovery import discover_market_segment
 from core.papertrading.engine import (
     EVAL_INTERVAL_SECONDS,
     MAX_POSITIONS,
@@ -82,6 +83,19 @@ _strategies_repo = StrategiesDashboardRepository()
 _SCANNER_SOURCES_CACHE_TTL_SECONDS = 300
 _SCANNER_SOURCES_CACHE: Dict[str, tuple[float, Dict[str, Any]]] = {}
 _SCANNER_SOURCES_CACHE_LOCK = Lock()
+
+_SOCIAL_BUY_MIN_POSTS = 5
+_SOCIAL_BUY_MIN_MENTIONS = 5
+_SOCIAL_BUY_MIN_NET = 2
+_SOCIAL_BUY_MIN_POSITIVE = 3
+_NEWS_BUY_MIN_POSTS = 8
+_NEWS_BUY_MIN_MENTIONS = 8
+_NEWS_BUY_MIN_NET = 3
+_NEWS_BUY_MIN_POSITIVE = 4
+_INSTITUTION_BUY_MIN_POSTS = 3
+_INSTITUTION_BUY_MIN_MENTIONS = 3
+_INSTITUTION_BUY_MIN_NET = 1
+_INSTITUTION_BUY_MIN_POSITIVE = 2
 _SCANNER_CONNECTOR_RUNTIME: Dict[str, Dict[str, Any]] = {}
 
 _ADMIN_DEFAULT_STATE = {
@@ -1429,8 +1443,62 @@ def _scanner_agent(
             symbol = futures[future]
             try:
                 row = future.result()
+                row["change_pct"] = _as_float_or_none(row.get("change_pct"))
+                row["momentum_gain_score"] = _momentum_gain_score(change_pct=row.get("change_pct"), volume_boost=0.0)
+                support_summaries: Optional[Dict[str, Dict[str, Any]]] = None
+                source_summary = {"posts": 0, "mentions": 0, "positive": 0, "negative": 0, "neutral": 0, "net": 0}
+                try:
+                    if agent_key in {"social", "news", "institution"}:
+                        source_summary = _get_or_build_source_summary(symbol=symbol, scanner_type=agent_key, timeframe=interval)
+                    elif agent_key == "overall":
+                        support_summaries = {
+                            "social": _get_or_build_source_summary(symbol=symbol, scanner_type="social", timeframe=interval),
+                            "news": _get_or_build_source_summary(symbol=symbol, scanner_type="news", timeframe=interval),
+                            "institution": _get_or_build_source_summary(symbol=symbol, scanner_type="institution", timeframe=interval),
+                        }
+                        source_summary = {
+                            "posts": int(support_summaries["social"].get("posts") or 0)
+                            + int(support_summaries["news"].get("posts") or 0)
+                            + int(support_summaries["institution"].get("posts") or 0),
+                            "mentions": int(support_summaries["social"].get("mentions") or 0)
+                            + int(support_summaries["news"].get("mentions") or 0)
+                            + int(support_summaries["institution"].get("mentions") or 0),
+                            "positive": int(support_summaries["social"].get("positive") or 0)
+                            + int(support_summaries["news"].get("positive") or 0)
+                            + int(support_summaries["institution"].get("positive") or 0),
+                            "negative": int(support_summaries["social"].get("negative") or 0)
+                            + int(support_summaries["news"].get("negative") or 0)
+                            + int(support_summaries["institution"].get("negative") or 0),
+                            "neutral": int(support_summaries["social"].get("neutral") or 0)
+                            + int(support_summaries["news"].get("neutral") or 0)
+                            + int(support_summaries["institution"].get("neutral") or 0),
+                            "net": int(support_summaries["social"].get("net") or 0)
+                            + int(support_summaries["news"].get("net") or 0)
+                            + int(support_summaries["institution"].get("net") or 0),
+                        }
+                except Exception:
+                    source_summary = {"posts": 0, "mentions": 0, "positive": 0, "negative": 0, "neutral": 0, "net": 0}
+                row["source_summary"] = source_summary
+                action, score_val, conf_val, short_reason = _apply_scanner_evidence_policy(
+                    tab=agent_key,
+                    action=str(row.get("action") or row.get("recommendation") or "HOLD").upper(),
+                    score_val=_as_float_or_none(row.get("score")),
+                    confidence_val=_as_float_or_none(row.get("confidence")) or 0.0,
+                    explanation_short=str(row.get("short_reason") or ""),
+                    source_summary=source_summary,
+                    support_summaries=support_summaries,
+                )
+                row["action"] = action
+                row["recommendation"] = action
+                row["score"] = score_val
+                row["confidence"] = conf_val
+                row["short_reason"] = short_reason
                 row["ok"] = True
                 row["buy_opportunity"] = rank_buy_opportunity(row)
+                row["final_rank_score"] = _final_rank_score(
+                    base_score=_as_float_or_none(row.get("score")),
+                    momentum_gain_score=_as_float_or_none(row.get("momentum_gain_score")) or 0.0,
+                )
                 try:
                     _save_scanner_breakdown(symbol=symbol, scanner_type=agent_key, row=row)
                 except Exception as breakdown_exc:
@@ -1452,7 +1520,8 @@ def _scanner_agent(
                 )
 
     ok_rows = [row for row in rows if row.get("ok")]
-    ok_rows.sort(key=lambda x: float(x.get("buy_opportunity", float("-inf"))), reverse=True)
+    buy_rows = [row for row in ok_rows if str(row.get("action") or "").upper() == "BUY"]
+    buy_rows.sort(key=lambda x: _as_float_or_none(x.get("final_rank_score")) or float("-inf"), reverse=True)
     payload = {
         "agent": agent_key,
         "interval": interval,
@@ -1461,7 +1530,7 @@ def _scanner_agent(
         "cache_mode": cfg.scanner_cache_mode,
         "refresh_used": allow_live,
         "refresh_limit": refresh_limit,
-        "rows": ok_rows[:limit_value] + [r for r in rows if not r.get("ok")],
+        "rows": buy_rows[:limit_value],
     }
     _batch_cache_set(cache_key, payload)
     return payload
@@ -1485,6 +1554,112 @@ def scanner_news(interval: str = "1day", bars: int = 60, limit: int = 10, refres
 @app.get("/scanner/social")
 def scanner_social(interval: str = "1day", bars: int = 60, limit: int = 10, refresh: bool = False):
     return _scanner_agent("social", interval=interval, bars=bars, limit=limit, refresh=refresh)
+
+
+@app.get("/scanner/discover")
+def scanner_discover(
+    tab: str = "overall",
+    market: str = "US",
+    segment: str = "large",
+    limit: int = 20,
+    interval: str = "1day",
+    bars: int = 60,
+    refresh: bool = False,
+):
+    tab_value = str(tab or "overall").strip().lower()
+    market_value = str(market or "US").strip().upper()
+    segment_value = str(segment or "large").strip().lower()
+    limit_value = max(1, min(int(limit), 50))
+    bars_value = max(20, min(int(bars), 500))
+
+    if tab_value not in {"overall", "institution", "news", "social"}:
+        return JSONResponse(status_code=400, content={"error": "tab must be overall|institution|news|social"})
+    if market_value not in {"US", "AU"}:
+        return JSONResponse(status_code=400, content={"error": "market must be US|AU"})
+    if segment_value not in {"large", "mid", "small"}:
+        return JSONResponse(status_code=400, content={"error": "segment must be large|mid|small"})
+
+    segments = {"large": [], "mid": [], "small": []}
+    discovered = discover_market_segment(
+        market=market_value,
+        segment=segment_value,
+        limit=limit_value,
+        force_refresh=bool(refresh),
+    )
+    rows: List[Dict[str, Any]] = []
+    cfg = get_config()
+
+    for base in discovered:
+        symbol = str(base.get("symbol") or "").strip().upper()
+        if not symbol:
+            continue
+        try:
+            live_row = build_scanner_row(
+                symbol=symbol,
+                interval=interval,
+                bars=bars_value,
+                allow_live=True,
+                bars_ttl_seconds=int(cfg.scanner_bars_ttl_seconds),
+                quote_ttl_seconds=int(cfg.scanner_quote_ttl_seconds),
+            )
+            source_summary = {"posts": 0, "mentions": 0, "positive": 0, "negative": 0, "neutral": 0, "net": 0}
+            support_summaries: Optional[Dict[str, Dict[str, Any]]] = None
+            if tab_value in {"social", "news", "institution"}:
+                source_summary = _get_or_build_source_summary(symbol=symbol, scanner_type=tab_value, timeframe=interval)
+            elif tab_value == "overall":
+                support_summaries = {
+                    "social": _get_or_build_source_summary(symbol=symbol, scanner_type="social", timeframe=interval),
+                    "news": _get_or_build_source_summary(symbol=symbol, scanner_type="news", timeframe=interval),
+                    "institution": _get_or_build_source_summary(symbol=symbol, scanner_type="institution", timeframe=interval),
+                }
+                source_summary = {
+                    "posts": int(support_summaries["social"].get("posts") or 0)
+                    + int(support_summaries["news"].get("posts") or 0)
+                    + int(support_summaries["institution"].get("posts") or 0),
+                    "mentions": int(support_summaries["social"].get("mentions") or 0)
+                    + int(support_summaries["news"].get("mentions") or 0)
+                    + int(support_summaries["institution"].get("mentions") or 0),
+                    "positive": int(support_summaries["social"].get("positive") or 0)
+                    + int(support_summaries["news"].get("positive") or 0)
+                    + int(support_summaries["institution"].get("positive") or 0),
+                    "negative": int(support_summaries["social"].get("negative") or 0)
+                    + int(support_summaries["news"].get("negative") or 0)
+                    + int(support_summaries["institution"].get("negative") or 0),
+                    "neutral": int(support_summaries["social"].get("neutral") or 0)
+                    + int(support_summaries["news"].get("neutral") or 0)
+                    + int(support_summaries["institution"].get("neutral") or 0),
+                    "net": int(support_summaries["social"].get("net") or 0)
+                    + int(support_summaries["news"].get("net") or 0)
+                    + int(support_summaries["institution"].get("net") or 0),
+                }
+
+            item = _to_scanner_discover_item(
+                tab=tab_value,
+                base_row=base,
+                live_row=live_row,
+                source_summary=source_summary,
+                support_summaries=support_summaries,
+            )
+            rows.append(item)
+        except Exception:
+            continue
+
+    buy_rows: List[Dict[str, Any]] = []
+    for item in rows:
+        action = str(item.get("action") or "").upper()
+        if action != "BUY":
+            continue
+        buy_rows.append(item)
+
+    buy_rows.sort(key=lambda x: _as_float_or_none(x.get("final_rank_score")) or float("-inf"), reverse=True)
+    segments[segment_value] = buy_rows[:limit_value]
+
+    return {
+        "updated_at": _utc_iso_now(),
+        "tab": tab_value,
+        "market": market_value,
+        "segments": segments,
+    }
 
 
 def _row_from_breakdown_snapshot(symbol: str, scanner_type: str, payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -1642,6 +1817,27 @@ def _get_cached_scanner_sources(symbol: str, scanner_type: str, timeframe: str) 
         if (time.time() - ts) > _SCANNER_SOURCES_CACHE_TTL_SECONDS:
             _SCANNER_SOURCES_CACHE.pop(key, None)
             return None
+        payload_type = str(payload.get("scanner_type") or payload.get("channel") or "").strip().lower() if isinstance(payload, dict) else ""
+        payload_symbol = str(payload.get("symbol") or "").strip().upper() if isinstance(payload, dict) else ""
+        payload_tf = str(payload.get("timeframe") or "").strip().lower() if isinstance(payload, dict) else ""
+        if payload_type and payload_type != str(scanner_type).strip().lower():
+            logger.warning(
+                "scanner_sources_cache_type_mismatch requested=%s cached=%s symbol=%s",
+                scanner_type,
+                payload_type,
+                symbol,
+            )
+            return None
+        if payload_symbol and payload_symbol != str(symbol).strip().upper():
+            logger.warning(
+                "scanner_sources_cache_symbol_mismatch requested=%s cached=%s scanner_type=%s",
+                symbol,
+                payload_symbol,
+                scanner_type,
+            )
+            return None
+        if payload_tf and payload_tf != str(timeframe).strip().lower():
+            return None
         return payload
 
 
@@ -1649,6 +1845,210 @@ def _set_cached_scanner_sources(symbol: str, scanner_type: str, timeframe: str, 
     key = _scanner_sources_cache_key(symbol, scanner_type, timeframe)
     with _SCANNER_SOURCES_CACHE_LOCK:
         _SCANNER_SOURCES_CACHE[key] = (time.time(), payload)
+
+
+def _source_summary_from_payload(payload: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    totals = payload.get("totals") if isinstance(payload, dict) and isinstance(payload.get("totals"), dict) else {}
+    posts = int(totals.get("posts") or 0)
+    mentions = int(totals.get("mentions") or posts)
+    positive = int(totals.get("positive") or 0)
+    negative = int(totals.get("negative") or 0)
+    neutral = int(totals.get("neutral") or max(0, posts - positive - negative))
+    net = int(totals.get("net") or (positive - negative))
+    return {
+        "posts": posts,
+        "mentions": mentions,
+        "positive": positive,
+        "negative": negative,
+        "neutral": neutral,
+        "net": net,
+    }
+
+
+def _social_buy_evidence_passed(source_summary: Dict[str, Any]) -> bool:
+    posts = int(source_summary.get("posts") or 0)
+    mentions = int(source_summary.get("mentions") or 0)
+    net = int(source_summary.get("net") or 0)
+    positive = int(source_summary.get("positive") or 0)
+    return (
+        posts >= _SOCIAL_BUY_MIN_POSTS
+        and mentions >= _SOCIAL_BUY_MIN_MENTIONS
+        and net >= _SOCIAL_BUY_MIN_NET
+        and positive >= _SOCIAL_BUY_MIN_POSITIVE
+    )
+
+
+def _news_buy_evidence_passed(source_summary: Dict[str, Any]) -> bool:
+    posts = int(source_summary.get("posts") or 0)
+    mentions = int(source_summary.get("mentions") or 0)
+    net = int(source_summary.get("net") or 0)
+    positive = int(source_summary.get("positive") or 0)
+    return (
+        posts >= _NEWS_BUY_MIN_POSTS
+        and mentions >= _NEWS_BUY_MIN_MENTIONS
+        and net >= _NEWS_BUY_MIN_NET
+        and positive >= _NEWS_BUY_MIN_POSITIVE
+    )
+
+
+def _institution_buy_evidence_passed(source_summary: Dict[str, Any]) -> bool:
+    posts = int(source_summary.get("posts") or 0)
+    mentions = int(source_summary.get("mentions") or 0)
+    net = int(source_summary.get("net") or 0)
+    positive = int(source_summary.get("positive") or 0)
+    return (
+        posts >= _INSTITUTION_BUY_MIN_POSTS
+        and mentions >= _INSTITUTION_BUY_MIN_MENTIONS
+        and net >= _INSTITUTION_BUY_MIN_NET
+        and positive >= _INSTITUTION_BUY_MIN_POSITIVE
+    )
+
+
+def _has_source_data(source_summary: Dict[str, Any]) -> bool:
+    posts = int(source_summary.get("posts") or 0)
+    mentions = int(source_summary.get("mentions") or 0)
+    return posts > 0 or mentions > 0
+
+
+def _momentum_gain_score(change_pct: Optional[float], volume_boost: float = 0.0) -> float:
+    change_value = _as_float_or_none(change_pct) or 0.0
+    return float(change_value) + float(volume_boost)
+
+
+def _final_rank_score(base_score: Optional[float], momentum_gain_score: float) -> float:
+    base_value = _as_float_or_none(base_score) or 0.0
+    return float(base_value) + (float(momentum_gain_score) * 0.6)
+
+
+def _get_or_build_source_summary(symbol: str, scanner_type: str, timeframe: str) -> Dict[str, Any]:
+    runtime = _get_cached_scanner_sources(symbol, scanner_type, timeframe)
+    if runtime is None:
+        runtime = _build_runtime_scanner_sources(symbol=symbol, scanner_type=scanner_type, timeframe=timeframe)
+        _set_cached_scanner_sources(symbol, scanner_type, timeframe, runtime)
+    return _source_summary_from_payload(runtime)
+
+
+def _apply_scanner_evidence_policy(
+    tab: str,
+    action: str,
+    score_val: Optional[float],
+    confidence_val: float,
+    explanation_short: str,
+    source_summary: Dict[str, Any],
+    support_summaries: Optional[Dict[str, Dict[str, Any]]] = None,
+) -> Tuple[str, Optional[float], float, str]:
+    tab_value = str(tab or "").strip().lower()
+    action_u = str(action or "HOLD").upper()
+    confidence_out = float(confidence_val or 0.0)
+    score_out = score_val
+    explanation_out = str(explanation_short or "")
+
+    posts = int(source_summary.get("posts") or 0)
+    mentions = int(source_summary.get("mentions") or 0)
+
+    if posts == 0 and mentions == 0 and tab_value in {"social", "news", "institution"}:
+        return ("NO_DATA", None, 0.0, "No data found in lookback window.")
+
+    if tab_value == "social":
+        if not _social_buy_evidence_passed(source_summary):
+            return ("HOLD", score_out, min(confidence_out, 0.35), "Not enough evidence to rate a BUY yet.")
+        if action_u != "BUY":
+            return ("HOLD", score_out, min(confidence_out, 0.35), "Scanner sentiment is positive, but trade engine does not confirm BUY.")
+        return (action_u, score_out, confidence_out, explanation_out or "Social sources support a BUY setup.")
+
+    if tab_value == "news":
+        if not _news_buy_evidence_passed(source_summary):
+            return ("HOLD", score_out, min(confidence_out, 0.35), "Not enough evidence to rate a BUY yet.")
+        if action_u != "BUY":
+            return ("HOLD", score_out, min(confidence_out, 0.35), "Scanner sentiment is positive, but trade engine does not confirm BUY.")
+        return (action_u, score_out, confidence_out, explanation_out or "News evidence supports a BUY setup.")
+
+    if tab_value == "institution":
+        if not _has_source_data(source_summary):
+            return ("NO_DATA", None, 0.0, "No data found in lookback window.")
+        if not _institution_buy_evidence_passed(source_summary):
+            return ("HOLD", score_out, min(confidence_out, 0.35), "Not enough evidence to rate a BUY yet.")
+        if action_u != "BUY":
+            return ("HOLD", score_out, min(confidence_out, 0.35), "Scanner sentiment is positive, but trade engine does not confirm BUY.")
+        return (action_u, score_out, confidence_out, explanation_out or "Institutional evidence supports a BUY setup.")
+
+    if tab_value == "overall":
+        support = support_summaries or {}
+        social = support.get("social") or {"posts": 0, "mentions": 0, "net": 0, "positive": 0}
+        news = support.get("news") or {"posts": 0, "mentions": 0, "net": 0, "positive": 0}
+        institution = support.get("institution") or {"posts": 0, "mentions": 0, "net": 0, "positive": 0}
+        has_external_data = any(
+            _has_source_data(summary) for summary in (social, news, institution)
+        )
+        if not has_external_data:
+            return ("NO_DATA", None, 0.0, "No data found in lookback window.")
+        if action_u != "BUY":
+            return ("HOLD", score_out, min(confidence_out, 0.35), "Scanner sentiment is positive, but trade engine does not confirm BUY.")
+        if any(int(summary.get("net") or 0) < 0 for summary in (social, news, institution) if _has_source_data(summary)):
+            return ("HOLD", score_out, min(confidence_out, 0.35), "Supporting agents are conflicting; BUY is not confirmed.")
+        minimum_presence_passed = (
+            _news_buy_evidence_passed(news)
+            or _social_buy_evidence_passed(social)
+            or _institution_buy_evidence_passed(institution)
+        )
+        if not minimum_presence_passed:
+            return ("HOLD", score_out, min(confidence_out, 0.35), "Not enough evidence to rate a BUY yet.")
+        return (action_u, score_out, confidence_out, explanation_out or "Overall evidence supports a BUY setup.")
+
+    if action_u != "BUY":
+        return ("HOLD", score_out, min(confidence_out, 0.35), explanation_out or "Not enough evidence to rate a BUY yet.")
+    return (action_u, score_out, confidence_out, explanation_out)
+
+
+def _to_scanner_discover_item(
+    tab: str,
+    base_row: Dict[str, Any],
+    live_row: Dict[str, Any],
+    source_summary: Dict[str, Any],
+    support_summaries: Optional[Dict[str, Dict[str, Any]]] = None,
+) -> Dict[str, Any]:
+    action = str(live_row.get("action") or "HOLD").upper()
+    score_val = _as_float_or_none(live_row.get("score"))
+    confidence_val = _as_float_or_none(live_row.get("confidence")) or 0.0
+    explanation_short = str(live_row.get("short_reason") or "")
+    action, score_val, confidence_val, explanation_short = _apply_scanner_evidence_policy(
+        tab=tab,
+        action=action,
+        score_val=score_val,
+        confidence_val=confidence_val,
+        explanation_short=explanation_short,
+        source_summary=source_summary,
+        support_summaries=support_summaries,
+    )
+
+    change_pct_value = _as_float_or_none(base_row.get("change_pct"))
+    momentum_gain_score = _momentum_gain_score(change_pct=change_pct_value, volume_boost=0.0)
+    final_rank_score = _final_rank_score(base_score=score_val, momentum_gain_score=momentum_gain_score)
+
+    return {
+        "symbol": str(base_row.get("symbol") or live_row.get("symbol") or "").strip().upper(),
+        "display_symbol": str(base_row.get("display_symbol") or base_row.get("symbol") or "").strip().upper(),
+        "market": str(base_row.get("market") or "US").strip().upper(),
+        "segment": str(base_row.get("segment") or "large").strip().lower(),
+        "price": live_row.get("price") if live_row.get("price") not in (0, 0.0) else None,
+        "change_pct": base_row.get("change_pct"),
+        "action": action,
+        "score": score_val,
+        "confidence": confidence_val,
+        "entry": live_row.get("entry_zone") if isinstance(live_row.get("entry_zone"), dict) else {
+            "low": live_row.get("entry_low"),
+            "high": live_row.get("entry_high"),
+        },
+        "target": live_row.get("target"),
+        "stop": live_row.get("stop"),
+        "trail": live_row.get("trail"),
+        "source_summary": source_summary,
+        "explanation_short": explanation_short,
+        "momentum_gain_score": momentum_gain_score,
+        "final_rank_score": final_rank_score,
+        "provider_used": live_row.get("provider_used") or base_row.get("provider_used"),
+        "timeframe": live_row.get("timeframe") or "1day",
+    }
 
 
 def _connector_specs_for_group(scanner_type: str) -> List[Dict[str, Any]]:

@@ -15,6 +15,7 @@ const outputsizeInput = document.getElementById('outputsize');
 
 const scannerList = document.getElementById('scannerList');
 const scannerToggleBtn = document.getElementById('scannerToggleBtn');
+const scannerSegment = document.getElementById('scannerSegment');
 const watchlistInput = document.getElementById('watchlistInput');
 const watchlistAddBtn = document.getElementById('watchlistAddBtn');
 const watchlistSort = document.getElementById('watchlistSort');
@@ -101,6 +102,8 @@ let openModalCount = 0;
 const state = {
   scannerExpanded: false,
   scannerAgent: 'overall',
+  scannerMarket: 'US',
+  scannerSegment: 'large',
   scannerRows: [],
   selectedSymbol: 'AAPL',
   watchlist: loadWatchlist(),
@@ -479,6 +482,17 @@ function initScannerModeToggle() {
   });
 }
 
+function parseScannerSegmentValue(rawValue) {
+  const raw = String(rawValue || 'US:large');
+  const [marketRaw, segmentRaw] = raw.split(':');
+  const market = String(marketRaw || 'US').trim().toUpperCase();
+  const segment = String(segmentRaw || 'large').trim().toLowerCase();
+  return {
+    market: market === 'AU' ? 'AU' : 'US',
+    segment: ['large', 'mid', 'small'].includes(segment) ? segment : 'large',
+  };
+}
+
 function _queueScannerTradeTask(task) {
   return new Promise((resolve, reject) => {
     scannerTradeQueue.push({ task, resolve, reject });
@@ -559,13 +573,16 @@ function _buildScannerRowFromTrade(symbol, tradePayload) {
 
 async function refreshScannerData() {
   setSectionLoading('scanner', true);
-  const endpoint = `/scanner/${encodeURIComponent(state.scannerAgent)}?interval=1day&bars=60&limit=10&refresh=true`;
+  const endpoint = `/scanner/discover?tab=${encodeURIComponent(state.scannerAgent)}&market=${encodeURIComponent(state.scannerMarket)}&segment=${encodeURIComponent(state.scannerSegment)}&interval=1day&bars=60&limit=20`;
   const result = await fetchJson(endpoint);
-  if (result.ok && Array.isArray(result.body?.rows) && result.body.rows.length) {
-    state.scannerRows = result.body.rows;
+  const segRows = result.body?.segments?.[state.scannerSegment];
+  if (result.ok && Array.isArray(segRows)) {
+    state.scannerRows = segRows.filter((row) => String(row?.action || '').toUpperCase() === 'BUY');
   } else {
     const snapshotResult = await fetchJson(`/scanner/latest?type=${encodeURIComponent(state.scannerAgent)}&limit=10`);
-    state.scannerRows = snapshotResult.ok && Array.isArray(snapshotResult.body?.rows) ? snapshotResult.body.rows : [];
+    state.scannerRows = snapshotResult.ok && Array.isArray(snapshotResult.body?.rows)
+      ? snapshotResult.body.rows.filter((row) => String(row?.action || '').toUpperCase() === 'BUY')
+      : [];
   }
   setSectionLoading('scanner', false);
   renderScanner();
@@ -573,9 +590,12 @@ async function refreshScannerData() {
 
 async function refreshScannerDataLive() {
   setSectionLoading('scanner', true);
-  const endpoint = `/scanner/${encodeURIComponent(state.scannerAgent)}?interval=1day&bars=60&limit=10&refresh=true`;
+  const endpoint = `/scanner/discover?tab=${encodeURIComponent(state.scannerAgent)}&market=${encodeURIComponent(state.scannerMarket)}&segment=${encodeURIComponent(state.scannerSegment)}&interval=1day&bars=60&limit=20&refresh=true`;
   const result = await fetchJson(endpoint);
-  state.scannerRows = result.ok && Array.isArray(result.body?.rows) ? result.body.rows : [];
+  const segRows = result.body?.segments?.[state.scannerSegment];
+  state.scannerRows = result.ok && Array.isArray(segRows)
+    ? segRows.filter((row) => String(row?.action || '').toUpperCase() === 'BUY')
+    : [];
   setSectionLoading('scanner', false);
   renderScanner();
 }
@@ -583,7 +603,7 @@ async function refreshScannerDataLive() {
 function renderScannerRows(rows) {
   if (!scannerList) return;
   if (!rows.length) {
-    scannerList.innerHTML = '<div class="scanner-empty">No scanner opportunities right now.</div>';
+    scannerList.innerHTML = '<div class="scanner-empty">No BUY opportunities found for this segment right now.</div>';
     return;
   }
 
@@ -593,6 +613,7 @@ function renderScannerRows(rows) {
       console.warn('Scanner row missing symbol', row);
     }
     const action = String(row.action || '').toUpperCase();
+    const isNoData = action === 'NO_DATA';
     const actionPillClass = action === 'BUY' ? 'bull' : action === 'SELL' ? 'bear' : 'neutral';
     const provider = row.provider || '-';
     const timeframe = row.timeframe || '1day';
@@ -608,6 +629,10 @@ function renderScannerRows(rows) {
       ? row.name.trim()
       : (typeof row.company_name === 'string' ? row.company_name.trim() : '');
     const nearEntry = Array.isArray(row.tags) && row.tags.includes('Near Entry');
+    const sourceSummary = row.source_summary && typeof row.source_summary === 'object' ? row.source_summary : null;
+    const sourceSummaryText = sourceSummary
+      ? `Posts ${Number(sourceSummary.posts || 0)} • Mentions ${Number(sourceSummary.mentions || 0)}`
+      : null;
     const resolvedPrice = resolveScannerPrice(row);
     const entryText = entryLow != null && entryHigh != null
       ? `${formatPrice(entryLow)}-${formatPrice(entryHigh)}`
@@ -627,8 +652,8 @@ function renderScannerRows(rows) {
           <div class="scan-subline">${provider} • ${timeframe}</div>
         <div class="scan-badges">
           <span class="pill pill-action ${actionPillClass}">${action || 'HOLD'}</span>
-          <span class="pill">Score ${scoreValue != null ? scoreValue : '-'}</span>
-          <span class="pill">Conf ${confText}</span>
+          ${!isNoData ? `<span class="pill">Score ${scoreValue != null ? scoreValue : '-'}</span>` : ''}
+          ${!isNoData ? `<span class="pill">Conf ${confText}</span>` : ''}
           ${rrText ? `<span class="pill">${rrText}</span>` : ''}
           ${nearEntry ? '<span class="pill pill-muted">Near Entry</span>' : ''}
         </div>
@@ -638,7 +663,14 @@ function renderScannerRows(rows) {
           <div class="kv"><span>Stop</span><strong>${stop != null ? formatPrice(stop) : '—'}</strong></div>
           <div class="kv"><span>Trail</span><strong>${trail != null ? formatPrice(trail) : '—'}</strong></div>
         </div>
-        ${reasons.length ? `<div class="scan-reasons">${reasons.map((r) => `<div class="reason">• ${r}</div>`).join('')}</div>` : (row.snapshot ? `<div class="scan-reasons"><div class="reason">• ${String(row.snapshot)}</div></div>` : '')}
+        ${reasons.length
+          ? `<div class="scan-reasons">${reasons.map((r) => `<div class="reason">• ${r}</div>`).join('')}</div>`
+          : (row.explanation_short
+              ? `<div class="scan-reasons"><div class="reason">• ${String(row.explanation_short)}</div></div>`
+              : (row.snapshot ? `<div class="scan-reasons"><div class="reason">• ${String(row.snapshot)}</div></div>` : '')
+            )
+        }
+        ${sourceSummaryText ? `<div class="scan-subline">${sourceSummaryText}</div>` : ''}
       </button>
       <div class="scan-actions">
         <button type="button" class="button-ghost scanner-monitor-btn" data-action="scanner-buy-now" data-symbol="${symbol}" data-price="${resolvedPrice != null ? Number(resolvedPrice) : ''}">BUY NOW</button>
@@ -2230,6 +2262,15 @@ if (scannerToggleBtn) {
   });
 }
 
+if (scannerSegment) {
+  scannerSegment.addEventListener('change', () => {
+    const parsed = parseScannerSegmentValue(scannerSegment.value);
+    state.scannerMarket = parsed.market;
+    state.scannerSegment = parsed.segment;
+    refreshScannerData();
+  });
+}
+
 if (watchlistSort) {
   watchlistSort.addEventListener('change', () => {
     state.watchlistSort = watchlistSort.value;
@@ -2426,6 +2467,11 @@ if (backtestBtn) {
 window.addEventListener('DOMContentLoaded', async () => {
   const initial = getSymbol();
   state.selectedSymbol = initial;
+  if (scannerSegment) {
+    const parsed = parseScannerSegmentValue(scannerSegment.value);
+    state.scannerMarket = parsed.market;
+    state.scannerSegment = parsed.segment;
+  }
   initScannerModeToggle();
   renderPanels();
   await refreshScannerData();
