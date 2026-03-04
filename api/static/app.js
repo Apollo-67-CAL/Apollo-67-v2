@@ -411,33 +411,43 @@ function renderScannerRows(rows) {
     const entryHigh = row.entry_high != null ? row.entry_high : row.entryHigh;
     const target = row.target;
     const stop = row.stop;
+    const trail = row.trail;
+    const name = typeof row.name === 'string' ? row.name.trim() : '';
     const nearEntry = Array.isArray(row.tags) && row.tags.includes('Near Entry');
     const entryText = entryLow != null && entryHigh != null
-      ? `${formatPrice(entryLow)} - ${formatPrice(entryHigh)}`
+      ? `${formatPrice(entryLow)}-${formatPrice(entryHigh)}`
       : '-';
+    const reasons = Array.isArray(row.reasons) ? row.reasons.slice(0, 2) : [];
 
     return `
-    <article class="symbol-card scanner-card ${state.selectedSymbol === symbol ? 'selected' : ''}" data-panel="scanner" data-symbol="${symbol}">
-      <button type="button" class="symbol-main scanner-main" data-action="select" data-panel="scanner" data-symbol="${symbol}">
-        <div class="scanner-topline">
-          <span class="scanner-symbol">${symbol}</span>
-          <span class="scanner-price">${scannerPriceText(row.price)}</span>
+    <article class="scan-card ${state.selectedSymbol === symbol ? 'selected' : ''}" data-panel="scanner" data-symbol="${symbol}">
+      <button type="button" class="scan-main" data-action="select" data-panel="scanner" data-symbol="${symbol}">
+        <div class="scan-head">
+          <div class="scan-id">
+            <div class="scan-symbol">${symbol}</div>
+            ${name ? `<div class="scan-name" title="${name}">${name}</div>` : ''}
+          </div>
+          <div class="scan-price">${scannerPriceText(row.price)}</div>
         </div>
-        <div class="scanner-subline">${provider} • ${timeframe}</div>
-        <div class="scanner-pills">
-          <span class="badge ${actionPillClass}">${action || 'HOLD'}</span>
+        <div class="scan-subline">${provider} • ${timeframe}</div>
+        <div class="scan-badges">
+          <span class="pill pill-action ${actionPillClass}">${action || 'HOLD'}</span>
           <span class="pill">Conf ${confText}</span>
           ${rrText ? `<span class="pill">${rrText}</span>` : ''}
-          ${nearEntry ? '<span class="badge neutral">Near Entry</span>' : ''}
+          ${nearEntry ? '<span class="pill pill-muted">Near Entry</span>' : ''}
         </div>
-        <div class="scanner-levels">
-          <span>Entry: ${entryText}</span>
-          <span>Target: ${target != null ? formatPrice(target) : '-'}</span>
-          <span>Stop: ${stop != null ? formatPrice(stop) : '-'}</span>
+        <div class="scan-levels">
+          <div class="kv"><span>Entry</span><strong>${entryText}</strong></div>
+          <div class="kv"><span>Target</span><strong>${target != null ? formatPrice(target) : '-'}</strong></div>
+          <div class="kv"><span>Stop</span><strong>${stop != null ? formatPrice(stop) : '-'}</strong></div>
+          <div class="kv"><span>Trail</span><strong>${trail != null ? formatPrice(trail) : '-'}</strong></div>
         </div>
-        ${Array.isArray(row.reasons) && row.reasons.length ? `<div class="scanner-reasons">${row.reasons.slice(0, 2).join(' • ')}</div>` : ''}
+        <div class="scan-reasons">
+          <div class="reason">${reasons[0] ? `• ${reasons[0]}` : '• -'}</div>
+          <div class="reason">${reasons[1] ? `• ${reasons[1]}` : '• -'}</div>
+        </div>
       </button>
-      <div class="scanner-actions">
+      <div class="scan-actions">
         <button type="button" class="button-ghost scanner-monitor-btn" data-action="scanner-buy-now" data-symbol="${symbol}" data-price="${row.price != null ? Number(row.price) : ''}">BUY NOW</button>
         <button type="button" class="button-ghost scanner-monitor-btn" data-action="scanner-watch" data-symbol="${symbol}" data-entry-low="${entryLow != null ? Number(entryLow) : ''}" data-entry-high="${entryHigh != null ? Number(entryHigh) : ''}">WATCH</button>
         <button type="button" class="button-ghost scanner-monitor-btn" data-action="scanner-monitor" data-symbol="${symbol}" data-price="${row.price != null ? Number(row.price) : ''}" data-entry-low="${entryLow != null ? Number(entryLow) : ''}" data-entry-high="${entryHigh != null ? Number(entryHigh) : ''}">MONITOR</button>
