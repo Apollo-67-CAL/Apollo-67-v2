@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Apollo 67 Admin - Tactics</title>
+  <link rel="stylesheet" href="/static/admin.css" />
+</head>
+<body>
+  <main class="admin-wrap" data-page="tactics-manager">
+    <header class="admin-header">
+      <h1>Trading Tactics Registry</h1>
+      <nav class="admin-nav">
+        <a href="/admin/sentiment">Sentiment Manager</a>
+        <a class="active" href="/admin/tactics">Trading Tactics</a>
+        <a href="/ui">Back to UI</a>
+      </nav>
+    </header>
+
+    <section class="admin-card">
+      <div class="help-panel">
+        <h3>Trading Tactics Overview</h3>
+        <p>A tactic defines a configurable trading style. Enabling a tactic makes it available to the admin configuration layer; activation chooses which profile is currently applied for interpretation.</p>
+        <h3>How To Add A Tactic</h3>
+        <ol>
+          <li>Click <strong>Create Tactic</strong>.</li>
+          <li>Enter name, description, tags, and parameters JSON.</li>
+          <li>Save the tactic, then enable/disable it from the table as needed.</li>
+        </ol>
+      </div>
+
+      <div class="admin-actions">
+        <input id="tacticsSearch" type="text" placeholder="Search tactics" />
+        <button id="tacticsCreateBtn" type="button">Create Tactic</button>
+      </div>
+      <div id="tacticsError" class="error" hidden></div>
+
+      <table class="admin-table" id="tacticsTable">
+        <thead>
+          <tr>
+            <th>Name</th>
+            <th>Tags</th>
+            <th>Enabled</th>
+            <th>Updated At</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </section>
+
+    <dialog id="tacticModal">
+      <form method="dialog" id="tacticForm" class="modal-form">
+        <h3 id="tacticModalTitle">Create Tactic</h3>
+        <input type="hidden" id="tacticId" />
+
+        <label>Name</label>
+        <input id="tacticName" type="text" required />
+
+        <label>Description</label>
+        <textarea id="tacticDescription" rows="3"></textarea>
+
+        <label>Tags (comma separated)</label>
+        <input id="tacticTags" type="text" placeholder="breakout,momentum" />
+
+        <label>Parameters JSON</label>
+        <textarea id="tacticParameters" rows="5">{"lookback":20,"risk_reward":2.0}</textarea>
+
+        <label class="inline-check"><input id="tacticEnabled" type="checkbox" checked /> Enabled</label>
+
+        <div class="modal-actions">
+          <button type="submit">Save</button>
+          <button id="tacticModalCancel" type="button" class="secondary">Cancel</button>
+        </div>
+      </form>
+    </dialog>
+  </main>
+
+  <script src="/static/admin.js"></script>
+</body>
+</html>

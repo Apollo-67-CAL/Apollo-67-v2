@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Apollo 67 Admin - Strategies</title>
+  <link rel="stylesheet" href="/static/admin.css" />
+</head>
+<body>
+  <main class="admin-page">
+    <header class="admin-header card">
+      <div>
+        <h1>Strategies Dashboard</h1>
+        <p class="muted">Strategy library, instruction mapping, monitor tracking, and lightweight backtest runner.</p>
+      </div>
+      <div class="button-row">
+        <a class="button button-secondary" href="/admin">Back to Admin</a>
+      </div>
+    </header>
+
+    <section class="card panel">
+      <div class="panel-head">
+        <h2>Strategy Library</h2>
+      </div>
+      <div id="strategyLibrary" class="strategy-grid"></div>
+    </section>
+
+    <section class="card panel">
+      <div class="panel-head">
+        <h2>Create Strategy From Instruction</h2>
+      </div>
+      <div class="help-panel">
+        Describe strategy intent in plain English. The parser extracts title, timeframe, risk preference and rules using deterministic heuristics.
+      </div>
+      <div class="control-grid">
+        <label>Preset
+          <select id="strategyPreset"></select>
+        </label>
+        <label>Name (optional)
+          <input id="strategyName" type="text" placeholder="My Custom Strategy" />
+        </label>
+      </div>
+      <label>Instruction
+        <textarea id="strategyInstruction" rows="4" placeholder="Example: Trend breakout with tight stops, medium risk, hold for 1day setups."></textarea>
+      </label>
+      <div class="button-row">
+        <button id="createStrategyBtn" type="button" class="button">Create Strategy</button>
+      </div>
+      <pre id="strategyCreateOutput">{}</pre>
+    </section>
+
+    <section class="card panel">
+      <div class="panel-head">
+        <h2>Monitors</h2>
+        <button id="refreshMonitorsBtn" type="button" class="button button-secondary">Refresh List</button>
+      </div>
+      <div class="control-grid">
+        <label>Filter by Strategy
+          <select id="monitorStrategyFilter"></select>
+        </label>
+        <label>Symbol
+          <input id="monitorSymbol" type="text" placeholder="AAPL" />
+        </label>
+        <label>Buy Amount
+          <input id="monitorBuyAmount" type="number" min="1" step="1" value="1000" />
+        </label>
+        <label>Quantity (optional)
+          <input id="monitorQuantity" type="number" min="0" step="0.0001" />
+        </label>
+      </div>
+      <div class="button-row">
+        <button id="createMonitorBtn" type="button" class="button">Add Monitor</button>
+      </div>
+      <div id="monitorSummary" class="summary-card"></div>
+      <div class="table-wrap">
+        <table class="admin-table" id="monitorsTable">
+          <thead>
+            <tr>
+              <th>ID</th>
+              <th>Strategy</th>
+              <th>Symbol</th>
+              <th>Entry</th>
+              <th>Qty</th>
+              <th>Last</th>
+              <th>PnL</th>
+              <th>PnL %</th>
+              <th>Updated</th>
+              <th>Action</th>
+            </tr>
+          </thead>
+          <tbody id="monitorsBody"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="card panel">
+      <div class="panel-head">
+        <h2>Backtest</h2>
+      </div>
+      <div class="control-grid">
+        <label>Strategy
+          <select id="backtestStrategy"></select>
+        </label>
+        <label>Symbol
+          <input id="backtestSymbol" type="text" value="AAPL" />
+        </label>
+        <label>Interval
+          <select id="backtestInterval">
+            <option value="1day" selected>1day</option>
+            <option value="1h">1h</option>
+          </select>
+        </label>
+        <label>Lookback
+          <input id="backtestLookback" type="number" min="50" max="2000" value="500" />
+        </label>
+      </div>
+      <div class="button-row">
+        <button id="runBacktestBtn" type="button" class="button">Run Backtest</button>
+      </div>
+      <div id="backtestMetrics" class="summary-card">Run a backtest to view metrics.</div>
+      <svg id="backtestChart" viewBox="0 0 600 160" width="100%" height="180" role="img" aria-label="Backtest equity curve"></svg>
+    </section>
+  </main>
+
+  <script src="/static/admin_strategies.js"></script>
+</body>
+</html>

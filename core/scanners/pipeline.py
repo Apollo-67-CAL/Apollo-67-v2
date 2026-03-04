@@ -95,7 +95,12 @@ def _fetch_sec_edgar(symbol: str, limit: int = 20) -> List[Dict[str, Any]]:
     return _parse_rss(_http_get(url), limit=limit)
 
 
-def fetch_items(symbol: str, group: str, connectors_enabled: Dict[str, bool]) -> Tuple[List[Dict[str, Any]], Dict[str, Dict[str, Any]]]:
+def fetch_items(
+    symbol: str,
+    group: str,
+    connectors_enabled: Dict[str, bool],
+    timeframe: str = "1day",
+) -> Tuple[List[Dict[str, Any]], Dict[str, Dict[str, Any]]]:
     symbol_value = (symbol or "").strip().upper()
     group_value = (group or "social").strip().lower()
     items: List[Dict[str, Any]] = []
@@ -137,6 +142,7 @@ def fetch_items(symbol: str, group: str, connectors_enabled: Dict[str, bool]) ->
                         "title": item.get("title"),
                         "text": item.get("text") or item.get("title") or "",
                         "ts": item.get("ts") or _now_iso(),
+                        "timeframe": timeframe,
                     }
                 )
             runtime_item["last_run"] = _now_iso()

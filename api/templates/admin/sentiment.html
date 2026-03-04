@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Apollo 67 Admin - Sentiment</title>
+  <link rel="stylesheet" href="/static/admin.css" />
+</head>
+<body>
+  <main class="admin-wrap" data-page="sentiment-manager">
+    <header class="admin-header">
+      <h1>Sentiment Manager</h1>
+      <nav class="admin-nav">
+        <a class="active" href="/admin/sentiment">Sentiment Manager</a>
+        <a href="/admin/tactics">Trading Tactics</a>
+        <a href="/ui">Back to UI</a>
+      </nav>
+    </header>
+
+    <section class="admin-card">
+      <div class="help-panel">
+        <h3>How Sentiment Inputs Work</h3>
+        <p><strong>Overall</strong> is the aggregate sentiment context. <strong>Institution</strong> captures institutional flow, <strong>News</strong> captures event impact, and <strong>Social</strong> captures crowd behaviour. These are inputs to scoring interpretation and confidence, not changes to core signal code.</p>
+      </div>
+
+      <div class="admin-actions">
+        <button id="sentimentSaveBtn" type="button">Save</button>
+        <button id="sentimentResetBtn" type="button" class="secondary">Reset to defaults</button>
+        <span id="sentimentLastUpdated" class="muted"></span>
+      </div>
+
+      <div id="sentimentError" class="error" hidden></div>
+
+      <table class="admin-table" id="sentimentTable">
+        <thead>
+          <tr>
+            <th>Scope</th>
+            <th>Enabled</th>
+            <th>Weight</th>
+            <th>Recency (min)</th>
+            <th>Bullish</th>
+            <th>Bearish</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+
+      <div class="weights-summary" id="weightsSummary"></div>
+    </section>
+
+    <section class="admin-card">
+      <h2>Recent Audit Entries</h2>
+      <table class="admin-table" id="sentimentAuditTable">
+        <thead>
+          <tr>
+            <th>ID</th>
+            <th>Scope</th>
+            <th>Changed By</th>
+            <th>Created At</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </section>
+  </main>
+
+  <script src="/static/admin.js"></script>
+</body>
+</html>
