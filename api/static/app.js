@@ -620,8 +620,6 @@ function renderScannerRows(rows) {
     const rrText = row.rr != null ? `RR ${Number(row.rr).toFixed(2)}` : null;
     const confValue = Number(row.confidence);
     const confPct = Number.isFinite(confValue) ? Math.max(0, Math.min(100, Math.round(confValue * 100))) : 0;
-    const confText = `${confPct}%`;
-    const confTooltip = Number.isFinite(confValue) ? `Confidence: ${confValue.toFixed(2)}` : 'Confidence: n/a';
     const scoreValue = resolveScannerScore(row);
     const entryLow = resolveScannerLevelValue(row.entry_low, row.entryLow, row?.entry_zone?.low, row?.trade?.entry_zone?.low);
     const entryHigh = resolveScannerLevelValue(row.entry_high, row.entryHigh, row?.entry_zone?.high, row?.trade?.entry_zone?.high);
@@ -665,7 +663,7 @@ function renderScannerRows(rows) {
           <div class="scan-subline">${provider} • ${timeframe}</div>
         <div class="scan-badges">
           <span class="pill pill-action ${actionPillClass}">${action || 'HOLD'}</span>
-          ${!isNoData ? `<span class="pill">Conf ${confText}</span>` : ''}
+          ${!isNoData ? `<span class="scan-inline-confidence" role="img" aria-label="Confidence: ${confPct}%" title="Confidence: ${confPct}%"><span class="scan-confidence-bar"><span class="scan-confidence-fill" style="width:${confPct}%;"></span></span></span>` : ''}
           ${rrText ? `<span class="pill">${rrText}</span>` : ''}
           ${nearEntry ? '<span class="pill pill-muted">Near Entry</span>' : ''}
         </div>
@@ -685,12 +683,7 @@ function renderScannerRows(rows) {
         ${sourceSummaryText ? `<div class="scan-subline">${sourceSummaryText}</div>` : ''}
       </button>
       <div class="scan-actions">
-        <div class="scan-buy-wrap">
-          <button type="button" class="button-ghost scanner-monitor-btn scan-buy-btn" data-action="scanner-buy-now" aria-label="Buy ${symbol}" data-symbol="${symbol}" data-price="${resolvedPrice != null ? Number(resolvedPrice) : ''}">BUY NOW</button>
-          <span class="scan-confidence-bar" role="img" aria-label="${confTooltip}" title="${confTooltip}">
-            <span class="scan-confidence-fill" style="width:${confPct}%;"></span>
-          </span>
-        </div>
+        <button type="button" class="button-ghost scanner-monitor-btn scan-buy-btn" data-action="scanner-buy-now" aria-label="Buy ${symbol}" data-symbol="${symbol}" data-price="${resolvedPrice != null ? Number(resolvedPrice) : ''}">BUY NOW</button>
         <button type="button" class="button-ghost scanner-monitor-btn" data-action="scanner-watch" data-symbol="${symbol}" data-entry-low="${entryLow != null ? Number(entryLow) : ''}" data-entry-high="${entryHigh != null ? Number(entryHigh) : ''}">WATCH</button>
         <button type="button" class="button-ghost scanner-monitor-btn" data-action="scanner-monitor" data-symbol="${symbol}" data-price="${resolvedPrice != null ? Number(resolvedPrice) : ''}" data-entry-low="${entryLow != null ? Number(entryLow) : ''}" data-entry-high="${entryHigh != null ? Number(entryHigh) : ''}">MONITOR</button>
         <button type="button" class="button-ghost scanner-monitor-btn" data-action="scanner-sources" data-symbol="${symbol}">SOURCES</button>

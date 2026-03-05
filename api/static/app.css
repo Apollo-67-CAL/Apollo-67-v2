@@ -446,20 +446,13 @@ html, body {
   width: 100%;
 }
 
-.scanner-panel .scan-buy-wrap {
+.scanner-panel .scan-inline-confidence {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
-  min-width: 0;
-}
-
-.scanner-panel .scan-buy-wrap .scan-buy-btn {
-  min-width: 110px;
-  width: auto;
 }
 
 .scanner-panel .scan-confidence-bar {
-  width: 64px;
+  width: 90px;
   height: 6px;
   border-radius: 999px;
   background: rgba(0, 0, 0, 0.10);
@@ -471,7 +464,7 @@ html, body {
   display: block;
   height: 100%;
   border-radius: 999px;
-  background: rgba(22, 163, 74, 0.85);
+  background: hsl(140 60% 45%);
 }
 
 h2 {
