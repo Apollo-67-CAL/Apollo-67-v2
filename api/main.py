@@ -3427,71 +3427,116 @@ def _paper_submit_order(payload: Dict[str, Any]) -> Tuple[Optional[Dict[str, Any
 
 @app.get("/paper/status")
 def paper_status():
-    positions = _paper_repo.list_positions(limit=1000)
-    open_orders = _paper_repo.list_orders(status="OPEN", limit=2000)
-    closed_orders = _paper_repo.list_orders(status="CLOSED", limit=2000)
-    runs = _paper_repo.list_runs(limit=20)
-    total_unreal = 0.0
-    total_real = 0.0
-    for row in positions:
-        try:
-            total_unreal += float(row.get("unrealised_pnl") or 0.0)
-        except Exception:
-            pass
-        try:
-            total_real += float(row.get("realised_pnl") or 0.0)
-        except Exception:
-            pass
-    closed_wins = 0
-    for row in closed_orders:
-        try:
-            if float(row.get("pnl") or 0.0) > 0:
-                closed_wins += 1
-        except Exception:
-            pass
-    return {
-        "ok": True,
-        "positions_count": len(positions),
-        "open_orders_count": len(open_orders),
-        "closed_orders_count": len(closed_orders),
-        "closed_wins": closed_wins,
-        "totals": {
-            "unrealised_pnl": total_unreal,
-            "realised_pnl": total_real,
-            "net_pnl": total_unreal + total_real,
-        },
-        "leaderboard": runs,
-        "config": _paper_config(),
-        "strategies": _paper_strategy_rows(),
-    }
+    try:
+        positions = _paper_repo.list_positions(limit=1000)
+        open_orders = _paper_repo.list_orders(status="OPEN", limit=2000)
+        closed_orders = _paper_repo.list_orders(status="CLOSED", limit=2000)
+        runs = _paper_repo.list_runs(limit=20)
+        total_unreal = 0.0
+        total_real = 0.0
+        for row in positions:
+            try:
+                total_unreal += float(row.get("unrealised_pnl") or 0.0)
+            except Exception:
+                pass
+            try:
+                total_real += float(row.get("realised_pnl") or 0.0)
+            except Exception:
+                pass
+        closed_wins = 0
+        for row in closed_orders:
+            try:
+                if float(row.get("pnl") or 0.0) > 0:
+                    closed_wins += 1
+            except Exception:
+                pass
+        return JSONResponse(
+            status_code=200,
+            content={
+                "ok": True,
+                "positions_count": len(positions),
+                "open_orders_count": len(open_orders),
+                "closed_orders_count": len(closed_orders),
+                "closed_wins": closed_wins,
+                "totals": {
+                    "unrealised_pnl": total_unreal,
+                    "realised_pnl": total_real,
+                    "net_pnl": total_unreal + total_real,
+                },
+                "leaderboard": runs,
+                "config": _paper_config(),
+                "strategies": _paper_strategy_rows(),
+            },
+        )
+    except Exception as exc:
+        return JSONResponse(status_code=500, content={"ok": False, "error": str(exc)})
 
 
 @app.get("/paper/positions")
 def paper_positions():
-    rows = _paper_repo.list_positions(limit=2000)
-    return {"ok": True, "rows": [_paper_position_view(row) for row in rows]}
+    try:
+        rows = _paper_repo.list_positions(limit=2000)
+        return JSONResponse(status_code=200, content={"ok": True, "rows": [_paper_position_view(row) for row in rows]})
+    except Exception as exc:
+        return JSONResponse(status_code=500, content={"ok": False, "error": str(exc)})
 
 
 @app.get("/paper/orders")
 def paper_orders(status: Optional[str] = None):
-    status_raw = str(status or "").strip().upper() or None
-    alias = {"FILLED": "OPEN", "OPEN": "OPEN", "CLOSED": "CLOSED", "CANCELLED": "CANCELLED"}
-    status_value = alias.get(status_raw) if status_raw else None
-    if status_raw and status_value is None:
-        return JSONResponse(status_code=400, content={"ok": False, "error": "status must be open|closed|cancelled"})
-    rows = _paper_repo.list_orders(status=status_value, limit=3000)
-    return {"ok": True, "rows": [_paper_order_view(row) for row in rows]}
+    try:
+        status_raw = str(status or "").strip().upper() or None
+        alias = {"FILLED": "OPEN", "OPEN": "OPEN", "CLOSED": "CLOSED", "CANCELLED": "CANCELLED"}
+        status_value = alias.get(status_raw) if status_raw else None
+        if status_raw and status_value is None:
+            return JSONResponse(status_code=400, content={"ok": False, "error": "status must be open|closed|cancelled"})
+        rows = _paper_repo.list_orders(status=status_value, limit=3000)
+        return JSONResponse(status_code=200, content={"ok": True, "rows": [_paper_order_view(row) for row in rows]})
+    except Exception as exc:
+        return JSONResponse(status_code=500, content={"ok": False, "error": str(exc)})
 
 
 @app.post("/paper/orders")
 def paper_orders_create(payload: Dict[str, Any]):
+    started = time.monotonic()
     try:
         order, err, code = _paper_submit_order(payload if isinstance(payload, dict) else {})
     except Exception as exc:
         return JSONResponse(status_code=500, content={"ok": False, "error": f"server_error: {exc}"})
     if err:
+        elapsed_ms = int((time.monotonic() - started) * 1000)
+        logger.info(
+            "paper_order_fail symbol=%s side=%s amount=%s strategy=%s elapsed_ms=%s err=%s",
+            str((payload or {}).get("symbol") or "").upper(),
+            str((payload or {}).get("side") or "BUY").upper(),
+            (payload or {}).get("amount_usd") or (payload or {}).get("notional"),
+            str((payload or {}).get("strategy_key") or "manual"),
+            elapsed_ms,
+            err,
+        )
         return JSONResponse(status_code=code, content={"ok": False, "error": err})
-    return JSONResponse(status_code=200, content={"ok": True, "order": order})
+    elapsed_ms = int((time.monotonic() - started) * 1000)
+    logger.info(
+        "paper_order_ok symbol=%s side=%s amount=%s strategy=%s fill=%s qty=%s elapsed_ms=%s",
+        str((payload or {}).get("symbol") or "").upper(),
+        str((payload or {}).get("side") or "BUY").upper(),
+        (payload or {}).get("amount_usd") or (payload or {}).get("notional"),
+        str((payload or {}).get("strategy_key") or "manual"),
+        order.get("fill_price"),
+        order.get("qty"),
+        elapsed_ms,
+    )
+    return JSONResponse(
+        status_code=200,
+        content={
+            "ok": True,
+            "order": order,
+            "order_id": order.get("id"),
+            "symbol": order.get("symbol"),
+            "side": order.get("side"),
+            "fill_price": order.get("fill_price"),
+            "qty": order.get("qty"),
+        },
+    )
 
 
 @app.post("/paper/strategies/resolve")

@@ -174,6 +174,7 @@ const state = {
   wsPollTimer: null,
   wsSubsTimer: null,
   paperStatus: null,
+  paperStatusError: '',
   paperPositions: [],
   paperRecentOrders: [],
   paperStrategies: [],
@@ -1180,10 +1181,11 @@ async function refreshMonitor() {
 
 async function refreshPaperTrading() {
   const [statusResult, positionsResult, ordersResult] = await Promise.all([
-    fetchJson('/paper/status'),
-    fetchJson('/paper/positions'),
-    fetchJson('/paper/orders'),
+    fetchJsonWithTimeout('/paper/status', undefined, 5000),
+    fetchJsonWithTimeout('/paper/positions', undefined, 6000),
+    fetchJsonWithTimeout('/paper/orders', undefined, 6000),
   ]);
+  state.paperStatusError = statusResult.ok ? '' : getErrorMessage(statusResult, 'Paper trading temporarily unavailable');
   state.paperStatus = statusResult.ok ? (statusResult.body || {}) : {};
   state.paperStrategies = Array.isArray(state.paperStatus?.strategies) ? state.paperStatus.strategies : [];
   state.paperPositions = positionsResult.ok && Array.isArray(positionsResult.body?.rows)
@@ -1408,8 +1410,60 @@ async function fetchJson(url, options = undefined) {
   }
 }
 
+async function fetchJsonWithTimeout(url, options = undefined, timeoutMs = 6000) {
+  const controller = new AbortController();
+  const limitMs = Math.max(1000, Number(timeoutMs) || 6000);
+  const t = window.setTimeout(() => controller.abort(), limitMs);
+  try {
+    const merged = { ...(options || {}), signal: controller.signal };
+    const response = await fetch(url, merged);
+    const text = await response.text();
+    const contentType = String(response.headers.get('content-type') || '').toLowerCase();
+    const isJson = contentType.includes('application/json') || contentType.includes('+json');
+    let data = {};
+    if (text) {
+      if (isJson) {
+        try {
+          data = JSON.parse(text);
+        } catch {
+          data = { error: 'Paper trade API returned non-JSON. Check server logs.', detail: 'Failed to parse JSON body' };
+        }
+      } else {
+        data = {
+          error: 'Paper trade API returned non-JSON. Check server logs.',
+          detail: `HTTP ${response.status} ${text.slice(0, 200)}`,
+        };
+      }
+    }
+    const hasError = data && typeof data.error === 'string' && data.error.trim();
+    return {
+      ok: response.ok && !hasError,
+      status: response.status,
+      body: data,
+    };
+  } catch (error) {
+    const timeoutMsg = `Request timed out after ${Math.round(limitMs / 1000)}s`;
+    return {
+      ok: false,
+      status: 0,
+      body: { error: error?.name === 'AbortError' ? timeoutMsg : (error?.message || 'Network request failed') },
+    };
+  } finally {
+    window.clearTimeout(t);
+  }
+}
+
 function asJson(payload) {
   return JSON.stringify(payload, null, 2);
+}
+
+function escapeHtml(value) {
+  return String(value || '')
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;');
 }
 
 function pulseValue(el) {
@@ -2290,7 +2344,7 @@ async function submitPaperOrderModal() {
   }
 
   try {
-    const res = await fetchJson('/paper/orders', {
+    const res = await fetchJsonWithTimeout('/paper/orders', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -2301,7 +2355,7 @@ async function submitPaperOrderModal() {
         tactic_label: tacticLabel,
         source,
       }),
-    });
+    }, 6000);
     if (!res.ok || !res.body?.ok) {
       const msg = getErrorMessage(res, 'Failed to place paper BUY order');
       if (paperOrderModalError) {
@@ -3015,7 +3069,8 @@ function renderPaperTrading() {
   const positions = Array.isArray(state.paperPositions) ? state.paperPositions : [];
   const orders = Array.isArray(state.paperRecentOrders) ? state.paperRecentOrders : [];
 
-  paperSummary.innerHTML = `
+  const statusError = state.paperStatusError ? `<div class="panel-error" style="margin-bottom:8px;">${escapeHtml(state.paperStatusError)}</div>` : '';
+  paperSummary.innerHTML = `${statusError}
     <div class="monitor-total-item"><span>Open Positions</span><strong>${positions.length}</strong></div>
     <div class="monitor-total-item"><span>Open Orders</span><strong>${Number(status.open_orders_count || 0)}</strong></div>
     <div class="monitor-total-item"><span>Net P/L</span><strong class="${Number(totals.net_pnl || 0) >= 0 ? 'up' : 'down'}">$${formatPrice(Number(totals.net_pnl || 0))}</strong></div>
