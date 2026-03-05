@@ -2940,6 +2940,76 @@ def paper_orders(status: Optional[str] = None):
     return {"ok": True, "rows": _paper_repo.list_orders(status=status_value, limit=3000)}
 
 
+@app.post("/paper/order")
+def paper_order(payload: dict[str, Any]):
+    side = str(payload.get("side") or "BUY").strip().upper()
+    symbol = str(payload.get("symbol") or "").strip().upper()
+    order_type = str(payload.get("order_type") or "MARKET").strip().upper()
+
+    if not symbol:
+        return JSONResponse(status_code=400, content={"ok": False, "error": "symbol is required"})
+    if side not in {"BUY", "SELL"}:
+        return JSONResponse(status_code=400, content={"ok": False, "error": "side must be BUY or SELL"})
+    if order_type not in {"MARKET", "LIMIT"}:
+        return JSONResponse(status_code=400, content={"ok": False, "error": "order_type must be MARKET or LIMIT"})
+
+    if side == "SELL":
+        return JSONResponse(status_code=400, content={"ok": False, "error": "SELL via /paper/order is not supported yet"})
+
+    qty_value: Optional[float]
+    notional_value: Optional[float]
+    qty_raw = payload.get("qty")
+    notional_raw = payload.get("notional")
+    try:
+        qty_value = float(qty_raw) if qty_raw not in (None, "") else None
+    except Exception:
+        return JSONResponse(status_code=400, content={"ok": False, "error": "qty must be numeric"})
+    try:
+        notional_value = float(notional_raw) if notional_raw not in (None, "") else None
+    except Exception:
+        return JSONResponse(status_code=400, content={"ok": False, "error": "notional must be numeric"})
+
+    if qty_value is not None and qty_value <= 0:
+        return JSONResponse(status_code=400, content={"ok": False, "error": "qty must be > 0"})
+    if notional_value is not None and notional_value <= 0:
+        return JSONResponse(status_code=400, content={"ok": False, "error": "notional must be > 0"})
+
+    try:
+        quote = get_quote_with_fallback(symbol=symbol, freshness_seconds=60)
+        price = float(quote.quote.last)
+    except Exception as exc:
+        return JSONResponse(status_code=503, content={"ok": False, "error": f"quote unavailable: {exc}"})
+
+    if price <= 0:
+        return JSONResponse(status_code=503, content={"ok": False, "error": "quote price unavailable"})
+
+    if qty_value is None and notional_value is None:
+        qty_value = 1.0
+    if qty_value is not None and notional_value is None:
+        notional_value = float(qty_value) * float(price)
+    if notional_value is not None and qty_value is None:
+        qty_value = float(notional_value) / float(price)
+
+    assert qty_value is not None
+    assert notional_value is not None
+
+    scanner_meta = {
+        "source": str(payload.get("source") or "ui"),
+        "confidence": _as_float_or_none(payload.get("confidence")),
+        "score": _as_float_or_none(payload.get("score")),
+    }
+    order = _paper_engine.place_buy_from_scanner(
+        symbol=symbol,
+        notional=float(notional_value),
+        quote={"last": price, "provider": quote.provider},
+        trade=None,
+        scanner_meta=scanner_meta,
+    )
+    if not order:
+        return JSONResponse(status_code=409, content={"ok": False, "error": "BUY order could not be placed (position may already exist)"})
+    return {"ok": True, "order": order}
+
+
 @app.post("/paper/config")
 def paper_config_update(payload: dict[str, Any]):
     cfg = _paper_config()

@@ -1785,6 +1785,7 @@ let scoreTooltipEl = null;
 let scoreTooltipPinned = false;
 const scoreBadgeStateBySymbol = new Map();
 const scoreBadgesLegendOrder = ["technical", "institution", "news", "social"];
+const paperBuyInFlightBySymbol = new Map();
 
 function scoreMeaningBucket(score) {
   if (score >= 80) return 'Multiple indicators aligned. High probability upward momentum.';
@@ -1952,6 +1953,82 @@ function hideScoreTooltip(force = false) {
   if (!force && scoreTooltipPinned) return;
   scoreTooltipEl.hidden = true;
   scoreTooltipPinned = false;
+}
+
+function setInlineButtonFeedback(button, message, isError) {
+  if (!button || !button.parentElement) return;
+  const host = button.parentElement;
+  let el = host.querySelector('.inline-buy-feedback');
+  if (!el) {
+    el = document.createElement('span');
+    el.className = 'inline-buy-feedback';
+    el.style.fontSize = '0.72rem';
+    el.style.marginLeft = '6px';
+    host.appendChild(el);
+  }
+  el.textContent = message;
+  el.style.color = isError ? '#b91c1c' : '#166534';
+  window.setTimeout(() => {
+    if (el && el.parentElement && el.textContent === message) {
+      el.textContent = '';
+    }
+  }, 2800);
+}
+
+async function placePaperBuy(symbol, opts = {}) {
+  const symbolNorm = normalizeSymbol(symbol);
+  if (!symbolNorm) {
+    throw new Error('Invalid symbol');
+  }
+  const qtyRaw = Number(opts.qty);
+  const qty = Number.isFinite(qtyRaw) && qtyRaw > 0 ? qtyRaw : 1;
+  const button = opts.button || null;
+  if (paperBuyInFlightBySymbol.get(symbolNorm)) {
+    return null;
+  }
+
+  paperBuyInFlightBySymbol.set(symbolNorm, true);
+  if (button) {
+    button.disabled = true;
+    button.dataset.prevText = button.textContent || 'BUY';
+    button.textContent = 'Buying...';
+  }
+
+  try {
+    const payload = {
+      side: 'BUY',
+      symbol: symbolNorm,
+      qty,
+      order_type: 'MARKET',
+    };
+    const res = await fetchJson('/paper/order', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok || !res.body?.ok) {
+      throw new Error(getErrorMessage(res, 'Failed to place paper BUY order'));
+    }
+    await refreshPaperTrading();
+    if (button) {
+      button.textContent = 'Added';
+      setInlineButtonFeedback(button, 'Added to Paper Trading', false);
+      window.setTimeout(() => {
+        if (button && button.dataset.prevText) {
+          button.textContent = button.dataset.prevText;
+        }
+      }, 1200);
+    }
+    return res.body;
+  } finally {
+    paperBuyInFlightBySymbol.delete(symbolNorm);
+    if (button) {
+      button.disabled = false;
+      if (button.dataset.prevText && button.textContent === 'Buying...') {
+        button.textContent = button.dataset.prevText;
+      }
+    }
+  }
 }
 
 function entryZoneText(zone) {
@@ -2835,11 +2912,17 @@ document.addEventListener('click', (event) => {
   const scannerBuyNow = event.target.closest('[data-action="scanner-buy-now"]');
   if (scannerBuyNow) {
     const symbol = normalizeSymbol(scannerBuyNow.dataset.symbol);
-    const price = Number(scannerBuyNow.dataset.price);
-    openMonitorModal({
-      symbol,
-      amount: 1000,
-      buy_price: Number.isFinite(price) ? price : undefined,
+    placePaperBuy(symbol, { button: scannerBuyNow }).catch((err) => {
+      setInlineButtonFeedback(scannerBuyNow, err?.message || 'BUY failed', true);
+    });
+    return;
+  }
+
+  const genericBuy = event.target.closest('[data-action="buy"], [data-action="paper-buy"], [data-action="buy-now"]');
+  if (genericBuy) {
+    const symbol = normalizeSymbol(genericBuy.dataset.symbol || getSymbol());
+    placePaperBuy(symbol, { button: genericBuy }).catch((err) => {
+      setInlineButtonFeedback(genericBuy, err?.message || 'BUY failed', true);
     });
     return;
   }
