@@ -1693,11 +1693,20 @@ function clampScoreForBadge(value) {
 
 function scoreHueForBadge(score) {
   const clamped = clampScoreForBadge(score);
-  if (clamped == null) return 45;
-  if (clamped <= 0) {
-    return Math.round(((clamped + 100) / 100) * 45);
+  if (clamped == null) return 0;
+  if (clamped >= 0) {
+    return Math.round(45 + (clamped * 0.75));
   }
-  return Math.round(45 + ((clamped / 100) * (120 - 45)));
+  return Math.max(0, Math.min(25, Math.round(25 + (clamped * 0.25))));
+}
+
+function scoreRingStrokeForBadge(score) {
+  const clamped = clampScoreForBadge(score);
+  if (clamped == null || (clamped >= -10 && clamped <= 10)) {
+    return 'hsl(0 0% 55%)';
+  }
+  const hue = scoreHueForBadge(clamped);
+  return `hsl(${hue} 70% 45%)`;
 }
 
 function formatScoreBadgeText(rawScore) {
@@ -1725,9 +1734,10 @@ function renderScoreBadge(rawScore, options = {}) {
   const scoreText = formatScoreBadgeText(rawScore);
   const ariaValue = clamped == null ? 'unavailable' : String(Math.round(clamped));
   const strength = clamped == null ? 0 : Math.abs(clamped) / 100;
-  const radius = 14;
+  const radius = 15;
   const circumference = 2 * Math.PI * radius;
   const dashOffset = circumference * (1 - strength);
+  const ringStroke = scoreRingStrokeForBadge(clamped);
   const normalized = normalizeScoreComponents(scoreComponents);
   const componentsEncoded = normalized
     ? encodeURIComponent(JSON.stringify(normalized))
@@ -1735,36 +1745,14 @@ function renderScoreBadge(rawScore, options = {}) {
   const evidenceEncoded = evidence && typeof evidence === 'object'
     ? encodeURIComponent(JSON.stringify(evidence))
     : '';
-  const key = `${normalizeSymbol(symbol || '') || '__unknown__'}::${small ? 'sm' : 'md'}`;
-  const prev = scoreBadgeStateBySymbol.get(key);
   const confNum = Number(confidence);
-  const isBuy = clamped != null && clamped >= 70 && Number.isFinite(confNum) && confNum >= 0.55;
   const className = ['score-badge', small ? 'score-badge--sm' : '', loading ? 'skeleton-chip' : '']
     .filter(Boolean)
     .join(' ');
 
-  const now = Date.now();
-  const pulse = Boolean(prev && !prev.isBuy && isBuy);
-  let flash = false;
-  const scoreNum = clamped == null ? null : Number(clamped);
-  const delta = prev && scoreNum != null && prev.score != null ? scoreNum - prev.score : 0;
-  if (delta >= 10 && (!prev || now - Number(prev.lastFlashAt || 0) >= 2000)) {
-    flash = true;
-  }
-  scoreBadgeStateBySymbol.set(key, {
-    score: scoreNum,
-    isBuy,
-    lastFlashAt: flash ? now : (prev?.lastFlashAt || 0),
-  });
-
-  const segMarkup = normalized
-    ? buildScoreSegmentMarkup({ components: normalized, radius, circumference, hue })
-    : '';
-
-  const motionClass = [pulse ? 'score-badge--pulse' : '', flash ? 'score-badge--flash' : ''].filter(Boolean).join(' ');
-  const badgeClasses = [className, motionClass].filter(Boolean).join(' ');
+  const badgeClasses = className;
   return `<span class="${badgeClasses}"
-      style="--sb-h:${hue}; --sb-s:70%; --sb-l:40%; --sb-circ:${circumference}; --sb-offset:${dashOffset};"
+      style="--sb-h:${hue}; --sb-s:70%; --sb-l:40%; --sb-circ:${circumference}; --sb-offset:${dashOffset}; --sb-ring-colour:${ringStroke};"
       data-score="${ariaValue}"
       data-confidence="${Number.isFinite(confNum) ? String(confNum) : ''}"
       data-components="${componentsEncoded}"
@@ -1772,10 +1760,9 @@ function renderScoreBadge(rawScore, options = {}) {
       aria-label="Score ${ariaValue}"
       title="Signal strength score"
       tabindex="0">
-      <svg class="score-badge-svg" viewBox="0 0 34 34" aria-hidden="true" focusable="false">
-        <circle class="score-ring-bg" cx="17" cy="17" r="${radius}"></circle>
-        <circle class="score-ring-fill" cx="17" cy="17" r="${radius}"></circle>
-        ${segMarkup}
+      <svg class="score-badge-svg" viewBox="0 0 36 36" aria-hidden="true" focusable="false">
+        <circle class="score-ring-bg" cx="18" cy="18" r="${radius}"></circle>
+        <circle class="score-ring-fill" cx="18" cy="18" r="${radius}"></circle>
       </svg>
       <span class="score-badge-value">${scoreText}</span>
     </span>`;
@@ -1783,7 +1770,6 @@ function renderScoreBadge(rawScore, options = {}) {
 
 let scoreTooltipEl = null;
 let scoreTooltipPinned = false;
-const scoreBadgeStateBySymbol = new Map();
 const scoreBadgesLegendOrder = ["technical", "institution", "news", "social"];
 const paperBuyInFlightBySymbol = new Map();
 

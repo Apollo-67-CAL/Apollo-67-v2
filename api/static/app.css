@@ -873,10 +873,10 @@ h2 {
   --sb-l: 40%;
   --sb-circ: 69.115;
   --sb-offset: 69.115;
-  width: 34px;
-  height: 34px;
-  min-width: 34px;
-  min-height: 34px;
+  width: 36px;
+  height: 36px;
+  min-width: 36px;
+  min-height: 36px;
   border-radius: 999px;
   display: inline-grid;
   grid-template-areas: "stack";
@@ -884,7 +884,7 @@ h2 {
   justify-content: center;
   color: hsl(var(--sb-h) var(--sb-s) var(--sb-l));
   background: hsl(var(--sb-h) var(--sb-s) 90% / 0.25);
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 600;
   line-height: 1;
   font-family: var(--font);
@@ -917,11 +917,11 @@ h2 {
 }
 
 .score-ring-fill {
-  stroke: hsl(var(--sb-h) var(--sb-s) var(--sb-l));
+  stroke: var(--sb-ring-colour, hsl(var(--sb-h) var(--sb-s) var(--sb-l)));
   stroke-linecap: round;
   stroke-dasharray: var(--sb-circ);
   stroke-dashoffset: var(--sb-offset);
-  transition: stroke-dashoffset 220ms ease-out;
+  transition: stroke-dashoffset 250ms ease-out;
 }
 
 .score-ring-segment {
@@ -966,10 +966,10 @@ h2 {
 }
 
 .score-badge--sm {
-  width: 34px;
-  height: 34px;
-  min-width: 34px;
-  min-height: 34px;
+  width: 36px;
+  height: 36px;
+  min-width: 36px;
+  min-height: 36px;
 }
 
 .trend-icon {
@@ -1629,11 +1629,11 @@ pre {
 
   .score-badge,
   .score-badge--sm {
-    width: 30px;
-    height: 30px;
-    min-width: 30px;
-    min-height: 30px;
-    font-size: 11px;
+    width: 32px;
+    height: 32px;
+    min-width: 32px;
+    min-height: 32px;
+    font-size: 12px;
   }
 
   .trend-icon {
