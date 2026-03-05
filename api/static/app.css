@@ -803,12 +803,7 @@ h2 {
   pointer-events: auto;
 }
 
-#monitorModal[hidden] {
-  display: none !important;
-  pointer-events: none;
-}
-
-#scannerSourcesModal[hidden] {
+.monitor-modal[hidden] {
   display: none !important;
   pointer-events: none;
 }

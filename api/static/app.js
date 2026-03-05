@@ -2316,6 +2316,18 @@ function openPaperOrderModal({ symbol, defaultAmount, strategyKey, tacticLabel, 
 function closePaperOrderModal() {
   if (!paperOrderModal) return;
   paperOrderModal.hidden = true;
+  if (paperOrderModalError) {
+    paperOrderModalError.hidden = true;
+    paperOrderModalError.textContent = '';
+  }
+  if (paperOrderModalSuccess) {
+    paperOrderModalSuccess.hidden = true;
+    paperOrderModalSuccess.textContent = '';
+  }
+  if (paperOrderModalSubmit) {
+    paperOrderModalSubmit.disabled = false;
+    paperOrderModalSubmit.textContent = 'Place Paper Buy';
+  }
   openModalCount = Math.max(0, openModalCount - 1);
   document.body.style.overflow = openModalCount > 0 ? 'hidden' : '';
   paperOrderDraft = null;
