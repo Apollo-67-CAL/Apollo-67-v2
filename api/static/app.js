@@ -2660,11 +2660,28 @@ function renderMomentumIconWithOptions(row, loading, opts = {}) {
 }
 
 function renderWatchlistIndicatorGroup(row, loading) {
+  const labels = sentimentChipText(row);
+  const trendRaw = String(labels.trend || '').trim();
+  const momentumRaw = String(labels.momentum || '').trim();
+  const trendLower = trendRaw.toLowerCase();
+  const momentumLower = momentumRaw.toLowerCase();
+  const trendTone = trendLower.includes('bull')
+    ? 'green-text'
+    : trendLower.includes('bear')
+      ? 'red-text'
+      : 'grey-text';
+  const momentumTone = momentumLower.includes('positive') || momentumLower.includes('bull')
+    ? 'green-text'
+    : momentumLower.includes('negative') || momentumLower.includes('bear')
+      ? 'red-text'
+      : 'grey-text';
+  const trendValue = trendRaw ? trendRaw.charAt(0).toUpperCase() + trendRaw.slice(1) : 'Neutral';
+  const momentumValue = momentumRaw ? momentumRaw.charAt(0).toUpperCase() + momentumRaw.slice(1) : 'Neutral';
   return `
     <span class="watchlist-indicator-pack">
       <span class="watchlist-indicator-head">
-        <span class="watchlist-indicator-label">Trend</span>
-        <span class="watchlist-indicator-label">Momentum</span>
+        <span class="watchlist-indicator-label">Trend: <span class="${trendTone}">${trendValue}</span></span>
+        <span class="watchlist-indicator-label">Momentum: <span class="${momentumTone}">${momentumValue}</span></span>
       </span>
     </span>
   `;
