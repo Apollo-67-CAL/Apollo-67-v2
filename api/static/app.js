@@ -2918,8 +2918,8 @@ function renderWatchlistIndicatorGroup(row, loading) {
   return `
     <span class="watchlist-indicator-pack">
       <span class="watchlist-indicator-head">
-        <span class="watchlist-indicator-label">Trend: <span class="${trendTone}">${trendValue}</span></span>
-        <span class="watchlist-indicator-label">Momentum: <span class="${momentumTone}">${momentumValue}</span></span>
+        <span class="watchlist-indicator-label ${trendTone}">${trendValue}</span>
+        <span class="watchlist-indicator-label ${momentumTone}">${momentumValue}</span>
       </span>
     </span>
   `;
