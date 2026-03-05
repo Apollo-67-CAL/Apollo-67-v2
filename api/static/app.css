@@ -259,6 +259,36 @@ html, body {
   background: var(--surface);
 }
 
+.scanner-status-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 4px 10px;
+}
+
+.scanner-progress-track {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 90px;
+  height: 6px;
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.12);
+  overflow: hidden;
+}
+
+.scanner-progress-fill {
+  height: 100%;
+  width: 0;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #16a34a 0%, #22c55e 100%);
+  transition: width 180ms ease;
+}
+
+.scanner-status-refresh {
+  padding: 4px 8px;
+  font-size: 11px;
+}
+
 .scanner-panel .scanner-list {
   flex: 1 1 auto;
   min-height: 0;

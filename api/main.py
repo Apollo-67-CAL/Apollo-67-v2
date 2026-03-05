@@ -6,6 +6,8 @@ import json
 import logging
 import os
 import time
+import asyncio
+import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
@@ -83,6 +85,10 @@ _strategies_repo = StrategiesDashboardRepository()
 _SCANNER_SOURCES_CACHE_TTL_SECONDS = 300
 _SCANNER_SOURCES_CACHE: Dict[str, tuple[float, Dict[str, Any]]] = {}
 _SCANNER_SOURCES_CACHE_LOCK = Lock()
+_SCANNER_RUN_LOCK = Lock()
+_SCANNER_RUN_STATE: Dict[str, Dict[str, Any]] = {}
+_SCANNER_RUN_RESULTS: Dict[str, Dict[str, Any]] = {}
+_SCANNER_RUN_TASKS: Dict[str, Any] = {}
 
 _SOCIAL_BUY_MIN_POSTS = 5
 _SOCIAL_BUY_MIN_MENTIONS = 5
@@ -1621,110 +1627,353 @@ def scanner_social(interval: str = "1day", bars: int = 60, limit: int = 10, refr
     return _scanner_agent("social", interval=interval, bars=bars, limit=limit, refresh=refresh)
 
 
+def _scanner_run_key(tab: str, market: str, segment: str, interval: str, bars: int, limit: int) -> str:
+    return f"{tab.lower()}|{market.upper()}|{segment.lower()}|{interval}|{int(bars)}|{int(limit)}"
+
+
+def _scanner_state_defaults(run_id: Optional[str] = None) -> Dict[str, Any]:
+    return {
+        "state": "idle",
+        "run_id": run_id,
+        "error": None,
+        "last_run_at": None,
+        "progress": {"stage": "idle", "done": 0, "total": 0, "pct": 0, "eta_s": None},
+    }
+
+
+def _scanner_set_state(key: str, **updates: Any) -> Dict[str, Any]:
+    with _SCANNER_RUN_LOCK:
+        cur = dict(_SCANNER_RUN_STATE.get(key) or _scanner_state_defaults())
+        cur.update({k: v for k, v in updates.items()})
+        _SCANNER_RUN_STATE[key] = cur
+        return dict(cur)
+
+
+def _scanner_update_progress(key: str, stage: str, done: int, total: int, started_ts: float) -> None:
+    total_val = max(1, int(total))
+    done_val = max(0, min(int(done), total_val))
+    pct = int(round((done_val / total_val) * 100))
+    elapsed = max(0.0, time.monotonic() - float(started_ts))
+    eta = int((elapsed / done_val) * (total_val - done_val)) if done_val > 0 and done_val < total_val else None
+    _scanner_set_state(
+        key,
+        progress={"stage": stage, "done": done_val, "total": total_val, "pct": max(0, min(100, pct)), "eta_s": eta},
+    )
+
+
+def _scanner_discover_payload(
+    tab: str = "overall",
+    market: str = "ALL",
+    segment: str = "small",
+    limit: int = 20,
+    interval: str = "1day",
+    bars: int = 60,
+    refresh: bool = False,
+    progress_key: Optional[str] = None,
+    started_ts: Optional[float] = None,
+) -> Dict[str, Any]:
+    tab_value = str(tab or "overall").strip().lower()
+    market_value = str(market or "ALL").strip().upper()
+    segment_value = str(segment or "small").strip().lower()
+    limit_value = max(1, min(int(limit), 50))
+    bars_value = max(20, min(int(bars), 500))
+
+    if tab_value not in {"overall", "institution", "news", "social"}:
+        return {"ok": False, "error": "tab must be overall|institution|news|social"}
+    if market_value not in {"US", "AU", "ALL"}:
+        return {"ok": False, "error": "market must be US|AU|ALL"}
+    if segment_value not in {"large", "mid", "small"}:
+        return {"ok": False, "error": "segment must be large|mid|small"}
+
+    run_started = started_ts if started_ts is not None else time.monotonic()
+    markets_to_scan = ["US", "AU"] if market_value == "ALL" else [market_value]
+    segments = {"large": [], "mid": [], "small": []}
+    cfg = get_config()
+    discovered_batches: Dict[str, List[Dict[str, Any]]] = {}
+    total_symbols = 0
+    for mk in markets_to_scan:
+        discovered = discover_market_segment(
+            market=mk,
+            segment=segment_value,
+            limit=limit_value,
+            force_refresh=bool(refresh),
+        )
+        discovered_batches[mk] = discovered
+        total_symbols += len(discovered)
+    if progress_key:
+        _scanner_update_progress(progress_key, "universe", 0, max(1, total_symbols), run_started)
+
+    scanned_done = 0
+    quote_ok_count = 0
+    bars_ok_count = 0
+    trade_ok_count = 0
+    valid_data_count = 0
+    fail_reason_counts: Dict[str, int] = {}
+    all_rows: List[Dict[str, Any]] = []
+    by_market: Dict[str, Dict[str, Any]] = {}
+
+    def _mark_fail(reason: str) -> None:
+        fail_reason_counts[reason] = int(fail_reason_counts.get(reason) or 0) + 1
+
+    for mk in markets_to_scan:
+        rows: List[Dict[str, Any]] = []
+        discovered = discovered_batches.get(mk, [])
+        for base in discovered:
+            symbol = str(base.get("symbol") or "").strip().upper()
+            if not symbol:
+                _mark_fail("invalid_symbol")
+                scanned_done += 1
+                continue
+            try:
+                live_row = build_scanner_row(
+                    symbol=symbol,
+                    interval=interval,
+                    bars=bars_value,
+                    allow_live=True,
+                    bars_ttl_seconds=int(cfg.scanner_bars_ttl_seconds),
+                    quote_ttl_seconds=int(cfg.scanner_quote_ttl_seconds),
+                )
+                if _as_float_or_none(live_row.get("price")) is not None:
+                    quote_ok_count += 1
+                if _as_float_or_none(live_row.get("target")) is not None or _as_float_or_none(live_row.get("stop")) is not None:
+                    bars_ok_count += 1
+                    trade_ok_count += 1
+                if _as_float_or_none(live_row.get("confidence")) is not None:
+                    valid_data_count += 1
+
+                source_summary = {"posts": 0, "mentions": 0, "positive": 0, "negative": 0, "neutral": 0, "net": 0}
+                support_summaries: Optional[Dict[str, Dict[str, Any]]] = None
+                if tab_value in {"social", "news", "institution"}:
+                    source_summary = _get_or_build_source_summary(symbol=symbol, scanner_type=tab_value, timeframe=interval)
+                elif tab_value == "overall":
+                    support_summaries = {
+                        "social": _get_or_build_source_summary(symbol=symbol, scanner_type="social", timeframe=interval),
+                        "news": _get_or_build_source_summary(symbol=symbol, scanner_type="news", timeframe=interval),
+                        "institution": _get_or_build_source_summary(symbol=symbol, scanner_type="institution", timeframe=interval),
+                    }
+                    source_summary = {
+                        "posts": int(support_summaries["social"].get("posts") or 0)
+                        + int(support_summaries["news"].get("posts") or 0)
+                        + int(support_summaries["institution"].get("posts") or 0),
+                        "mentions": int(support_summaries["social"].get("mentions") or 0)
+                        + int(support_summaries["news"].get("mentions") or 0)
+                        + int(support_summaries["institution"].get("mentions") or 0),
+                        "positive": int(support_summaries["social"].get("positive") or 0)
+                        + int(support_summaries["news"].get("positive") or 0)
+                        + int(support_summaries["institution"].get("positive") or 0),
+                        "negative": int(support_summaries["social"].get("negative") or 0)
+                        + int(support_summaries["news"].get("negative") or 0)
+                        + int(support_summaries["institution"].get("negative") or 0),
+                        "neutral": int(support_summaries["social"].get("neutral") or 0)
+                        + int(support_summaries["news"].get("neutral") or 0)
+                        + int(support_summaries["institution"].get("neutral") or 0),
+                        "net": int(support_summaries["social"].get("net") or 0)
+                        + int(support_summaries["news"].get("net") or 0)
+                        + int(support_summaries["institution"].get("net") or 0),
+                    }
+
+                item = _to_scanner_discover_item(
+                    tab=tab_value,
+                    base_row=base,
+                    live_row=live_row,
+                    source_summary=source_summary,
+                    support_summaries=support_summaries,
+                )
+                rows.append(item)
+            except Exception:
+                _mark_fail("scan_error")
+            finally:
+                scanned_done += 1
+                if progress_key:
+                    _scanner_update_progress(progress_key, "trade", scanned_done, max(1, total_symbols), run_started)
+
+        all_rows.extend(rows)
+        market_buys = [item for item in rows if str(item.get("action") or "").upper() == "BUY"]
+        market_buys.sort(key=lambda x: _as_float_or_none(x.get("final_rank_score")) or float("-inf"), reverse=True)
+        by_market[mk] = {
+            "universe_size": len(discovered),
+            "scanned_count": len(rows),
+            "buy_count": len(market_buys),
+            "top": market_buys[:limit_value],
+        }
+
+    buy_rows = [item for item in all_rows if str(item.get("action") or "").upper() == "BUY"]
+    buy_rows.sort(key=lambda x: _as_float_or_none(x.get("final_rank_score")) or float("-inf"), reverse=True)
+    candidates = sorted(all_rows, key=lambda x: _as_float_or_none(x.get("final_rank_score")) or float("-inf"), reverse=True)
+    segments[segment_value] = buy_rows[:limit_value]
+    if progress_key:
+        _scanner_update_progress(progress_key, "finalize", max(1, total_symbols), max(1, total_symbols), run_started)
+
+    return {
+        "ok": True,
+        "updated_at": _utc_iso_now(),
+        "tab": tab_value,
+        "market": market_value,
+        "segments": segments,
+        "buy_opportunities": buy_rows[:limit_value],
+        "candidates_top": candidates[:limit_value],
+        "by_market": by_market,
+        "universe_size": total_symbols,
+        "scanned_count": scanned_done,
+        "quote_ok_count": quote_ok_count,
+        "bars_ok_count": bars_ok_count,
+        "trade_ok_count": trade_ok_count,
+        "buy_count": len(buy_rows),
+        "candidate_count": len(candidates),
+        "valid_data_rate": float(valid_data_count / max(1, scanned_done)),
+        "fail_reason_counts": fail_reason_counts,
+    }
+
+
+async def _scanner_run_task(key: str, params: Dict[str, Any], run_id: str) -> None:
+    _scanner_set_state(key, state="running", run_id=run_id, error=None, last_run_at=None)
+    started = time.monotonic()
+    try:
+        payload = await asyncio.to_thread(
+            _scanner_discover_payload,
+            params.get("tab"),
+            params.get("market"),
+            params.get("segment"),
+            params.get("limit"),
+            params.get("interval"),
+            params.get("bars"),
+            bool(params.get("refresh")),
+            key,
+            started,
+        )
+        with _SCANNER_RUN_LOCK:
+            _SCANNER_RUN_RESULTS[key] = payload
+        _scanner_set_state(key, state="idle", run_id=run_id, error=None, last_run_at=_utc_iso_now())
+    except Exception as exc:
+        _scanner_set_state(key, state="error", run_id=run_id, error=str(exc), last_run_at=_utc_iso_now())
+    finally:
+        with _SCANNER_RUN_LOCK:
+            _SCANNER_RUN_TASKS.pop(key, None)
+
+
+@app.post("/scanner/run")
+async def scanner_run(payload: Dict[str, Any]):
+    body = payload if isinstance(payload, dict) else {}
+    params = {
+        "tab": str(body.get("tab") or "overall").strip().lower(),
+        "market": str(body.get("market") or "ALL").strip().upper(),
+        "segment": str(body.get("segment") or "small").strip().lower(),
+        "interval": str(body.get("interval") or "1day").strip() or "1day",
+        "bars": max(20, min(int(body.get("bars") or 60), 500)),
+        "limit": max(1, min(int(body.get("limit") or 20), 50)),
+        "refresh": bool(body.get("refresh") or False),
+    }
+    if params["tab"] not in {"overall", "institution", "news", "social"}:
+        return JSONResponse(status_code=400, content={"ok": False, "error": "tab must be overall|institution|news|social"})
+    if params["market"] not in {"US", "AU", "ALL"}:
+        return JSONResponse(status_code=400, content={"ok": False, "error": "market must be US|AU|ALL"})
+    if params["segment"] not in {"small", "mid", "large"}:
+        return JSONResponse(status_code=400, content={"ok": False, "error": "segment must be small|mid|large"})
+
+    key = _scanner_run_key(
+        tab=params["tab"],
+        market=params["market"],
+        segment=params["segment"],
+        interval=params["interval"],
+        bars=params["bars"],
+        limit=params["limit"],
+    )
+    with _SCANNER_RUN_LOCK:
+        current = dict(_SCANNER_RUN_STATE.get(key) or _scanner_state_defaults())
+        task = _SCANNER_RUN_TASKS.get(key)
+        if task and not task.done() and current.get("state") in {"running", "queued"}:
+            return {"ok": True, "queued": False, "run_id": current.get("run_id"), "state": current.get("state")}
+        run_id = uuid.uuid4().hex[:12]
+        _SCANNER_RUN_STATE[key] = {
+            "state": "queued",
+            "run_id": run_id,
+            "error": None,
+            "last_run_at": current.get("last_run_at"),
+            "progress": {"stage": "queued", "done": 0, "total": 1, "pct": 0, "eta_s": None},
+        }
+        _SCANNER_RUN_TASKS[key] = asyncio.create_task(_scanner_run_task(key=key, params=params, run_id=run_id))
+    return {"ok": True, "queued": True, "run_id": run_id}
+
+
+@app.get("/scanner/status")
+def scanner_status(
+    tab: str = "overall",
+    market: str = "ALL",
+    segment: str = "small",
+    interval: str = "1day",
+    bars: int = 60,
+    limit: int = 20,
+):
+    key = _scanner_run_key(
+        tab=str(tab or "overall").strip().lower(),
+        market=str(market or "ALL").strip().upper(),
+        segment=str(segment or "small").strip().lower(),
+        interval=str(interval or "1day").strip() or "1day",
+        bars=max(20, min(int(bars), 500)),
+        limit=max(1, min(int(limit), 50)),
+    )
+    with _SCANNER_RUN_LOCK:
+        state_payload = dict(_SCANNER_RUN_STATE.get(key) or _scanner_state_defaults())
+        result_payload = dict(_SCANNER_RUN_RESULTS.get(key) or {})
+    last_run_at = state_payload.get("last_run_at")
+    stale = True
+    try:
+        if isinstance(last_run_at, str) and last_run_at:
+            dt = datetime.fromisoformat(last_run_at.replace("Z", "+00:00"))
+            stale = (datetime.now(timezone.utc) - dt).total_seconds() > 180
+    except Exception:
+        stale = True
+    return {
+        "ok": True,
+        "state": {
+            "state": state_payload.get("state") or "idle",
+            "run_id": state_payload.get("run_id"),
+            "error": state_payload.get("error"),
+        },
+        "progress": state_payload.get("progress"),
+        "stale": bool(stale),
+        "last_run_at": last_run_at,
+        "result": result_payload if result_payload else {
+            "ok": True,
+            "updated_at": None,
+            "tab": str(tab or "overall").strip().lower(),
+            "market": str(market or "ALL").strip().upper(),
+            "segments": {"large": [], "mid": [], "small": []},
+            "buy_opportunities": [],
+            "candidates_top": [],
+            "by_market": {},
+            "universe_size": 0,
+            "scanned_count": 0,
+            "quote_ok_count": 0,
+            "bars_ok_count": 0,
+            "trade_ok_count": 0,
+            "buy_count": 0,
+            "candidate_count": 0,
+            "valid_data_rate": 0.0,
+            "fail_reason_counts": {},
+        },
+    }
+
+
 @app.get("/scanner/discover")
 def scanner_discover(
     tab: str = "overall",
-    market: str = "US",
-    segment: str = "large",
+    market: str = "ALL",
+    segment: str = "small",
     limit: int = 20,
     interval: str = "1day",
     bars: int = 60,
     refresh: bool = False,
 ):
-    tab_value = str(tab or "overall").strip().lower()
-    market_value = str(market or "US").strip().upper()
-    segment_value = str(segment or "large").strip().lower()
-    limit_value = max(1, min(int(limit), 50))
-    bars_value = max(20, min(int(bars), 500))
-
-    if tab_value not in {"overall", "institution", "news", "social"}:
-        return JSONResponse(status_code=400, content={"error": "tab must be overall|institution|news|social"})
-    if market_value not in {"US", "AU"}:
-        return JSONResponse(status_code=400, content={"error": "market must be US|AU"})
-    if segment_value not in {"large", "mid", "small"}:
-        return JSONResponse(status_code=400, content={"error": "segment must be large|mid|small"})
-
-    segments = {"large": [], "mid": [], "small": []}
-    discovered = discover_market_segment(
-        market=market_value,
-        segment=segment_value,
-        limit=limit_value,
-        force_refresh=bool(refresh),
+    return _scanner_discover_payload(
+        tab=tab,
+        market=market,
+        segment=segment,
+        limit=limit,
+        interval=interval,
+        bars=bars,
+        refresh=refresh,
     )
-    rows: List[Dict[str, Any]] = []
-    cfg = get_config()
-
-    for base in discovered:
-        symbol = str(base.get("symbol") or "").strip().upper()
-        if not symbol:
-            continue
-        try:
-            live_row = build_scanner_row(
-                symbol=symbol,
-                interval=interval,
-                bars=bars_value,
-                allow_live=True,
-                bars_ttl_seconds=int(cfg.scanner_bars_ttl_seconds),
-                quote_ttl_seconds=int(cfg.scanner_quote_ttl_seconds),
-            )
-            source_summary = {"posts": 0, "mentions": 0, "positive": 0, "negative": 0, "neutral": 0, "net": 0}
-            support_summaries: Optional[Dict[str, Dict[str, Any]]] = None
-            if tab_value in {"social", "news", "institution"}:
-                source_summary = _get_or_build_source_summary(symbol=symbol, scanner_type=tab_value, timeframe=interval)
-            elif tab_value == "overall":
-                support_summaries = {
-                    "social": _get_or_build_source_summary(symbol=symbol, scanner_type="social", timeframe=interval),
-                    "news": _get_or_build_source_summary(symbol=symbol, scanner_type="news", timeframe=interval),
-                    "institution": _get_or_build_source_summary(symbol=symbol, scanner_type="institution", timeframe=interval),
-                }
-                source_summary = {
-                    "posts": int(support_summaries["social"].get("posts") or 0)
-                    + int(support_summaries["news"].get("posts") or 0)
-                    + int(support_summaries["institution"].get("posts") or 0),
-                    "mentions": int(support_summaries["social"].get("mentions") or 0)
-                    + int(support_summaries["news"].get("mentions") or 0)
-                    + int(support_summaries["institution"].get("mentions") or 0),
-                    "positive": int(support_summaries["social"].get("positive") or 0)
-                    + int(support_summaries["news"].get("positive") or 0)
-                    + int(support_summaries["institution"].get("positive") or 0),
-                    "negative": int(support_summaries["social"].get("negative") or 0)
-                    + int(support_summaries["news"].get("negative") or 0)
-                    + int(support_summaries["institution"].get("negative") or 0),
-                    "neutral": int(support_summaries["social"].get("neutral") or 0)
-                    + int(support_summaries["news"].get("neutral") or 0)
-                    + int(support_summaries["institution"].get("neutral") or 0),
-                    "net": int(support_summaries["social"].get("net") or 0)
-                    + int(support_summaries["news"].get("net") or 0)
-                    + int(support_summaries["institution"].get("net") or 0),
-                }
-
-            item = _to_scanner_discover_item(
-                tab=tab_value,
-                base_row=base,
-                live_row=live_row,
-                source_summary=source_summary,
-                support_summaries=support_summaries,
-            )
-            rows.append(item)
-        except Exception:
-            continue
-
-    buy_rows: List[Dict[str, Any]] = []
-    for item in rows:
-        action = str(item.get("action") or "").upper()
-        if action != "BUY":
-            continue
-        buy_rows.append(item)
-
-    buy_rows.sort(key=lambda x: _as_float_or_none(x.get("final_rank_score")) or float("-inf"), reverse=True)
-    segments[segment_value] = buy_rows[:limit_value]
-
-    return {
-        "updated_at": _utc_iso_now(),
-        "tab": tab_value,
-        "market": market_value,
-        "segments": segments,
-    }
 
 
 def _row_from_breakdown_snapshot(symbol: str, scanner_type: str, payload: Dict[str, Any]) -> Dict[str, Any]:

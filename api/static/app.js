@@ -16,6 +16,12 @@ const outputsizeInput = document.getElementById('outputsize');
 const scannerList = document.getElementById('scannerList');
 const scannerToggleBtn = document.getElementById('scannerToggleBtn');
 const scannerSegment = document.getElementById('scannerSegment');
+const scannerStatusRow = document.getElementById('scannerStatusRow');
+const scannerStatusPill = document.getElementById('scannerStatusPill');
+const scannerProgressTrack = document.getElementById('scannerProgressTrack');
+const scannerProgressFill = document.getElementById('scannerProgressFill');
+const scannerStatusMeta = document.getElementById('scannerStatusMeta');
+const scannerStatusRefreshBtn = document.getElementById('scannerStatusRefreshBtn');
 const watchlistInput = document.getElementById('watchlistInput');
 const watchlistAddBtn = document.getElementById('watchlistAddBtn');
 const watchlistSort = document.getElementById('watchlistSort');
@@ -117,8 +123,8 @@ let paperOrderDraft = null;
 const state = {
   scannerExpanded: false,
   scannerAgent: 'overall',
-  scannerMarket: 'US',
-  scannerSegment: 'large',
+  scannerMarket: 'ALL',
+  scannerSegment: 'small',
   scannerRows: [],
   selectedSymbol: 'AAPL',
   watchlist: loadWatchlist(),
@@ -157,6 +163,11 @@ const state = {
   scannerSourcesChannel: null,
   scannerSourcesTimeframe: '1day',
   scannerSourcesByKey: {},
+  scannerRuntimeStatus: { state: 'idle', run_id: null, error: null },
+  scannerRuntimeProgress: null,
+  scannerRuntimeStale: false,
+  scannerRuntimeLastRunAt: null,
+  scannerPollTimer: null,
   paperStatus: null,
   paperPositions: [],
   paperRecentOrders: [],
@@ -500,13 +511,13 @@ function initScannerModeToggle() {
 }
 
 function parseScannerSegmentValue(rawValue) {
-  const raw = String(rawValue || 'US:large');
+  const raw = String(rawValue || 'ALL:small');
   const [marketRaw, segmentRaw] = raw.split(':');
   const market = String(marketRaw || 'US').trim().toUpperCase();
   const segment = String(segmentRaw || 'large').trim().toLowerCase();
   return {
-    market: market === 'AU' ? 'AU' : 'US',
-    segment: ['large', 'mid', 'small'].includes(segment) ? segment : 'large',
+    market: ['US', 'AU', 'ALL'].includes(market) ? market : 'ALL',
+    segment: ['large', 'mid', 'small'].includes(segment) ? segment : 'small',
   };
 }
 
@@ -588,33 +599,114 @@ function _buildScannerRowFromTrade(symbol, tradePayload) {
   };
 }
 
-async function refreshScannerData() {
-  setSectionLoading('scanner', true);
-  const endpoint = `/scanner/discover?tab=${encodeURIComponent(state.scannerAgent)}&market=${encodeURIComponent(state.scannerMarket)}&segment=${encodeURIComponent(state.scannerSegment)}&interval=1day&bars=60&limit=20`;
-  const result = await fetchJson(endpoint);
-  const segRows = result.body?.segments?.[state.scannerSegment];
-  if (result.ok && Array.isArray(segRows)) {
-    state.scannerRows = segRows.filter((row) => String(row?.action || '').toUpperCase() === 'BUY');
-  } else {
-    const snapshotResult = await fetchJson(`/scanner/latest?type=${encodeURIComponent(state.scannerAgent)}&limit=10`);
-    state.scannerRows = snapshotResult.ok && Array.isArray(snapshotResult.body?.rows)
-      ? snapshotResult.body.rows.filter((row) => String(row?.action || '').toUpperCase() === 'BUY')
-      : [];
+function scannerParams({ refresh = false } = {}) {
+  return {
+    tab: state.scannerAgent || 'overall',
+    market: state.scannerMarket || 'ALL',
+    segment: state.scannerSegment || 'small',
+    interval: '1day',
+    bars: 60,
+    limit: 20,
+    refresh: Boolean(refresh),
+  };
+}
+
+function scheduleScannerStatusPoll(nextMs) {
+  if (state.scannerPollTimer) {
+    window.clearTimeout(state.scannerPollTimer);
+    state.scannerPollTimer = null;
   }
-  setSectionLoading('scanner', false);
+  state.scannerPollTimer = window.setTimeout(() => {
+    fetchScannerStatus().catch(() => {});
+  }, Math.max(1000, Number(nextMs) || 10000));
+}
+
+function renderScannerRuntimeStatus() {
+  if (!scannerStatusRow || !scannerStatusPill || !scannerProgressTrack || !scannerProgressFill || !scannerStatusMeta) return;
+  const st = state.scannerRuntimeStatus || { state: 'idle' };
+  const mode = String(st.state || 'idle').toLowerCase();
+  const progress = state.scannerRuntimeProgress && typeof state.scannerRuntimeProgress === 'object'
+    ? state.scannerRuntimeProgress
+    : null;
+  const pct = Number(progress?.pct);
+  const pctSafe = Number.isFinite(pct) ? Math.max(0, Math.min(100, pct)) : null;
+  const stage = String(progress?.stage || '').trim();
+  const eta = Number(progress?.eta_s);
+  let pillClass = 'pill';
+  if (mode === 'running') pillClass = 'pill bull';
+  else if (mode === 'queued') pillClass = 'pill';
+  else if (mode === 'error') pillClass = 'pill bear';
+  else if (state.scannerRuntimeStale) pillClass = 'pill muted-pill';
+  scannerStatusPill.className = pillClass;
+  scannerStatusPill.textContent = mode === 'running'
+    ? 'Scanning'
+    : mode === 'queued'
+      ? 'Queued'
+      : mode === 'error'
+        ? 'Error'
+        : (state.scannerRuntimeStale ? 'Stale' : 'Idle');
+  scannerProgressTrack.hidden = !(mode === 'running' || mode === 'queued');
+  if (mode === 'running' || mode === 'queued') {
+    if (pctSafe == null) {
+      scannerProgressFill.style.width = '35%';
+      scannerProgressFill.style.opacity = '0.6';
+    } else {
+      scannerProgressFill.style.width = `${pctSafe}%`;
+      scannerProgressFill.style.opacity = '1';
+    }
+  } else {
+    scannerProgressFill.style.width = '0%';
+  }
+  const lastUpdated = state.scannerRuntimeLastRunAt
+    ? String(state.scannerRuntimeLastRunAt).replace('T', ' ').slice(0, 19)
+    : 'n/a';
+  const etaText = Number.isFinite(eta) ? ` ETA ${eta}s` : '';
+  const stageText = stage ? `${stage}${etaText}` : '';
+  const errText = st.error ? ` • ${st.error}` : '';
+  scannerStatusMeta.textContent = `${stageText ? `${stageText} • ` : ''}Updated ${lastUpdated}${errText}`;
+}
+
+async function fetchScannerStatus() {
+  const params = scannerParams();
+  const q = `tab=${encodeURIComponent(params.tab)}&market=${encodeURIComponent(params.market)}&segment=${encodeURIComponent(params.segment)}&interval=${encodeURIComponent(params.interval)}&bars=${encodeURIComponent(params.bars)}&limit=${encodeURIComponent(params.limit)}`;
+  const result = await fetchJson(`/scanner/status?${q}`);
+  if (result.ok) {
+    const body = result.body || {};
+    state.scannerRuntimeStatus = body.state || { state: 'idle', run_id: null, error: null };
+    state.scannerRuntimeProgress = body.progress || null;
+    state.scannerRuntimeStale = Boolean(body.stale);
+    state.scannerRuntimeLastRunAt = body.last_run_at || null;
+    const rows = body.result?.segments?.[state.scannerSegment];
+    state.scannerRows = Array.isArray(rows)
+      ? rows.filter((row) => String(row?.action || '').toUpperCase() === 'BUY')
+      : [];
+    setSectionLoading('scanner', false);
+  } else {
+    state.scannerRuntimeStatus = { state: 'error', run_id: null, error: getErrorMessage(result, 'status failed') };
+  }
+  renderScannerRuntimeStatus();
   renderScanner();
+  const mode = String(state.scannerRuntimeStatus?.state || 'idle').toLowerCase();
+  scheduleScannerStatusPoll(mode === 'running' || mode === 'queued' ? 2000 : 10000);
+}
+
+async function queueScannerRun(refresh = false) {
+  const params = scannerParams({ refresh });
+  setSectionLoading('scanner', true);
+  await fetchJson('/scanner/run', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(params),
+  });
+  await fetchScannerStatus();
+}
+
+async function refreshScannerData() {
+  await queueScannerRun(false);
 }
 
 async function refreshScannerDataLive() {
-  setSectionLoading('scanner', true);
-  const endpoint = `/scanner/discover?tab=${encodeURIComponent(state.scannerAgent)}&market=${encodeURIComponent(state.scannerMarket)}&segment=${encodeURIComponent(state.scannerSegment)}&interval=1day&bars=60&limit=20&refresh=true`;
-  const result = await fetchJson(endpoint);
-  const segRows = result.body?.segments?.[state.scannerSegment];
-  state.scannerRows = result.ok && Array.isArray(segRows)
-    ? segRows.filter((row) => String(row?.action || '').toUpperCase() === 'BUY')
-    : [];
-  setSectionLoading('scanner', false);
-  renderScanner();
+  await queueScannerRun(true);
 }
 
 function renderScannerRows(rows) {
@@ -2755,6 +2847,7 @@ function renderScanner() {
   if (scannerToggleBtn) {
     scannerToggleBtn.textContent = 'Refresh';
   }
+  renderScannerRuntimeStatus();
   const rows = state.scannerRows.filter((row) => row && row.ok !== false);
   renderScannerRows(rows);
 }
@@ -2944,6 +3037,12 @@ function addPortfolioEntry() {
 
 if (scannerToggleBtn) {
   scannerToggleBtn.addEventListener('click', () => {
+    refreshScannerDataLive();
+  });
+}
+
+if (scannerStatusRefreshBtn) {
+  scannerStatusRefreshBtn.addEventListener('click', () => {
     refreshScannerDataLive();
   });
 }
@@ -3278,10 +3377,7 @@ window.addEventListener('DOMContentLoaded', async () => {
   }
   initScannerModeToggle();
   renderPanels();
-  await refreshScannerData();
-  window.setInterval(() => {
-    refreshScannerData();
-  }, 60000);
+  await refreshScannerDataLive();
   await refreshMonitor();
   window.setInterval(() => {
     refreshMonitor();
