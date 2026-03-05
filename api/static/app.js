@@ -2345,8 +2345,15 @@ function getPanelRows(symbols, panelName) {
   });
 }
 
-function renderCardDetails(row) {
+function renderCardDetails(row, panelName = '') {
   const debug = row.signal.debug || {};
+  const watchlistActions = panelName === 'watchlist'
+    ? `
+      <div class="watchlist-expand-actions">
+        <button type="button" class="button-ghost watchlist-buy-btn" data-action="watchlist-buy" data-symbol="${row.symbol}">Buy</button>
+      </div>
+    `
+    : '';
 
   return `
     <div class="expand-content">
@@ -2374,6 +2381,7 @@ function renderCardDetails(row) {
         <summary>Raw JSON</summary>
         <pre>${asJson({ quote: row.quote.raw, signal: row.signal.raw })}</pre>
       </details>
+      ${watchlistActions}
     </div>
   `;
 }
@@ -2439,6 +2447,15 @@ function renderWatchlistTrendIcon(row, loading) {
   `;
 }
 
+function indicatorPillClass(kind, stateLabel) {
+  const safeKind = kind === 'momentum' ? 'momentum' : 'trend';
+  let tone = 'neutral';
+  if (stateLabel === 'bullish' || stateLabel === 'up') tone = 'bull';
+  else if (stateLabel === 'bearish' || stateLabel === 'down') tone = 'bear';
+  else if (stateLabel === 'caution' || stateLabel === 'volatile') tone = 'warn';
+  return `indicator-pill indicator-pill--${safeKind} indicator-pill--${tone}`;
+}
+
 function momentumStateForRow(row) {
   const momentumRaw = String(row?.signal?.momentum || '').toLowerCase();
   if (momentumRaw.includes('volatile') || momentumRaw.includes('unstable')) return 'volatile';
@@ -2488,6 +2505,23 @@ function renderMomentumIcon(row, loading) {
   `;
 }
 
+function renderWatchlistIndicatorGroup(row, loading) {
+  const trendState = trendStateForWatchlist(row);
+  const momentumState = momentumStateForRow(row);
+  return `
+    <span class="watchlist-indicator-pack">
+      <span class="watchlist-indicator-head">
+        <span class="${indicatorPillClass('trend', trendState)}">Trend</span>
+        <span class="${indicatorPillClass('momentum', momentumState)}">Momentum</span>
+      </span>
+      <span class="watchlist-indicator-icons">
+        ${renderWatchlistTrendIcon(row, loading)}
+        ${renderMomentumIcon(row, loading)}
+      </span>
+    </span>
+  `;
+}
+
 function renderSymbolList(container, rows, panelName, options = {}) {
   const showQty = Boolean(options.showQty);
   const qtyBySymbol = options.qtyBySymbol || {};
@@ -2527,6 +2561,9 @@ function renderSymbolList(container, rows, panelName, options = {}) {
         ? renderWatchlistTrendIcon(row, !row.hasData)
         : `<span class="badge ${row.hasData ? trendClass : 'neutral'} ${row.hasData ? '' : 'skeleton-chip'}">${trendText}</span>`;
       const momentumElement = renderMomentumIcon(row, !row.hasData);
+      const watchlistIndicatorGroup = panelName === 'watchlist'
+        ? renderWatchlistIndicatorGroup(row, !row.hasData)
+        : '';
 
       return `
       <article class="symbol-card ${row.isSelected ? 'selected' : ''} ${loadingClass}" data-panel="${panelName}" data-symbol="${row.symbol}">
@@ -2536,13 +2573,13 @@ function renderSymbolList(container, rows, panelName, options = {}) {
             ${scoreBadge}
           </span>
           <span class="metric ${row.hasData ? '' : 'skeleton-chip'}">${priceText}</span>
-          ${trendElement}
-          ${momentumElement}
+          ${panelName === 'watchlist' ? watchlistIndicatorGroup : trendElement}
+          ${panelName === 'watchlist' ? '' : momentumElement}
           ${errBadge}
           ${qty}
           ${pl}
         </button>
-        ${row.isExpanded ? renderCardDetails(row) : ''}
+        ${row.isExpanded ? renderCardDetails(row, panelName) : ''}
       </article>
       `;
     })
@@ -2894,6 +2931,15 @@ document.addEventListener('click', (event) => {
     return;
   }
   hideScoreTooltip(true);
+
+  const watchlistBuy = event.target.closest('[data-action="watchlist-buy"]');
+  if (watchlistBuy) {
+    const symbol = normalizeSymbol(watchlistBuy.dataset.symbol || getSymbol());
+    placePaperBuy(symbol, { button: watchlistBuy }).catch((err) => {
+      setInlineButtonFeedback(watchlistBuy, err?.message || 'BUY failed', true);
+    });
+    return;
+  }
 
   const scannerBuyNow = event.target.closest('[data-action="scanner-buy-now"]');
   if (scannerBuyNow) {

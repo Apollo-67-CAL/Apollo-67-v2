@@ -1204,6 +1204,72 @@ h2 {
   margin-bottom: 10px;
 }
 
+#watchlistList .symbol-main {
+  grid-template-columns: minmax(92px, 1.25fr) minmax(72px, 0.9fr) minmax(118px, 1fr) auto auto auto;
+}
+
+#watchlistList .sym-with-score {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+#watchlistList .watchlist-indicator-pack {
+  display: inline-grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+#watchlistList .watchlist-indicator-head {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+#watchlistList .indicator-pill {
+  font-size: 10px;
+  line-height: 1;
+  padding: 2px 6px;
+  border-radius: 999px;
+  border: 1px solid var(--border-strong);
+  color: #334155;
+  background: #f8fafc;
+}
+
+#watchlistList .indicator-pill--bull {
+  color: #166534;
+  background: rgba(22, 163, 74, 0.14);
+  border-color: rgba(22, 163, 74, 0.28);
+}
+
+#watchlistList .indicator-pill--bear {
+  color: #991b1b;
+  background: rgba(220, 38, 38, 0.14);
+  border-color: rgba(220, 38, 38, 0.28);
+}
+
+#watchlistList .indicator-pill--warn {
+  color: #92400e;
+  background: rgba(245, 158, 11, 0.16);
+  border-color: rgba(245, 158, 11, 0.28);
+}
+
+#watchlistList .watchlist-indicator-icons {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+#watchlistList .watchlist-expand-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 8px;
+}
+
+#watchlistList .watchlist-buy-btn {
+  font-size: 0.74rem;
+  padding: 4px 9px;
+}
+
 .controls-row {
   display: grid;
   grid-template-columns: minmax(160px, 220px) auto minmax(240px, 1fr);
