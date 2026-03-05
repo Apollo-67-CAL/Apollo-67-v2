@@ -634,6 +634,7 @@ function renderScannerRows(rows) {
       ? `Posts ${Number(sourceSummary.posts || 0)} • Mentions ${Number(sourceSummary.mentions || 0)}`
       : null;
     const resolvedPrice = resolveScannerPrice(row);
+    const scoreBadge = renderScoreBadge(scoreValue, { small: true });
     const entryText = entryLow != null && entryHigh != null
       ? `${formatPrice(entryLow)}-${formatPrice(entryHigh)}`
       : '—';
@@ -644,7 +645,10 @@ function renderScannerRows(rows) {
       <button type="button" class="scan-main" data-action="select" data-panel="scanner" data-symbol="${symbol}">
         <div class="scan-head">
           <div class="scan-id">
-            <div class="scan-symbol">${symbol}</div>
+            <div class="scan-symbol-wrap">
+              <div class="scan-symbol">${symbol}</div>
+              ${scoreBadge}
+            </div>
             ${name ? `<div class="scan-name" title="${name}">${name}</div>` : ''}
           </div>
           <div class="scan-price">${scannerPriceText(resolvedPrice)}</div>
@@ -652,7 +656,6 @@ function renderScannerRows(rows) {
           <div class="scan-subline">${provider} • ${timeframe}</div>
         <div class="scan-badges">
           <span class="pill pill-action ${actionPillClass}">${action || 'HOLD'}</span>
-          ${!isNoData ? `<span class="pill">Score ${scoreValue != null ? scoreValue : '-'}</span>` : ''}
           ${!isNoData ? `<span class="pill">Conf ${confText}</span>` : ''}
           ${rrText ? `<span class="pill">${rrText}</span>` : ''}
           ${nearEntry ? '<span class="pill pill-muted">Near Entry</span>' : ''}
@@ -760,11 +763,16 @@ function renderMonitorPanel() {
     <div class="monitor-total-item"><span>Total P/L %</span><strong class="${totalPnlPct >= 0 ? 'up' : 'down'}">${formatPct(totalPnlPct)}</strong></div>
   `;
 
-  monitorList.innerHTML = rows.map((row) => `
+  monitorList.innerHTML = rows.map((row) => {
+    const monitorScore = resolveScannerLevelValue(row.score, row.signal_score, row.scanner_score);
+    return `
     <article class="monitor-row">
       <div class="monitor-main">
         <div class="monitor-top">
-          <span class="monitor-symbol">${row.symbol}</span>
+          <span class="monitor-symbol-wrap">
+            <span class="monitor-symbol">${row.symbol}</span>
+            ${renderScoreBadge(monitorScore, { small: true })}
+          </span>
           <span class="monitor-price">${row.last_price != null ? `$${formatPrice(row.last_price)}` : '-'}</span>
         </div>
         <div class="monitor-meta">
@@ -782,7 +790,8 @@ function renderMonitorPanel() {
         ${String(row.status || 'open') === 'open' ? `<button type="button" class="button-ghost" data-action="monitor-close" data-id="${row.id}">Close</button>` : ''}
       </div>
     </article>
-  `).join('');
+  `;
+  }).join('');
 }
 
 async function loadMonitorList() {
@@ -1654,6 +1663,44 @@ function formatScore(value) {
   return String(Math.round(Number(value)));
 }
 
+function clampScoreForBadge(value) {
+  const num = Number(value);
+  if (!Number.isFinite(num)) return null;
+  return Math.max(-100, Math.min(100, num));
+}
+
+function scoreHueForBadge(score) {
+  const clamped = clampScoreForBadge(score);
+  if (clamped == null) return 45;
+  if (clamped <= 0) {
+    return Math.round(((clamped + 100) / 100) * 45);
+  }
+  return Math.round(45 + ((clamped / 100) * (120 - 45)));
+}
+
+function formatScoreBadgeText(rawScore) {
+  if (rawScore == null) return '-';
+  const original = String(rawScore).trim();
+  const clamped = clampScoreForBadge(rawScore);
+  if (clamped == null) return '-';
+  const rounded = String(Math.round(Math.abs(clamped)));
+  if (original.startsWith('+')) return `+${rounded}`;
+  if (original.startsWith('-') || clamped < 0) return `-${rounded}`;
+  return String(Math.round(clamped));
+}
+
+function renderScoreBadge(rawScore, options = {}) {
+  const { small = false, loading = false } = options;
+  const clamped = clampScoreForBadge(rawScore);
+  const hue = scoreHueForBadge(rawScore);
+  const scoreText = formatScoreBadgeText(rawScore);
+  const ariaValue = clamped == null ? 'unavailable' : String(Math.round(clamped));
+  const className = ['score-badge', small ? 'score-badge--sm' : '', loading ? 'skeleton-chip' : '']
+    .filter(Boolean)
+    .join(' ');
+  return `<span class="${className}" style="--sb-h:${hue}; --sb-s:70%; --sb-l:40%;" aria-label="Score ${ariaValue}" title="Score: ${ariaValue}">${scoreText}</span>`;
+}
+
 function entryZoneText(zone) {
   if (!zone || typeof zone !== 'object') return '-';
   const low = zone.low != null ? formatPrice(zone.low) : '-';
@@ -2037,7 +2084,7 @@ function renderSymbolList(container, rows, panelName, options = {}) {
       const momentumClass = sentimentClass(row.signal.momentum);
       const loadingClass = row.isLoading ? 'loading' : '';
       const priceText = row.hasData ? `$${formatPrice(row.quote.last)}` : '...';
-      const scoreText = row.hasData ? `score ${formatScore(row.signal.score)}` : 'score ...';
+      const scoreBadge = renderScoreBadge(row.signal.score, { small: true, loading: !row.hasData });
       const { trendText, momentumText } = (() => {
         const t = sentimentChipText(row);
         return { trendText: t.trend, momentumText: t.momentum };
@@ -2053,9 +2100,11 @@ function renderSymbolList(container, rows, panelName, options = {}) {
       return `
       <article class="symbol-card ${row.isSelected ? 'selected' : ''} ${loadingClass}" data-panel="${panelName}" data-symbol="${row.symbol}">
         <button type="button" class="symbol-main" data-action="select" data-panel="${panelName}" data-symbol="${row.symbol}">
-          <span class="sym">${row.symbol}</span>
+          <span class="sym-with-score">
+            <span class="sym">${row.symbol}</span>
+            ${scoreBadge}
+          </span>
           <span class="metric ${row.hasData ? '' : 'skeleton-chip'}">${priceText}</span>
-          <span class="metric ${row.hasData ? '' : 'skeleton-chip'}">${scoreText}</span>
           <span class="badge ${row.hasData ? trendClass : 'neutral'} ${row.hasData ? '' : 'skeleton-chip'}">${trendText}</span>
           <span class="badge ${row.hasData ? momentumClass : 'neutral'} ${row.hasData ? '' : 'skeleton-chip'}">${momentumText}</span>
           ${errBadge}

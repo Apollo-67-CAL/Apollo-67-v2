@@ -325,6 +325,13 @@ html, body {
   max-width: 100%;
 }
 
+.scanner-panel .scan-symbol-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
 .scanner-panel .scan-name {
   font-size: 12px;
   color: rgba(15, 23, 42, 0.6);
@@ -665,6 +672,13 @@ h2 {
   gap: 10px;
 }
 
+.monitor-symbol-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
 .monitor-meta {
   display: flex;
   flex-wrap: wrap;
@@ -844,6 +858,41 @@ h2 {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.sym-with-score {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.score-badge {
+  --sb-h: 45;
+  --sb-s: 70%;
+  --sb-l: 40%;
+  width: 28px;
+  height: 28px;
+  min-width: 28px;
+  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 2px solid hsl(var(--sb-h) var(--sb-s) var(--sb-l));
+  color: hsl(var(--sb-h) var(--sb-s) var(--sb-l));
+  background: hsl(var(--sb-h) var(--sb-s) 90% / 0.25);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1;
+  font-family: var(--font);
+  font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
+}
+
+.score-badge--sm {
+  width: 28px;
+  height: 28px;
+  min-width: 28px;
 }
 
 .metric {
@@ -1306,6 +1355,14 @@ pre {
   .status-pill {
     font-size: 0.7rem;
     padding: 5px 8px;
+  }
+
+  .score-badge,
+  .score-badge--sm {
+    width: 24px;
+    height: 24px;
+    min-width: 24px;
+    font-size: 11px;
   }
 
   .scanner-controls {
