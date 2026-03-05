@@ -328,7 +328,7 @@ html, body {
 .scanner-panel .scan-symbol-wrap {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
+  gap: 0;
   min-width: 0;
 }
 
@@ -675,7 +675,7 @@ h2 {
 .monitor-symbol-wrap {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
+  gap: 0;
   min-width: 0;
 }
 
@@ -863,7 +863,7 @@ h2 {
 .sym-with-score {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
+  gap: 0;
   min-width: 0;
 }
 
@@ -873,9 +873,10 @@ h2 {
   --sb-l: 40%;
   --sb-circ: 69.115;
   --sb-offset: 69.115;
-  width: 28px;
-  height: 28px;
-  min-width: 28px;
+  width: 34px;
+  height: 34px;
+  min-width: 34px;
+  min-height: 34px;
   border-radius: 999px;
   display: inline-grid;
   grid-template-areas: "stack";
@@ -891,6 +892,7 @@ h2 {
   flex-shrink: 0;
   position: relative;
   overflow: visible;
+  margin-left: 6px;
 }
 
 .score-badge-svg {
@@ -964,9 +966,10 @@ h2 {
 }
 
 .score-badge--sm {
-  width: 28px;
-  height: 28px;
-  min-width: 28px;
+  width: 34px;
+  height: 34px;
+  min-width: 34px;
+  min-height: 34px;
 }
 
 .trend-icon {
@@ -1626,9 +1629,10 @@ pre {
 
   .score-badge,
   .score-badge--sm {
-    width: 24px;
-    height: 24px;
-    min-width: 24px;
+    width: 30px;
+    height: 30px;
+    min-width: 30px;
+    min-height: 30px;
     font-size: 11px;
   }
 

@@ -1725,7 +1725,7 @@ function renderScoreBadge(rawScore, options = {}) {
   const scoreText = formatScoreBadgeText(rawScore);
   const ariaValue = clamped == null ? 'unavailable' : String(Math.round(clamped));
   const strength = clamped == null ? 0 : Math.abs(clamped) / 100;
-  const radius = 11;
+  const radius = 14;
   const circumference = 2 * Math.PI * radius;
   const dashOffset = circumference * (1 - strength);
   const normalized = normalizeScoreComponents(scoreComponents);
@@ -1772,9 +1772,9 @@ function renderScoreBadge(rawScore, options = {}) {
       aria-label="Score ${ariaValue}"
       title="Signal strength score"
       tabindex="0">
-      <svg class="score-badge-svg" viewBox="0 0 28 28" aria-hidden="true" focusable="false">
-        <circle class="score-ring-bg" cx="14" cy="14" r="${radius}"></circle>
-        <circle class="score-ring-fill" cx="14" cy="14" r="${radius}"></circle>
+      <svg class="score-badge-svg" viewBox="0 0 34 34" aria-hidden="true" focusable="false">
+        <circle class="score-ring-bg" cx="17" cy="17" r="${radius}"></circle>
+        <circle class="score-ring-fill" cx="17" cy="17" r="${radius}"></circle>
         ${segMarkup}
       </svg>
       <span class="score-badge-value">${scoreText}</span>
@@ -1848,7 +1848,7 @@ function buildScoreSegmentMarkup({ components, radius, circumference, hue }) {
     const dashArray = `${segmentLength} ${Math.max(0, circumference - segmentLength)}`;
     const dashOffset = -offset;
     offset += (circumference * share);
-    return `<circle class="score-ring-segment score-ring-segment--${key}" cx="14" cy="14" r="${radius}" stroke="hsl(${hue} 70% ${lightnessByKey[key]}%)" stroke-dasharray="${dashArray}" stroke-dashoffset="${dashOffset}"></circle>`;
+    return `<circle class="score-ring-segment score-ring-segment--${key}" cx="17" cy="17" r="${radius}" stroke="hsl(${hue} 70% ${lightnessByKey[key]}%)" stroke-dasharray="${dashArray}" stroke-dashoffset="${dashOffset}"></circle>`;
   }).join('');
 }
 
