@@ -2887,6 +2887,236 @@ def _paper_config() -> Dict[str, Any]:
     }
 
 
+_PAPER_STRATEGIES: Dict[str, Dict[str, str]] = {
+    "scanner_overall_v1": {"key": "scanner_overall_v1", "label": "Scanner Overall v1"},
+    "scanner_social_v1": {"key": "scanner_social_v1", "label": "Scanner Social v1"},
+    "scanner_news_v1": {"key": "scanner_news_v1", "label": "Scanner News v1"},
+    "scanner_institution_v1": {"key": "scanner_institution_v1", "label": "Scanner Institution v1"},
+    "manual": {"key": "manual", "label": "Manual"},
+}
+
+
+def _paper_strategy_rows() -> List[Dict[str, str]]:
+    return list(_PAPER_STRATEGIES.values())
+
+
+def _paper_meta_dict(value: Any) -> Dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str) and value.strip():
+        try:
+            parsed = json.loads(value)
+            if isinstance(parsed, dict):
+                return parsed
+        except Exception:
+            return {}
+    return {}
+
+
+def _paper_strategy_key(raw: Any) -> str:
+    key = str(raw or "").strip()
+    if key in _PAPER_STRATEGIES:
+        return key
+    return "manual"
+
+
+def _paper_order_status_view(status_raw: Any) -> str:
+    status_value = str(status_raw or "").strip().upper()
+    if status_value == "OPEN":
+        return "filled"
+    if status_value == "CLOSED":
+        return "closed"
+    if status_value == "CANCELLED":
+        return "cancelled"
+    if status_value == "REJECTED":
+        return "rejected"
+    return "open"
+
+
+def _paper_order_view(row: Dict[str, Any]) -> Dict[str, Any]:
+    meta = _paper_meta_dict(row.get("meta"))
+    strategy_key = _paper_strategy_key(meta.get("strategy_key") or meta.get("tactic_id"))
+    return {
+        "id": str(row.get("id")),
+        "symbol": str(row.get("symbol") or "").upper(),
+        "side": str(row.get("side") or "").upper(),
+        "amount_usd": float(row.get("notional") or 0.0),
+        "qty": _as_float_or_none(row.get("qty")),
+        "strategy_key": strategy_key,
+        "tactic_label": meta.get("tactic_label"),
+        "status": _paper_order_status_view(row.get("status")),
+        "fill_price": _as_float_or_none(row.get("price")),
+        "created_at": row.get("opened_at"),
+        "closed_at": row.get("closed_at"),
+        "error": meta.get("error"),
+        "notes": meta.get("notes"),
+    }
+
+
+def _paper_position_view(row: Dict[str, Any]) -> Dict[str, Any]:
+    tactic = str(row.get("tactic_id") or "manual")
+    strategy_key = _paper_strategy_key(tactic)
+    return {
+        "symbol": str(row.get("symbol") or "").upper(),
+        "qty": _as_float_or_none(row.get("qty")),
+        "avg_price": _as_float_or_none(row.get("avg_price")),
+        "last_price": _as_float_or_none(row.get("last_price")),
+        "unrealised_pnl": _as_float_or_none(row.get("unrealised_pnl")),
+        "realised_pnl": _as_float_or_none(row.get("realised_pnl")),
+        "strategy_key": strategy_key,
+        "tactic_id": tactic,
+        "opened_at": row.get("opened_at"),
+        "updated_at": row.get("updated_at"),
+    }
+
+
+def _paper_submit_order(payload: Dict[str, Any]) -> Tuple[Optional[Dict[str, Any]], Optional[str], int]:
+    side = str(payload.get("side") or "BUY").strip().upper()
+    symbol = str(payload.get("symbol") or "").strip().upper()
+    if side not in {"BUY", "SELL"}:
+        return None, "side must be BUY or SELL", 400
+    if not symbol:
+        return None, "symbol is required", 400
+
+    amount_raw = payload.get("amount_usd")
+    if amount_raw in (None, ""):
+        amount_raw = payload.get("notional")
+    if amount_raw in (None, ""):
+        qty_raw = payload.get("qty")
+        try:
+            qty_val = float(qty_raw) if qty_raw not in (None, "") else None
+        except Exception:
+            return None, "qty must be numeric", 400
+    else:
+        qty_val = None
+    try:
+        amount_usd = float(amount_raw) if amount_raw not in (None, "") else None
+    except Exception:
+        return None, "amount_usd must be numeric", 400
+    if amount_usd is not None and amount_usd <= 0:
+        return None, "amount_usd must be > 0", 400
+    if qty_val is not None and qty_val <= 0:
+        return None, "qty must be > 0", 400
+
+    strategy_key = _paper_strategy_key(payload.get("strategy_key"))
+    tactic_label = str(payload.get("tactic_label") or "").strip() or None
+    notes = str(payload.get("notes") or "").strip() or None
+    source = str(payload.get("source") or "ui")
+
+    try:
+        quote = get_quote_with_fallback(symbol=symbol, freshness_seconds=60)
+        price = float(quote.quote.last)
+    except Exception as exc:
+        return None, f"quote unavailable: {exc}", 503
+    if price <= 0:
+        return None, "quote price unavailable", 503
+
+    if amount_usd is None and qty_val is None:
+        amount_usd = 1000.0
+    if amount_usd is None and qty_val is not None:
+        amount_usd = float(qty_val) * float(price)
+    if qty_val is None and amount_usd is not None:
+        qty_val = float(amount_usd) / float(price)
+    assert amount_usd is not None
+    assert qty_val is not None
+
+    confidence = _as_float_or_none(payload.get("confidence"))
+    score = _as_float_or_none(payload.get("score"))
+    meta = {
+        "source": source,
+        "strategy_key": strategy_key,
+        "tactic_id": strategy_key,
+        "tactic_label": tactic_label or _PAPER_STRATEGIES.get(strategy_key, {}).get("label"),
+        "confidence": confidence,
+        "score": score,
+        "notes": notes,
+        "provider_used": quote.provider,
+    }
+
+    if side == "BUY":
+        order = _paper_repo.create_order(
+            symbol=symbol,
+            side="BUY",
+            qty=float(qty_val),
+            notional=float(amount_usd),
+            price=float(price),
+            status="OPEN",
+            meta=meta,
+        )
+        existing = _paper_repo.get_position(symbol)
+        if existing:
+            existing_qty = float(existing.get("qty") or 0.0)
+            existing_avg = float(existing.get("avg_price") or 0.0)
+            next_qty = existing_qty + float(qty_val)
+            next_avg = ((existing_qty * existing_avg) + (float(qty_val) * float(price))) / next_qty if next_qty > 0 else float(price)
+            realised = float(existing.get("realised_pnl") or 0.0)
+        else:
+            next_qty = float(qty_val)
+            next_avg = float(price)
+            realised = 0.0
+        unreal = (float(price) - next_avg) * next_qty
+        _paper_repo.upsert_position(
+            symbol=symbol,
+            qty=next_qty,
+            avg_price=next_avg,
+            last_price=float(price),
+            unrealised_pnl=unreal,
+            realised_pnl=realised,
+            tactic_id=strategy_key,
+        )
+        return _paper_order_view(order), None, 200
+
+    existing = _paper_repo.get_position(symbol)
+    if not existing:
+        return None, "No open position to sell", 400
+    pos_qty = float(existing.get("qty") or 0.0)
+    avg_price = float(existing.get("avg_price") or 0.0)
+    if pos_qty <= 0 or avg_price <= 0:
+        return None, "No open position to sell", 400
+
+    qty_to_sell = float(qty_val)
+    if amount_usd is not None:
+        qty_to_sell = min(pos_qty, float(amount_usd) / float(price))
+    qty_to_sell = min(pos_qty, max(0.0, qty_to_sell))
+    if qty_to_sell <= 0:
+        return None, "Sell quantity resolved to zero", 400
+
+    realised_delta = (float(price) - avg_price) * qty_to_sell
+    sell_notional = qty_to_sell * float(price)
+    sell_order = _paper_repo.create_order(
+        symbol=symbol,
+        side="SELL",
+        qty=qty_to_sell,
+        notional=sell_notional,
+        price=float(price),
+        status="OPEN",
+        meta=meta,
+    )
+    if sell_order.get("id") is not None:
+        _paper_repo.close_order(int(sell_order.get("id")), close_price=float(price), pnl=realised_delta)
+    refreshed_sell = _paper_repo.get_order(int(sell_order.get("id"))) if sell_order.get("id") is not None else sell_order
+
+    remaining_qty = pos_qty - qty_to_sell
+    existing_realised = float(existing.get("realised_pnl") or 0.0)
+    next_realised = existing_realised + realised_delta
+    if remaining_qty > 1e-9:
+        unreal = (float(price) - avg_price) * remaining_qty
+        _paper_repo.upsert_position(
+            symbol=symbol,
+            qty=remaining_qty,
+            avg_price=avg_price,
+            last_price=float(price),
+            unrealised_pnl=unreal,
+            realised_pnl=next_realised,
+            tactic_id=str(existing.get("tactic_id") or strategy_key),
+        )
+    else:
+        _paper_repo.remove_position(symbol)
+
+    _paper_engine._refresh_run_metrics()
+    return _paper_order_view(refreshed_sell or sell_order), None, 200
+
+
 @app.get("/paper/status")
 def paper_status():
     positions = _paper_repo.list_positions(limit=1000)
@@ -2924,90 +3154,65 @@ def paper_status():
         },
         "leaderboard": runs,
         "config": _paper_config(),
+        "strategies": _paper_strategy_rows(),
     }
 
 
 @app.get("/paper/positions")
 def paper_positions():
-    return {"ok": True, "rows": _paper_repo.list_positions(limit=2000)}
+    rows = _paper_repo.list_positions(limit=2000)
+    return {"ok": True, "rows": [_paper_position_view(row) for row in rows]}
 
 
 @app.get("/paper/orders")
 def paper_orders(status: Optional[str] = None):
-    status_value = str(status or "").strip().upper() or None
-    if status_value not in {None, "OPEN", "CLOSED", "CANCELLED"}:
+    status_raw = str(status or "").strip().upper() or None
+    alias = {"FILLED": "OPEN", "OPEN": "OPEN", "CLOSED": "CLOSED", "CANCELLED": "CANCELLED"}
+    status_value = alias.get(status_raw) if status_raw else None
+    if status_raw and status_value is None:
         return JSONResponse(status_code=400, content={"ok": False, "error": "status must be open|closed|cancelled"})
-    return {"ok": True, "rows": _paper_repo.list_orders(status=status_value, limit=3000)}
+    rows = _paper_repo.list_orders(status=status_value, limit=3000)
+    return {"ok": True, "rows": [_paper_order_view(row) for row in rows]}
+
+
+@app.post("/paper/orders")
+def paper_orders_create(payload: Dict[str, Any]):
+    try:
+        order, err, code = _paper_submit_order(payload if isinstance(payload, dict) else {})
+    except Exception as exc:
+        return JSONResponse(status_code=500, content={"ok": False, "error": f"server_error: {exc}"})
+    if err:
+        return JSONResponse(status_code=code, content={"ok": False, "error": err})
+    return JSONResponse(status_code=200, content={"ok": True, "order": order})
+
+
+@app.post("/paper/strategies/resolve")
+def paper_strategies_resolve(payload: Dict[str, Any]):
+    strategy_key = _paper_strategy_key((payload or {}).get("strategy_key"))
+    return JSONResponse(
+        status_code=200,
+        content={
+            "ok": True,
+            "strategy": _PAPER_STRATEGIES.get(strategy_key, _PAPER_STRATEGIES["manual"]),
+            "all": _paper_strategy_rows(),
+        },
+    )
 
 
 @app.post("/paper/order")
 def paper_order(payload: dict[str, Any]):
-    side = str(payload.get("side") or "BUY").strip().upper()
-    symbol = str(payload.get("symbol") or "").strip().upper()
-    order_type = str(payload.get("order_type") or "MARKET").strip().upper()
-
-    if not symbol:
-        return JSONResponse(status_code=400, content={"ok": False, "error": "symbol is required"})
-    if side not in {"BUY", "SELL"}:
-        return JSONResponse(status_code=400, content={"ok": False, "error": "side must be BUY or SELL"})
-    if order_type not in {"MARKET", "LIMIT"}:
-        return JSONResponse(status_code=400, content={"ok": False, "error": "order_type must be MARKET or LIMIT"})
-
-    if side == "SELL":
-        return JSONResponse(status_code=400, content={"ok": False, "error": "SELL via /paper/order is not supported yet"})
-
-    qty_value: Optional[float]
-    notional_value: Optional[float]
-    qty_raw = payload.get("qty")
-    notional_raw = payload.get("notional")
+    body = dict(payload or {})
+    if "notional" in body and "amount_usd" not in body:
+        body["amount_usd"] = body.get("notional")
+    if "strategy_key" not in body:
+        body["strategy_key"] = "manual"
     try:
-        qty_value = float(qty_raw) if qty_raw not in (None, "") else None
-    except Exception:
-        return JSONResponse(status_code=400, content={"ok": False, "error": "qty must be numeric"})
-    try:
-        notional_value = float(notional_raw) if notional_raw not in (None, "") else None
-    except Exception:
-        return JSONResponse(status_code=400, content={"ok": False, "error": "notional must be numeric"})
-
-    if qty_value is not None and qty_value <= 0:
-        return JSONResponse(status_code=400, content={"ok": False, "error": "qty must be > 0"})
-    if notional_value is not None and notional_value <= 0:
-        return JSONResponse(status_code=400, content={"ok": False, "error": "notional must be > 0"})
-
-    try:
-        quote = get_quote_with_fallback(symbol=symbol, freshness_seconds=60)
-        price = float(quote.quote.last)
+        order, err, code = _paper_submit_order(body)
     except Exception as exc:
-        return JSONResponse(status_code=503, content={"ok": False, "error": f"quote unavailable: {exc}"})
-
-    if price <= 0:
-        return JSONResponse(status_code=503, content={"ok": False, "error": "quote price unavailable"})
-
-    if qty_value is None and notional_value is None:
-        qty_value = 1.0
-    if qty_value is not None and notional_value is None:
-        notional_value = float(qty_value) * float(price)
-    if notional_value is not None and qty_value is None:
-        qty_value = float(notional_value) / float(price)
-
-    assert qty_value is not None
-    assert notional_value is not None
-
-    scanner_meta = {
-        "source": str(payload.get("source") or "ui"),
-        "confidence": _as_float_or_none(payload.get("confidence")),
-        "score": _as_float_or_none(payload.get("score")),
-    }
-    order = _paper_engine.place_buy_from_scanner(
-        symbol=symbol,
-        notional=float(notional_value),
-        quote={"last": price, "provider": quote.provider},
-        trade=None,
-        scanner_meta=scanner_meta,
-    )
-    if not order:
-        return JSONResponse(status_code=409, content={"ok": False, "error": "BUY order could not be placed (position may already exist)"})
-    return {"ok": True, "order": order}
+        return JSONResponse(status_code=500, content={"ok": False, "error": f"server_error: {exc}"})
+    if err:
+        return JSONResponse(status_code=code, content={"ok": False, "error": err})
+    return JSONResponse(status_code=200, content={"ok": True, "order": order})
 
 
 @app.post("/paper/config")

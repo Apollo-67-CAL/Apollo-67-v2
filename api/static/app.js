@@ -79,10 +79,22 @@ const tradeReasons = document.getElementById('tradeReasons');
 const tradeRaw = document.getElementById('tradeRaw');
 const backtestBtn = document.getElementById('backtestBtn');
 const addMonitorBtn = document.getElementById('addMonitorBtn');
+const buyNowBtn = document.getElementById('buyNowBtn');
 const btWinRate = document.getElementById('btWinRate');
 const btTrades = document.getElementById('btTrades');
 const btReturn = document.getElementById('btReturn');
 const btMaxDd = document.getElementById('btMaxDd');
+
+const paperOrderModal = document.getElementById('paperOrderModal');
+const paperOrderModalTitle = document.getElementById('paperOrderModalTitle');
+const paperOrderModalSymbol = document.getElementById('paperOrderModalSymbol');
+const paperOrderModalAmount = document.getElementById('paperOrderModalAmount');
+const paperOrderModalStrategy = document.getElementById('paperOrderModalStrategy');
+const paperOrderModalTactic = document.getElementById('paperOrderModalTactic');
+const paperOrderModalSubmit = document.getElementById('paperOrderModalSubmit');
+const paperOrderModalCancel = document.getElementById('paperOrderModalCancel');
+const paperOrderModalError = document.getElementById('paperOrderModalError');
+const paperOrderModalSuccess = document.getElementById('paperOrderModalSuccess');
 
 const chartCanvas = document.getElementById('priceChart');
 const chartMeta = document.getElementById('chartMeta');
@@ -98,6 +110,9 @@ let scannerTradeActive = 0;
 const SCANNER_TRADE_CACHE_TTL_MS = 60 * 1000;
 const SCANNER_MAX_INFLIGHT = 4;
 let openModalCount = 0;
+const PAPER_DEFAULT_AMOUNT = 1000;
+const paperBuyInFlightBySymbol = new Map();
+let paperOrderDraft = null;
 
 const state = {
   scannerExpanded: false,
@@ -144,7 +159,9 @@ const state = {
   scannerSourcesByKey: {},
   paperStatus: null,
   paperPositions: [],
-  paperClosedOrders: [],
+  paperRecentOrders: [],
+  paperStrategies: [],
+  paperLastAmountUsd: PAPER_DEFAULT_AMOUNT,
 };
 
 const chartOverlayPlugin = {
@@ -808,6 +825,7 @@ function renderMonitorPanel() {
         </div>
       </div>
       <div class="monitor-actions">
+        <button type="button" class="button-ghost" data-action="monitor-buy" data-symbol="${symbol}">Buy</button>
         ${String(row.status || 'open') === 'open' ? `<button type="button" class="button-ghost" data-action="monitor-close" data-id="${row.id}">Close</button>` : ''}
       </div>
     </article>
@@ -977,17 +995,18 @@ async function refreshMonitor() {
 }
 
 async function refreshPaperTrading() {
-  const [statusResult, positionsResult, closedResult] = await Promise.all([
+  const [statusResult, positionsResult, ordersResult] = await Promise.all([
     fetchJson('/paper/status'),
     fetchJson('/paper/positions'),
-    fetchJson('/paper/orders?status=closed'),
+    fetchJson('/paper/orders'),
   ]);
   state.paperStatus = statusResult.ok ? (statusResult.body || {}) : {};
+  state.paperStrategies = Array.isArray(state.paperStatus?.strategies) ? state.paperStatus.strategies : [];
   state.paperPositions = positionsResult.ok && Array.isArray(positionsResult.body?.rows)
     ? positionsResult.body.rows
     : [];
-  state.paperClosedOrders = closedResult.ok && Array.isArray(closedResult.body?.rows)
-    ? closedResult.body.rows
+  state.paperRecentOrders = ordersResult.ok && Array.isArray(ordersResult.body?.rows)
+    ? ordersResult.body.rows
     : [];
   renderPaperTrading();
 }
@@ -1172,11 +1191,22 @@ async function fetchJson(url, options = undefined) {
   try {
     const response = await fetch(url, options);
     const text = await response.text();
-    let data;
-    try {
-      data = text ? JSON.parse(text) : {};
-    } catch {
-      data = { error: 'Invalid JSON response', raw: text };
+    const contentType = String(response.headers.get('content-type') || '').toLowerCase();
+    const isJson = contentType.includes('application/json') || contentType.includes('+json');
+    let data = {};
+    if (text) {
+      if (isJson) {
+        try {
+          data = JSON.parse(text);
+        } catch {
+          data = { error: 'Paper trade API returned non-JSON. Check server logs.', detail: 'Failed to parse JSON body' };
+        }
+      } else {
+        data = {
+          error: 'Paper trade API returned non-JSON. Check server logs.',
+          detail: `HTTP ${response.status} ${text.slice(0, 200)}`,
+        };
+      }
     }
 
     const hasError = data && typeof data.error === 'string' && data.error.trim();
@@ -1772,7 +1802,6 @@ function renderScoreBadge(rawScore, options = {}) {
 let scoreTooltipEl = null;
 let scoreTooltipPinned = false;
 const scoreBadgesLegendOrder = ["technical", "institution", "news", "social"];
-const paperBuyInFlightBySymbol = new Map();
 
 function scoreMeaningBucket(score) {
   if (score >= 80) return 'Multiple indicators aligned. High probability upward momentum.';
@@ -1962,57 +1991,175 @@ function setInlineButtonFeedback(button, message, isError) {
   }, 2800);
 }
 
-async function placePaperBuy(symbol, opts = {}) {
-  const symbolNorm = normalizeSymbol(symbol);
-  if (!symbolNorm) {
-    throw new Error('Invalid symbol');
+function inferPaperStrategyKey(source) {
+  const src = String(source || '').toLowerCase();
+  if (src.includes('scanner-social')) return 'scanner_social_v1';
+  if (src.includes('scanner-news')) return 'scanner_news_v1';
+  if (src.includes('scanner-institution')) return 'scanner_institution_v1';
+  if (src.includes('scanner')) return 'scanner_overall_v1';
+  return 'manual';
+}
+
+function paperStrategyOptionsHtml(selected) {
+  const rows = Array.isArray(state.paperStrategies) && state.paperStrategies.length
+    ? state.paperStrategies
+    : [
+      { key: 'manual', label: 'Manual' },
+      { key: 'scanner_overall_v1', label: 'Scanner Overall v1' },
+      { key: 'scanner_social_v1', label: 'Scanner Social v1' },
+      { key: 'scanner_news_v1', label: 'Scanner News v1' },
+      { key: 'scanner_institution_v1', label: 'Scanner Institution v1' },
+    ];
+  return rows
+    .map((row) => {
+      const key = String(row.key || row.strategy_key || 'manual');
+      const label = String(row.label || row.name || key);
+      return `<option value="${key}" ${key === selected ? 'selected' : ''}>${label}</option>`;
+    })
+    .join('');
+}
+
+function openPaperOrderModal({ symbol, defaultAmount, strategyKey, tacticLabel, source, button } = {}) {
+  if (!paperOrderModal) return;
+  const symbolNorm = normalizeSymbol(symbol || getSymbol());
+  if (!symbolNorm) return;
+
+  const amountNum = Number(defaultAmount);
+  const amount = Number.isFinite(amountNum) && amountNum > 0
+    ? amountNum
+    : Number(state.paperLastAmountUsd || PAPER_DEFAULT_AMOUNT);
+  const chosenStrategy = String(strategyKey || inferPaperStrategyKey(source) || 'manual');
+  const tactic = String(tacticLabel || '').trim();
+  paperOrderDraft = {
+    side: 'BUY',
+    symbol: symbolNorm,
+    source: source || 'ui',
+    button: button || null,
+  };
+  if (paperOrderModalTitle) paperOrderModalTitle.textContent = `Paper Buy • ${symbolNorm}`;
+  if (paperOrderModalSymbol) paperOrderModalSymbol.value = symbolNorm;
+  if (paperOrderModalAmount) paperOrderModalAmount.value = String(Math.max(1, Math.round(amount)));
+  if (paperOrderModalStrategy) paperOrderModalStrategy.innerHTML = paperStrategyOptionsHtml(chosenStrategy);
+  if (paperOrderModalTactic) paperOrderModalTactic.value = tactic;
+  if (paperOrderModalError) {
+    paperOrderModalError.textContent = '';
+    paperOrderModalError.hidden = true;
   }
-  const qtyRaw = Number(opts.qty);
-  const qty = Number.isFinite(qtyRaw) && qtyRaw > 0 ? qtyRaw : 1;
-  const button = opts.button || null;
-  if (paperBuyInFlightBySymbol.get(symbolNorm)) {
-    return null;
+  if (paperOrderModalSuccess) {
+    paperOrderModalSuccess.textContent = '';
+    paperOrderModalSuccess.hidden = true;
+  }
+  if (paperOrderModalSubmit) {
+    paperOrderModalSubmit.disabled = false;
+    paperOrderModalSubmit.textContent = 'Place Paper Buy';
+  }
+  openModalCount += 1;
+  document.body.style.overflow = 'hidden';
+  paperOrderModal.hidden = false;
+}
+
+function closePaperOrderModal() {
+  if (!paperOrderModal) return;
+  paperOrderModal.hidden = true;
+  openModalCount = Math.max(0, openModalCount - 1);
+  document.body.style.overflow = openModalCount > 0 ? 'hidden' : '';
+  paperOrderDraft = null;
+}
+
+async function submitPaperOrderModal() {
+  if (!paperOrderDraft || !paperOrderModalSymbol) return;
+  const symbolNorm = normalizeSymbol(paperOrderModalSymbol.value);
+  const amount = Number(paperOrderModalAmount?.value);
+  const strategyKey = String(paperOrderModalStrategy?.value || 'manual').trim() || 'manual';
+  const tacticLabel = String(paperOrderModalTactic?.value || '').trim() || null;
+  const source = String(paperOrderDraft.source || 'ui');
+  const draftButton = paperOrderDraft.button || null;
+
+  if (!symbolNorm || !Number.isFinite(amount) || amount <= 0) {
+    if (paperOrderModalError) {
+      paperOrderModalError.textContent = 'Symbol and buy amount (> 0) are required.';
+      paperOrderModalError.hidden = false;
+    }
+    return;
   }
 
+  if (paperBuyInFlightBySymbol.get(symbolNorm)) return;
   paperBuyInFlightBySymbol.set(symbolNorm, true);
-  if (button) {
-    button.disabled = true;
-    button.dataset.prevText = button.textContent || 'BUY';
-    button.textContent = 'Buying...';
+  state.paperLastAmountUsd = amount;
+
+  if (paperOrderModalError) {
+    paperOrderModalError.textContent = '';
+    paperOrderModalError.hidden = true;
+  }
+  if (paperOrderModalSuccess) {
+    paperOrderModalSuccess.textContent = '';
+    paperOrderModalSuccess.hidden = true;
+  }
+  if (paperOrderModalSubmit) {
+    paperOrderModalSubmit.disabled = true;
+    paperOrderModalSubmit.textContent = 'Placing...';
+  }
+  if (draftButton) {
+    draftButton.disabled = true;
+    draftButton.dataset.prevText = draftButton.textContent || 'BUY NOW';
+    draftButton.textContent = 'Buying...';
   }
 
   try {
-    const payload = {
-      side: 'BUY',
-      symbol: symbolNorm,
-      qty,
-      order_type: 'MARKET',
-    };
-    const res = await fetchJson('/paper/order', {
+    const res = await fetchJson('/paper/orders', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
+      body: JSON.stringify({
+        symbol: symbolNorm,
+        side: 'BUY',
+        amount_usd: amount,
+        strategy_key: strategyKey,
+        tactic_label: tacticLabel,
+        source,
+      }),
     });
     if (!res.ok || !res.body?.ok) {
-      throw new Error(getErrorMessage(res, 'Failed to place paper BUY order'));
+      const msg = getErrorMessage(res, 'Failed to place paper BUY order');
+      if (paperOrderModalError) {
+        paperOrderModalError.textContent = msg;
+        paperOrderModalError.hidden = false;
+      }
+      if (draftButton) {
+        setInlineButtonFeedback(draftButton, msg, true);
+      }
+      return;
     }
+
     await refreshPaperTrading();
-    if (button) {
-      button.textContent = 'Added';
-      setInlineButtonFeedback(button, 'Added to Paper Trading', false);
+    if (paperOrderModalSuccess) {
+      const fill = Number(res.body?.order?.fill_price);
+      paperOrderModalSuccess.textContent = Number.isFinite(fill)
+        ? `Paper BUY placed: ${symbolNorm} $${formatPrice(amount)} @ $${formatPrice(fill)}`
+        : `Paper BUY placed: ${symbolNorm} $${formatPrice(amount)}`;
+      paperOrderModalSuccess.hidden = false;
+    }
+    if (draftButton) {
+      draftButton.textContent = 'Added';
+      setInlineButtonFeedback(draftButton, 'Added to Paper Trading', false);
       window.setTimeout(() => {
-        if (button && button.dataset.prevText) {
-          button.textContent = button.dataset.prevText;
+        if (draftButton.dataset.prevText) {
+          draftButton.textContent = draftButton.dataset.prevText;
         }
       }, 1200);
     }
-    return res.body;
+    window.setTimeout(() => {
+      closePaperOrderModal();
+    }, 450);
   } finally {
     paperBuyInFlightBySymbol.delete(symbolNorm);
-    if (button) {
-      button.disabled = false;
-      if (button.dataset.prevText && button.textContent === 'Buying...') {
-        button.textContent = button.dataset.prevText;
+    if (paperOrderModalSubmit) {
+      paperOrderModalSubmit.disabled = false;
+      paperOrderModalSubmit.textContent = 'Place Paper Buy';
+    }
+    if (draftButton) {
+      draftButton.disabled = false;
+      if (draftButton.dataset.prevText && draftButton.textContent === 'Buying...') {
+        draftButton.textContent = draftButton.dataset.prevText;
       }
     }
   }
@@ -2663,7 +2810,7 @@ function renderPaperTrading() {
   const totals = status.totals || {};
   const leaderboard = Array.isArray(status.leaderboard) ? status.leaderboard : [];
   const positions = Array.isArray(state.paperPositions) ? state.paperPositions : [];
-  const closed = Array.isArray(state.paperClosedOrders) ? state.paperClosedOrders : [];
+  const orders = Array.isArray(state.paperRecentOrders) ? state.paperRecentOrders : [];
 
   paperSummary.innerHTML = `
     <div class="monitor-total-item"><span>Open Positions</span><strong>${positions.length}</strong></div>
@@ -2685,15 +2832,17 @@ function renderPaperTrading() {
     `).join('')
     : '<tr><td colspan="7" class="empty">No paper positions.</td></tr>';
 
-  paperClosedBody.innerHTML = closed.length
-    ? closed.slice(0, 20).map((row) => `
+  paperClosedBody.innerHTML = orders.length
+    ? orders.slice(0, 20).map((row) => `
       <tr>
         <td>${row.symbol || '-'}</td>
-        <td class="${Number(row.pnl || 0) >= 0 ? 'up' : 'down'}">$${formatPrice(Number(row.pnl || 0))}</td>
-        <td>${row.closed_at ? String(row.closed_at).slice(0, 19).replace('T', ' ') : '-'}</td>
+        <td>${row.side || '-'}</td>
+        <td>$${formatPrice(Number(row.amount_usd || row.notional || 0))}</td>
+        <td>${row.status || '-'}</td>
+        <td>${row.created_at ? String(row.created_at).slice(0, 19).replace('T', ' ') : '-'}</td>
       </tr>
     `).join('')
-    : '<tr><td colspan="3" class="empty">No closed paper orders.</td></tr>';
+    : '<tr><td colspan="5" class="empty">No paper orders.</td></tr>';
 
   paperRunsBody.innerHTML = leaderboard.length
     ? leaderboard.slice(0, 10).map((row) => `
@@ -2843,6 +2992,26 @@ if (monitorModal) {
   });
 }
 
+if (paperOrderModalCancel) {
+  paperOrderModalCancel.addEventListener('click', () => {
+    closePaperOrderModal();
+  });
+}
+
+if (paperOrderModalSubmit) {
+  paperOrderModalSubmit.addEventListener('click', async () => {
+    await submitPaperOrderModal();
+  });
+}
+
+if (paperOrderModal) {
+  paperOrderModal.addEventListener('click', (event) => {
+    if (event.target === paperOrderModal) {
+      closePaperOrderModal();
+    }
+  });
+}
+
 if (scannerSourcesCloseBtn) {
   scannerSourcesCloseBtn.addEventListener('click', () => {
     closeScannerSourcesModal();
@@ -2864,6 +3033,10 @@ document.addEventListener('keydown', (event) => {
   }
   if (event.key === 'Escape' && scannerSourcesModal && !scannerSourcesModal.hidden) {
     closeScannerSourcesModal();
+    return;
+  }
+  if (event.key === 'Escape' && paperOrderModal && !paperOrderModal.hidden) {
+    closePaperOrderModal();
     return;
   }
   if (event.key === 'Escape') {
@@ -2936,8 +3109,12 @@ document.addEventListener('click', (event) => {
   const watchlistBuy = event.target.closest('[data-action="watchlist-buy"]');
   if (watchlistBuy) {
     const symbol = normalizeSymbol(watchlistBuy.dataset.symbol || getSymbol());
-    placePaperBuy(symbol, { button: watchlistBuy }).catch((err) => {
-      setInlineButtonFeedback(watchlistBuy, err?.message || 'BUY failed', true);
+    openPaperOrderModal({
+      symbol,
+      source: 'watchlist',
+      strategyKey: 'manual',
+      button: watchlistBuy,
+      defaultAmount: state.paperLastAmountUsd || PAPER_DEFAULT_AMOUNT,
     });
     return;
   }
@@ -2945,8 +3122,14 @@ document.addEventListener('click', (event) => {
   const scannerBuyNow = event.target.closest('[data-action="scanner-buy-now"]');
   if (scannerBuyNow) {
     const symbol = normalizeSymbol(scannerBuyNow.dataset.symbol);
-    placePaperBuy(symbol, { button: scannerBuyNow }).catch((err) => {
-      setInlineButtonFeedback(scannerBuyNow, err?.message || 'BUY failed', true);
+    const strategyFromTab = inferPaperStrategyKey(`scanner-${state.scannerAgent || 'overall'}`);
+    openPaperOrderModal({
+      symbol,
+      source: `scanner-${state.scannerAgent || 'overall'}`,
+      strategyKey: strategyFromTab,
+      tacticLabel: `Scanner ${String(state.scannerAgent || 'overall')}`,
+      button: scannerBuyNow,
+      defaultAmount: state.paperLastAmountUsd || PAPER_DEFAULT_AMOUNT,
     });
     return;
   }
@@ -2954,8 +3137,25 @@ document.addEventListener('click', (event) => {
   const genericBuy = event.target.closest('[data-action="buy"], [data-action="paper-buy"], [data-action="buy-now"]');
   if (genericBuy) {
     const symbol = normalizeSymbol(genericBuy.dataset.symbol || getSymbol());
-    placePaperBuy(symbol, { button: genericBuy }).catch((err) => {
-      setInlineButtonFeedback(genericBuy, err?.message || 'BUY failed', true);
+    openPaperOrderModal({
+      symbol,
+      source: 'detail',
+      strategyKey: 'manual',
+      button: genericBuy,
+      defaultAmount: state.paperLastAmountUsd || PAPER_DEFAULT_AMOUNT,
+    });
+    return;
+  }
+
+  const monitorBuy = event.target.closest('[data-action="monitor-buy"]');
+  if (monitorBuy) {
+    const symbol = normalizeSymbol(monitorBuy.dataset.symbol || getSymbol());
+    openPaperOrderModal({
+      symbol,
+      source: 'monitor',
+      strategyKey: 'manual',
+      button: monitorBuy,
+      defaultAmount: state.paperLastAmountUsd || PAPER_DEFAULT_AMOUNT,
     });
     return;
   }

@@ -61,6 +61,14 @@ class PaperTradingRepository:
                 ).fetchall()
         return rows
 
+    def get_order(self, order_id: int) -> Optional[Dict[str, Any]]:
+        with get_connection() as conn:
+            rows = conn.execute(
+                "SELECT * FROM paper_orders WHERE id = ? LIMIT 1",
+                (int(order_id),),
+            ).fetchall()
+        return rows[0] if rows else None
+
     def list_open_orders(self) -> List[Dict[str, Any]]:
         return self.list_orders(status="OPEN", limit=2000)
 

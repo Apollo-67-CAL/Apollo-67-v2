@@ -110,6 +110,7 @@
             </div>
 
             <div class="buttons">
+              <button id="buyNowBtn" type="button" data-action="buy">BUY NOW</button>
               <button id="quoteBtn" type="button">Get Quote</button>
               <button id="signalBtn" type="button">Get Signal</button>
               <button id="tradeBtn" type="button">Get Trade</button>
@@ -284,14 +285,16 @@
             </div>
           </details>
           <details class="details" open>
-            <summary>Recent Closed Orders</summary>
+            <summary>Recent Orders</summary>
             <div class="scanner-sources-list">
               <table class="source-table">
                 <thead>
                   <tr>
                     <th>Symbol</th>
-                    <th>P/L</th>
-                    <th>Closed</th>
+                    <th>Side</th>
+                    <th>Amount</th>
+                    <th>Status</th>
+                    <th>Created</th>
                   </tr>
                 </thead>
                 <tbody id="paperClosedBody"></tbody>
@@ -348,6 +351,34 @@
       <div class="monitor-modal-actions">
         <button id="monitorModalSubmit" type="button">Save</button>
         <button id="monitorModalCancel" type="button" class="button-ghost">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="paperOrderModal" class="monitor-modal" hidden>
+    <div class="monitor-modal-card">
+      <h3 id="paperOrderModalTitle">Place Paper Order</h3>
+      <div id="paperOrderModalError" class="panel-error" hidden></div>
+      <div id="paperOrderModalSuccess" class="monitor-modal-success" hidden></div>
+      <div class="field-group">
+        <label for="paperOrderModalSymbol">Symbol</label>
+        <input id="paperOrderModalSymbol" type="text" readonly />
+      </div>
+      <div class="field-group">
+        <label for="paperOrderModalAmount">Buy Amount ($)</label>
+        <input id="paperOrderModalAmount" type="number" min="1" step="1" value="1000" />
+      </div>
+      <div class="field-group">
+        <label for="paperOrderModalStrategy">Strategy</label>
+        <select id="paperOrderModalStrategy"></select>
+      </div>
+      <div class="field-group">
+        <label for="paperOrderModalTactic">Tactic Label (optional)</label>
+        <input id="paperOrderModalTactic" type="text" placeholder="Overall scanner momentum" />
+      </div>
+      <div class="monitor-modal-actions">
+        <button id="paperOrderModalSubmit" type="button">Place Paper Buy</button>
+        <button id="paperOrderModalCancel" type="button" class="button-ghost">Cancel</button>
       </div>
     </div>
   </div>
