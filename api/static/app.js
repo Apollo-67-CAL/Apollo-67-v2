@@ -2376,6 +2376,55 @@ function renderWatchlistTrendIcon(row, loading) {
   `;
 }
 
+function momentumStateForRow(row) {
+  const momentumRaw = String(row?.signal?.momentum || '').toLowerCase();
+  if (momentumRaw.includes('volatile') || momentumRaw.includes('unstable')) return 'volatile';
+  if (
+    momentumRaw.includes('bull')
+    || momentumRaw.includes('positive')
+    || momentumRaw.includes('up')
+    || momentumRaw.includes('increasing')
+  ) {
+    return 'up';
+  }
+  if (
+    momentumRaw.includes('bear')
+    || momentumRaw.includes('negative')
+    || momentumRaw.includes('down')
+    || momentumRaw.includes('weak')
+  ) {
+    return 'down';
+  }
+  return 'neutral';
+}
+
+function momentumTooltipForState(stateLabel) {
+  if (stateLabel === 'up') return 'Momentum increasing';
+  if (stateLabel === 'down') return 'Momentum weakening';
+  if (stateLabel === 'volatile') return 'Momentum unstable';
+  return 'Momentum neutral';
+}
+
+function renderMomentumIcon(row, loading) {
+  const stateLabel = momentumStateForRow(row);
+  const tip = momentumTooltipForState(stateLabel);
+  const classes = [
+    'momentum-icon',
+    `momentum-icon--${stateLabel}`,
+    loading ? 'skeleton-chip' : '',
+  ].filter(Boolean).join(' ');
+  return `
+    <span
+      class="${classes}"
+      role="img"
+      aria-label="${tip}"
+      title="${tip}"
+    >
+      <span class="momentum-icon-glyph" aria-hidden="true"></span>
+    </span>
+  `;
+}
+
 function renderSymbolList(container, rows, panelName, options = {}) {
   const showQty = Boolean(options.showQty);
   const qtyBySymbol = options.qtyBySymbol || {};
@@ -2414,6 +2463,7 @@ function renderSymbolList(container, rows, panelName, options = {}) {
       const trendElement = panelName === 'watchlist'
         ? renderWatchlistTrendIcon(row, !row.hasData)
         : `<span class="badge ${row.hasData ? trendClass : 'neutral'} ${row.hasData ? '' : 'skeleton-chip'}">${trendText}</span>`;
+      const momentumElement = renderMomentumIcon(row, !row.hasData);
 
       return `
       <article class="symbol-card ${row.isSelected ? 'selected' : ''} ${loadingClass}" data-panel="${panelName}" data-symbol="${row.symbol}">
@@ -2424,7 +2474,7 @@ function renderSymbolList(container, rows, panelName, options = {}) {
           </span>
           <span class="metric ${row.hasData ? '' : 'skeleton-chip'}">${priceText}</span>
           ${trendElement}
-          <span class="badge ${row.hasData ? momentumClass : 'neutral'} ${row.hasData ? '' : 'skeleton-chip'}">${momentumText}</span>
+          ${momentumElement}
           ${errBadge}
           ${qty}
           ${pl}
