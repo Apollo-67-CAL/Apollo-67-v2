@@ -2513,17 +2513,11 @@ function renderMomentumIconWithOptions(row, loading, opts = {}) {
 }
 
 function renderWatchlistIndicatorGroup(row, loading) {
-  const trendState = trendStateForWatchlist(row);
-  const momentumState = momentumStateForRow(row);
   return `
     <span class="watchlist-indicator-pack">
       <span class="watchlist-indicator-head">
-        <span class="${indicatorPillClass('trend', trendState)}">Trend</span>
-        <span class="${indicatorPillClass('momentum', momentumState)}">Momentum</span>
-      </span>
-      <span class="watchlist-indicator-icons">
-        ${renderWatchlistTrendIcon(row, loading)}
-        ${renderMomentumIconWithOptions(row, loading, { watchlistFlat: true })}
+        <span class="watchlist-indicator-label">Trend</span>
+        <span class="watchlist-indicator-label">Momentum</span>
       </span>
     </span>
   `;

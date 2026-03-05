@@ -1246,6 +1246,13 @@ h2 {
   gap: 4px;
 }
 
+#watchlistList .watchlist-indicator-label {
+  font-size: 11px;
+  line-height: 1.1;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
 #watchlistList .indicator-pill {
   font-size: 10px;
   line-height: 1;
