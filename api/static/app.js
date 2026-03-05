@@ -121,6 +121,7 @@ let openModalCount = 0;
 const PAPER_DEFAULT_AMOUNT = 1000;
 const paperBuyInFlightBySymbol = new Map();
 let paperOrderDraft = null;
+const nonJsonResponseLogged = new Set();
 
 const state = {
   scannerExpanded: false,
@@ -1388,6 +1389,14 @@ async function fetchJson(url, options = undefined) {
           data = { error: 'Paper trade API returned non-JSON. Check server logs.', detail: 'Failed to parse JSON body' };
         }
       } else {
+        if (!nonJsonResponseLogged.has(url)) {
+          nonJsonResponseLogged.add(url);
+          console.warn('non-json response', {
+            status: response.status,
+            contentType,
+            body: text.slice(0, 200),
+          });
+        }
         data = {
           error: 'Paper trade API returned non-JSON. Check server logs.',
           detail: `HTTP ${response.status} ${text.slice(0, 200)}`,
@@ -1429,6 +1438,14 @@ async function fetchJsonWithTimeout(url, options = undefined, timeoutMs = 6000) 
           data = { error: 'Paper trade API returned non-JSON. Check server logs.', detail: 'Failed to parse JSON body' };
         }
       } else {
+        if (!nonJsonResponseLogged.has(url)) {
+          nonJsonResponseLogged.add(url);
+          console.warn('non-json response', {
+            status: response.status,
+            contentType,
+            body: text.slice(0, 200),
+          });
+        }
         data = {
           error: 'Paper trade API returned non-JSON. Check server logs.',
           detail: `HTTP ${response.status} ${text.slice(0, 200)}`,
@@ -2304,6 +2321,30 @@ function closePaperOrderModal() {
   paperOrderDraft = null;
 }
 
+function forceCloseAllModalsOnInit() {
+  if (monitorModal) monitorModal.hidden = true;
+  if (paperOrderModal) paperOrderModal.hidden = true;
+  if (scannerSourcesModal) scannerSourcesModal.hidden = true;
+  if (monitorModalError) {
+    monitorModalError.hidden = true;
+    monitorModalError.textContent = '';
+  }
+  if (paperOrderModalError) {
+    paperOrderModalError.hidden = true;
+    paperOrderModalError.textContent = '';
+  }
+  if (paperOrderModalSuccess) {
+    paperOrderModalSuccess.hidden = true;
+    paperOrderModalSuccess.textContent = '';
+  }
+  if (scannerSourcesError) {
+    scannerSourcesError.hidden = true;
+    scannerSourcesError.textContent = '';
+  }
+  openModalCount = 0;
+  document.body.style.overflow = '';
+}
+
 async function submitPaperOrderModal() {
   if (!paperOrderDraft || !paperOrderModalSymbol) return;
   const symbolNorm = normalizeSymbol(paperOrderModalSymbol.value);
@@ -2388,6 +2429,15 @@ async function submitPaperOrderModal() {
     window.setTimeout(() => {
       closePaperOrderModal();
     }, 450);
+  } catch (error) {
+    const msg = error?.message || 'Failed to place paper BUY order';
+    if (paperOrderModalError) {
+      paperOrderModalError.textContent = msg;
+      paperOrderModalError.hidden = false;
+    }
+    if (draftButton) {
+      setInlineButtonFeedback(draftButton, msg, true);
+    }
   } finally {
     paperBuyInFlightBySymbol.delete(symbolNorm);
     if (paperOrderModalSubmit) {
@@ -3517,6 +3567,7 @@ if (backtestBtn) {
 }
 
 window.addEventListener('DOMContentLoaded', async () => {
+  forceCloseAllModalsOnInit();
   const initial = getSymbol();
   state.selectedSymbol = initial;
   if (scannerSegment) {
