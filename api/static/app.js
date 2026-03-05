@@ -2441,6 +2441,7 @@ function renderWatchlistTrendIcon(row, loading) {
   const classes = [
     'trend-icon',
     `trend-icon--${stateLabel}`,
+    'trend-icon--watchlist-flat',
     loading ? 'skeleton-chip' : '',
   ].filter(Boolean).join(' ');
   return `
@@ -2494,11 +2495,16 @@ function momentumTooltipForState(stateLabel) {
 }
 
 function renderMomentumIcon(row, loading) {
+  return renderMomentumIconWithOptions(row, loading, { watchlistFlat: false });
+}
+
+function renderMomentumIconWithOptions(row, loading, opts = {}) {
   const stateLabel = momentumStateForRow(row);
   const tip = momentumTooltipForState(stateLabel);
   const classes = [
     'momentum-icon',
     `momentum-icon--${stateLabel}`,
+    opts.watchlistFlat ? 'momentum-icon--watchlist-flat' : '',
     loading ? 'skeleton-chip' : '',
   ].filter(Boolean).join(' ');
   return `
@@ -2524,7 +2530,7 @@ function renderWatchlistIndicatorGroup(row, loading) {
       </span>
       <span class="watchlist-indicator-icons">
         ${renderWatchlistTrendIcon(row, loading)}
-        ${renderMomentumIcon(row, loading)}
+        ${renderMomentumIconWithOptions(row, loading, { watchlistFlat: true })}
       </span>
     </span>
   `;

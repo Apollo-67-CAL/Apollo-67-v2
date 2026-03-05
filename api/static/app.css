@@ -1284,7 +1284,62 @@ h2 {
 #watchlistList .watchlist-indicator-icons {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: 3px;
+}
+
+#watchlistList .trend-icon--watchlist-flat .trend-icon-glyph,
+#watchlistList .momentum-icon--watchlist-flat .momentum-icon-glyph {
+  border: 0;
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  transform: none;
+}
+
+#watchlistList .trend-icon--watchlist-flat.trend-icon--bullish .trend-icon-glyph {
+  background: #15803d;
+}
+
+#watchlistList .trend-icon--watchlist-flat.trend-icon--bearish .trend-icon-glyph {
+  background: #b91c1c;
+}
+
+#watchlistList .trend-icon--watchlist-flat.trend-icon--neutral .trend-icon-glyph {
+  width: 7px;
+  height: 2px;
+  border-radius: 2px;
+  background: #64748b;
+}
+
+#watchlistList .trend-icon--watchlist-flat.trend-icon--caution .trend-icon-glyph {
+  width: 2px;
+  height: 8px;
+  border-radius: 2px;
+  background: #b45309;
+  transform: rotate(18deg);
+}
+
+#watchlistList .momentum-icon--watchlist-flat.momentum-icon--up .momentum-icon-glyph {
+  background: hsl(120, 60%, 45%);
+}
+
+#watchlistList .momentum-icon--watchlist-flat.momentum-icon--down .momentum-icon-glyph {
+  background: hsl(0, 65%, 45%);
+}
+
+#watchlistList .momentum-icon--watchlist-flat.momentum-icon--neutral .momentum-icon-glyph {
+  width: 7px;
+  height: 2px;
+  border-radius: 2px;
+  background: hsl(0, 0%, 55%);
+}
+
+#watchlistList .momentum-icon--watchlist-flat.momentum-icon--volatile .momentum-icon-glyph {
+  width: 2px;
+  height: 8px;
+  border-radius: 2px;
+  background: hsl(35, 80%, 50%);
+  transform: rotate(18deg);
 }
 
 #watchlistList .watchlist-expand-actions {
