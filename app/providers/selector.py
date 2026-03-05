@@ -15,6 +15,7 @@ import requests
 from app.providers.finnhub import FinnhubClient
 from app.providers.twelvedata import BarModel, ProviderError, QuoteOutModel, TwelveDataClient
 from app.providers.yahoo import fetch_bars as fetch_yahoo_bars
+from app.ws.twelvedata_ws import get_ws_client
 from app.validation.market_data import validate_bars, validate_quote
 from core.storage.db import get_connection
 
@@ -219,6 +220,37 @@ def _has_finnhub_key() -> bool:
 
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _ws_quote(symbol: str, max_age_seconds: int = 15) -> Optional[QuoteResult]:
+    try:
+        client = get_ws_client()
+        row = client.get_price(symbol=symbol, max_age_seconds=max_age_seconds)
+    except Exception:
+        return None
+    if not isinstance(row, dict):
+        return None
+    price = row.get("price")
+    try:
+        last = float(price)
+    except Exception:
+        return None
+    if last <= 0:
+        return None
+    ts_event = row.get("ts")
+    if not isinstance(ts_event, datetime):
+        ts_event = _utc_now()
+    quote = QuoteOutModel(
+        instrument_id=f"TWELVEDATA_WS:{(symbol or '').strip().upper()}",
+        ts_event=ts_event,
+        ts_ingest=_utc_now(),
+        last=last,
+        bid=None,
+        ask=None,
+        source_provider="twelvedata_ws",
+        quality_flags=["ws"],
+    )
+    return QuoteResult(provider="twelvedata_ws", quote=quote)
 
 
 def _quote_payload(res: Any) -> Any:
@@ -503,6 +535,10 @@ def get_quote_cached_first(
         raise ProviderError("No recent cached quote")
 
     symbol_u = (symbol or "").strip().upper()
+    ws_hit = _ws_quote(symbol_u, max_age_seconds=15)
+    if ws_hit:
+        _set_cached_quote(symbol_u, ws_hit)
+        return ws_hit
     errors: List[str] = []
     try:
         if not _provider_call_allowed("yahoo", "quote", per_minute_limit=_provider_minute_limit(40)):
@@ -557,6 +593,11 @@ def get_quote_with_fallback(symbol: str, freshness_seconds: int = 60) -> QuoteRe
     cached = _get_cached_quote(symbol_u)
     if cached:
         return cached
+
+    ws_hit = _ws_quote(symbol_u, max_age_seconds=15)
+    if ws_hit:
+        _set_cached_quote(symbol_u, ws_hit)
+        return ws_hit
 
     errors: List[str] = []
 

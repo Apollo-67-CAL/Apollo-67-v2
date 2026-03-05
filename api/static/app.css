@@ -82,6 +82,7 @@ html, body {
   margin-left: auto;
   display: flex;
   justify-content: flex-end;
+  gap: 8px;
 }
 
 .status-pill {
@@ -95,6 +96,34 @@ html, body {
   padding: 6px 10px;
   font-size: 0.78rem;
   font-weight: 600;
+}
+
+.ws-status-pill {
+  min-width: 58px;
+  justify-content: center;
+}
+
+.ws-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  display: inline-block;
+}
+
+.ws-dot-green {
+  background: #22c55e;
+}
+
+.ws-dot-amber {
+  background: #f59e0b;
+}
+
+.ws-dot-red {
+  background: #ef4444;
+}
+
+.ws-label {
+  font-size: 0.72rem;
 }
 
 .container {

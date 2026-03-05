@@ -23,6 +23,7 @@ from fastapi.templating import Jinja2Templates
 from api.admin_routes import router as admin_router
 from app.providers.selector import get_bars_with_fallback, get_quote_with_fallback
 from app.providers.twelvedata import ProviderError, TwelveDataClient
+from app.ws.twelvedata_ws import get_ws_client
 from app.services.basic_signal import compute_basic_signal
 from app.services.scanner import build_scanner_row, rank_buy_opportunity
 from app.services.trade_signal import compute_trade_signal
@@ -625,7 +626,7 @@ def _monitor_summary_by_strategy(rows: List[Dict[str, Any]]) -> Dict[str, Dict[s
 
 
 @app.on_event("startup")
-def startup() -> None:
+async def startup() -> None:
     cfg = initialise_config()
     try:
         init_db()
@@ -641,7 +642,20 @@ def startup() -> None:
         _scanner_connectors_repo.initialise_defaults_if_missing(get_default_connector_registry())
     except Exception as exc:
         logger.warning("scanner connectors init failed: %s", exc)
+    try:
+        ws_client = get_ws_client()
+        await ws_client.start()
+    except Exception as exc:
+        logger.warning("ws startup failed: %s", exc)
     print(f"DB_DRIVER={DB_DRIVER_MARKER}")
+
+
+@app.on_event("shutdown")
+async def shutdown() -> None:
+    try:
+        await get_ws_client().stop()
+    except Exception:
+        pass
 
 
 @app.get("/healthz")
@@ -656,6 +670,51 @@ def health_check():
     if not db_ok:
         return JSONResponse(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, content=body)
     return body
+
+
+@app.get("/ws/status")
+def ws_status():
+    client = get_ws_client()
+    return {"ok": True, "status": client.status()}
+
+
+@app.get("/ws/recent")
+def ws_recent(limit: int = 50):
+    client = get_ws_client()
+    return {"ok": True, "rows": client.recent(limit=limit)}
+
+
+@app.post("/quotes/ws/subscriptions")
+async def quotes_ws_subscriptions(payload: Dict[str, Any]):
+    symbols_raw = payload.get("symbols") if isinstance(payload, dict) else []
+    symbols = symbols_raw if isinstance(symbols_raw, list) else []
+    status_payload = await get_ws_client().subscribe([str(s) for s in symbols])
+    return {"ok": True, "status": status_payload}
+
+
+@app.post("/quotes/ws/unsubscribe")
+async def quotes_ws_unsubscribe(payload: Dict[str, Any]):
+    symbols_raw = payload.get("symbols") if isinstance(payload, dict) else []
+    symbols = symbols_raw if isinstance(symbols_raw, list) else []
+    status_payload = await get_ws_client().unsubscribe([str(s) for s in symbols])
+    return {"ok": True, "status": status_payload}
+
+
+@app.get("/quotes/ws/price")
+def quotes_ws_price(symbol: str):
+    sym = str(symbol or "").strip().upper()
+    if not sym:
+        return JSONResponse(status_code=400, content={"ok": False, "error": "symbol is required"})
+    row = get_ws_client().get_price(sym, max_age_seconds=15)
+    if not row:
+        return {"ok": False, "error": "no_ws_price", "symbol": sym}
+    return {
+        "ok": True,
+        "symbol": sym,
+        "price": row.get("price"),
+        "ts": row.get("ts").isoformat() if isinstance(row.get("ts"), datetime) else row.get("ts"),
+        "source": "twelvedata_ws",
+    }
 
 
 @app.get("/")

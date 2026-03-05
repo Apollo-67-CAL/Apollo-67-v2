@@ -22,6 +22,8 @@ const scannerProgressTrack = document.getElementById('scannerProgressTrack');
 const scannerProgressFill = document.getElementById('scannerProgressFill');
 const scannerStatusMeta = document.getElementById('scannerStatusMeta');
 const scannerStatusRefreshBtn = document.getElementById('scannerStatusRefreshBtn');
+const wsStatusPill = document.getElementById('wsStatusPill');
+const wsStatusDot = document.getElementById('wsStatusDot');
 const watchlistInput = document.getElementById('watchlistInput');
 const watchlistAddBtn = document.getElementById('watchlistAddBtn');
 const watchlistSort = document.getElementById('watchlistSort');
@@ -168,6 +170,9 @@ const state = {
   scannerRuntimeStale: false,
   scannerRuntimeLastRunAt: null,
   scannerPollTimer: null,
+  wsStatus: null,
+  wsPollTimer: null,
+  wsSubsTimer: null,
   paperStatus: null,
   paperPositions: [],
   paperRecentOrders: [],
@@ -686,6 +691,7 @@ async function fetchScannerStatus() {
   }
   renderScannerRuntimeStatus();
   renderScanner();
+  await syncWsSubscriptions();
   const mode = String(state.scannerRuntimeStatus?.state || 'idle').toLowerCase();
   scheduleScannerStatusPoll(mode === 'running' || mode === 'queued' ? 2000 : 10000);
 }
@@ -707,6 +713,91 @@ async function refreshScannerData() {
 
 async function refreshScannerDataLive() {
   await queueScannerRun(true);
+}
+
+function renderWsStatusIndicator() {
+  if (!wsStatusPill || !wsStatusDot) return;
+  const status = state.wsStatus || {};
+  const connected = Boolean(status.connected);
+  const msgs = Number(status.messages_last_60s || 0);
+  const subs = Number(status.subscriptions || 0);
+  const lastErr = String(status.last_error || '').trim();
+  const stateLabel = connected ? 'Connected' : 'Disconnected';
+  let dotClass = 'ws-dot ws-dot-red';
+  if (connected && msgs > 0) dotClass = 'ws-dot ws-dot-green';
+  else if (connected) dotClass = 'ws-dot ws-dot-amber';
+  wsStatusDot.className = dotClass;
+  const tooltip = connected
+    ? `WS: ${stateLabel} | subs: ${subs} | msgs/60s: ${msgs}`
+    : `WS: ${stateLabel}${lastErr ? ` | last error: ${lastErr}` : ''}`;
+  wsStatusPill.title = tooltip;
+}
+
+function scheduleWsStatusPoll(ms) {
+  if (state.wsPollTimer) {
+    window.clearTimeout(state.wsPollTimer);
+    state.wsPollTimer = null;
+  }
+  state.wsPollTimer = window.setTimeout(() => {
+    fetchWsStatus().catch(() => {});
+  }, Math.max(2000, Number(ms) || 5000));
+}
+
+async function fetchWsStatus() {
+  const result = await fetchJson('/ws/status');
+  if (result.ok && result.body?.status) {
+    state.wsStatus = result.body.status;
+  } else {
+    state.wsStatus = {
+      connected: false,
+      messages_last_60s: 0,
+      subscriptions: 0,
+      last_error: getErrorMessage(result, 'status unavailable'),
+    };
+  }
+  renderWsStatusIndicator();
+  scheduleWsStatusPoll(5000);
+}
+
+function buildWsSubscriptionSymbols() {
+  const seen = new Set();
+  const out = [];
+  const add = (raw) => {
+    const sym = normalizeSymbol(raw);
+    if (!sym || seen.has(sym)) return;
+    seen.add(sym);
+    out.push(sym);
+  };
+
+  state.monitorRows.forEach((row) => add(row?.symbol));
+  state.watchlist.forEach((sym) => add(sym));
+  add(state.selectedSymbol);
+  state.scannerRows.slice(0, 20).forEach((row) => add(resolveScannerSymbol(row, row?.symbol)));
+  return out;
+}
+
+async function syncWsSubscriptions() {
+  const symbols = buildWsSubscriptionSymbols().slice(0, 200);
+  if (!symbols.length) return;
+  await fetchJson('/quotes/ws/subscriptions', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ symbols }),
+  });
+}
+
+function scheduleWsSubscriptionSync(ms = 30000) {
+  if (state.wsSubsTimer) {
+    window.clearTimeout(state.wsSubsTimer);
+    state.wsSubsTimer = null;
+  }
+  state.wsSubsTimer = window.setTimeout(async () => {
+    try {
+      await syncWsSubscriptions();
+    } finally {
+      scheduleWsSubscriptionSync(30000);
+    }
+  }, Math.max(5000, Number(ms) || 30000));
 }
 
 function renderScannerRows(rows) {
@@ -931,6 +1022,7 @@ async function loadMonitorList() {
   state.monitorRows = result.ok && Array.isArray(result.body?.rows) ? result.body.rows : [];
   setSectionLoading('monitor', false);
   renderMonitorPanel();
+  await syncWsSubscriptions();
 }
 
 function openMonitorModal(draft) {
@@ -2856,6 +2948,7 @@ function renderWatchlist() {
   const rows = sortWatchlistRows(getPanelRows(state.watchlist, 'watchlist'));
   renderSymbolList(watchlistList, rows, 'watchlist');
   warmSymbols(state.watchlist, 'watchlist');
+  syncWsSubscriptions().catch(() => {});
 }
 
 function buildPortfolioDerived() {
@@ -2995,6 +3088,7 @@ async function selectSymbol(symbol, { force = false } = {}) {
   }
 
   renderPanels();
+  syncWsSubscriptions().catch(() => {});
 }
 
 async function safeSelectSymbol(symbol, options = {}) {
@@ -3377,6 +3471,9 @@ window.addEventListener('DOMContentLoaded', async () => {
   }
   initScannerModeToggle();
   renderPanels();
+  await fetchWsStatus();
+  await syncWsSubscriptions();
+  scheduleWsSubscriptionSync(30000);
   await refreshScannerDataLive();
   await refreshMonitor();
   window.setInterval(() => {
