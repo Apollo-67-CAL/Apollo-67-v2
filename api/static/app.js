@@ -634,7 +634,13 @@ function renderScannerRows(rows) {
       ? `Posts ${Number(sourceSummary.posts || 0)} • Mentions ${Number(sourceSummary.mentions || 0)}`
       : null;
     const resolvedPrice = resolveScannerPrice(row);
-    const scoreBadge = renderScoreBadge(scoreValue, { small: true });
+    const scoreBadge = renderScoreBadge(scoreValue, {
+      small: true,
+      symbol,
+      confidence: row.confidence,
+      scoreComponents: row.score_components,
+      evidence: row.evidence || row.source_summary,
+    });
     const entryText = entryLow != null && entryHigh != null
       ? `${formatPrice(entryLow)}-${formatPrice(entryHigh)}`
       : '—';
@@ -764,14 +770,28 @@ function renderMonitorPanel() {
   `;
 
   monitorList.innerHTML = rows.map((row) => {
-    const monitorScore = resolveScannerLevelValue(row.score, row.signal_score, row.scanner_score);
+    const symbol = normalizeSymbol(row.symbol);
+    const cached = symbol ? dataCache.get(symbol) : null;
+    const cachedSignal = cached ? getSignalView(cached.signalResult) : null;
+    const monitorScore = resolveScannerLevelValue(
+      row.score,
+      row.signal_score,
+      row.scanner_score,
+      cachedSignal?.score,
+    );
     return `
     <article class="monitor-row">
       <div class="monitor-main">
         <div class="monitor-top">
           <span class="monitor-symbol-wrap">
             <span class="monitor-symbol">${row.symbol}</span>
-            ${renderScoreBadge(monitorScore, { small: true })}
+            ${renderScoreBadge(monitorScore, {
+              small: true,
+              symbol: symbol || row.symbol,
+              confidence: resolveScannerLevelValue(row.confidence, row.signal_confidence, cachedSignal?.confidence),
+              scoreComponents: row.score_components || cachedSignal?.score_components,
+              evidence: row.evidence || cachedSignal?.evidence,
+            })}
           </span>
           <span class="monitor-price">${row.last_price != null ? `$${formatPrice(row.last_price)}` : '-'}</span>
         </div>
@@ -1215,6 +1235,8 @@ function getSignalView(result) {
     trend: body.trend || 'neutral',
     momentum: body.momentum || 'neutral',
     confidence: body.confidence != null ? Number(body.confidence) : 0,
+    score_components: body.score_components && typeof body.score_components === 'object' ? body.score_components : null,
+    evidence: body.evidence && typeof body.evidence === 'object' ? body.evidence : null,
     debug: body.debug || {},
     raw: result || {},
     error: getErrorMessage(result, 'Signal request failed'),
@@ -1690,28 +1712,158 @@ function formatScoreBadgeText(rawScore) {
 }
 
 function renderScoreBadge(rawScore, options = {}) {
-  const { small = false, loading = false } = options;
+  const {
+    small = false,
+    loading = false,
+    symbol = '',
+    confidence = null,
+    scoreComponents = null,
+    evidence = null,
+  } = options;
   const clamped = clampScoreForBadge(rawScore);
   const hue = scoreHueForBadge(rawScore);
   const scoreText = formatScoreBadgeText(rawScore);
   const ariaValue = clamped == null ? 'unavailable' : String(Math.round(clamped));
+  const strength = clamped == null ? 0 : Math.abs(clamped) / 100;
+  const radius = 11;
+  const circumference = 2 * Math.PI * radius;
+  const dashOffset = circumference * (1 - strength);
+  const normalized = normalizeScoreComponents(scoreComponents);
+  const componentsEncoded = normalized
+    ? encodeURIComponent(JSON.stringify(normalized))
+    : '';
+  const evidenceEncoded = evidence && typeof evidence === 'object'
+    ? encodeURIComponent(JSON.stringify(evidence))
+    : '';
+  const key = `${normalizeSymbol(symbol || '') || '__unknown__'}::${small ? 'sm' : 'md'}`;
+  const prev = scoreBadgeStateBySymbol.get(key);
+  const confNum = Number(confidence);
+  const isBuy = clamped != null && clamped >= 70 && Number.isFinite(confNum) && confNum >= 0.55;
   const className = ['score-badge', small ? 'score-badge--sm' : '', loading ? 'skeleton-chip' : '']
     .filter(Boolean)
     .join(' ');
-  return `<span class="${className}" style="--sb-h:${hue}; --sb-s:70%; --sb-l:40%;" data-score="${ariaValue}" aria-label="Score ${ariaValue}" title="Signal strength score" tabindex="0">${scoreText}</span>`;
+
+  const now = Date.now();
+  const pulse = Boolean(prev && !prev.isBuy && isBuy);
+  let flash = false;
+  const scoreNum = clamped == null ? null : Number(clamped);
+  const delta = prev && scoreNum != null && prev.score != null ? scoreNum - prev.score : 0;
+  if (delta >= 10 && (!prev || now - Number(prev.lastFlashAt || 0) >= 2000)) {
+    flash = true;
+  }
+  scoreBadgeStateBySymbol.set(key, {
+    score: scoreNum,
+    isBuy,
+    lastFlashAt: flash ? now : (prev?.lastFlashAt || 0),
+  });
+
+  const segMarkup = normalized
+    ? buildScoreSegmentMarkup({ components: normalized, radius, circumference, hue })
+    : '';
+
+  const motionClass = [pulse ? 'score-badge--pulse' : '', flash ? 'score-badge--flash' : ''].filter(Boolean).join(' ');
+  const badgeClasses = [className, motionClass].filter(Boolean).join(' ');
+  return `<span class="${badgeClasses}"
+      style="--sb-h:${hue}; --sb-s:70%; --sb-l:40%; --sb-circ:${circumference}; --sb-offset:${dashOffset};"
+      data-score="${ariaValue}"
+      data-confidence="${Number.isFinite(confNum) ? String(confNum) : ''}"
+      data-components="${componentsEncoded}"
+      data-evidence="${evidenceEncoded}"
+      aria-label="Score ${ariaValue}"
+      title="Signal strength score"
+      tabindex="0">
+      <svg class="score-badge-svg" viewBox="0 0 28 28" aria-hidden="true" focusable="false">
+        <circle class="score-ring-bg" cx="14" cy="14" r="${radius}"></circle>
+        <circle class="score-ring-fill" cx="14" cy="14" r="${radius}"></circle>
+        ${segMarkup}
+      </svg>
+      <span class="score-badge-value">${scoreText}</span>
+    </span>`;
 }
 
 let scoreTooltipEl = null;
 let scoreTooltipPinned = false;
+const scoreBadgeStateBySymbol = new Map();
+const scoreBadgesLegendOrder = ["technical", "institution", "news", "social"];
 
 function scoreMeaningBucket(score) {
-  if (score >= 80) return 'Strong BUY signal';
-  if (score >= 60) return 'BUY bias';
-  if (score >= 40) return 'Candidate opportunity';
-  if (score >= 20) return 'Weak signal';
-  if (score >= -20) return 'Neutral';
-  if (score >= -60) return 'Bearish bias';
-  return 'Strong SELL signal';
+  if (score >= 80) return 'Multiple indicators aligned. High probability upward momentum.';
+  if (score >= 60) return 'Positive indicators present. Momentum building.';
+  if (score >= 40) return 'Early signal forming but confirmation required.';
+  if (score >= 20) return 'Insufficient strength for trade.';
+  if (score >= -20) return 'No directional advantage.';
+  if (score >= -60) return 'Indicators suggesting downside risk.';
+  return 'Clear negative trend across indicators.';
+}
+
+function scoreDirectionText(score) {
+  if (score == null) return 'Neutral';
+  if (score > 0) return 'Bullish';
+  if (score < 0) return 'Bearish';
+  return 'Neutral';
+}
+
+function decodeDataJson(raw) {
+  if (!raw || typeof raw !== 'string') return null;
+  try {
+    const decoded = decodeURIComponent(raw);
+    const parsed = JSON.parse(decoded);
+    return parsed && typeof parsed === 'object' ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function normalizeScoreComponents(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const technical = Math.max(0, Number(raw.technical) || 0);
+  const institution = Math.max(0, Number(raw.institution) || 0);
+  const news = Math.max(0, Number(raw.news) || 0);
+  const social = Math.max(0, Number(raw.social) || 0);
+  const total = technical + institution + news + social;
+  if (!(total > 0)) return null;
+  return {
+    technical: technical / total,
+    institution: institution / total,
+    news: news / total,
+    social: social / total,
+  };
+}
+
+function buildScoreSegmentMarkup({ components, radius, circumference, hue }) {
+  const segOrder = scoreBadgesLegendOrder;
+  const lightnessByKey = {
+    technical: 38,
+    institution: 42,
+    news: 46,
+    social: 50,
+  };
+  const gap = 1.4;
+  let offset = 0;
+  return segOrder.map((key) => {
+    const share = Number(components[key]) || 0;
+    if (!(share > 0)) return '';
+    const segmentLength = Math.max(0, (circumference * share) - gap);
+    const dashArray = `${segmentLength} ${Math.max(0, circumference - segmentLength)}`;
+    const dashOffset = -offset;
+    offset += (circumference * share);
+    return `<circle class="score-ring-segment score-ring-segment--${key}" cx="14" cy="14" r="${radius}" stroke="hsl(${hue} 70% ${lightnessByKey[key]}%)" stroke-dasharray="${dashArray}" stroke-dashoffset="${dashOffset}"></circle>`;
+  }).join('');
+}
+
+function scoreBreakdownRows(components) {
+  if (!components) return '';
+  const labels = {
+    technical: 'Technical',
+    institution: 'Institution',
+    news: 'News',
+    social: 'Social',
+  };
+  const rows = scoreBadgesLegendOrder.map((key) => {
+    const value = Math.round((Number(components[key]) || 0) * 100);
+    return `<div><strong>${labels[key]}:</strong> ${value}%</div>`;
+  }).join('');
+  return `<div class="score-tooltip-breakdown"><div class="score-tooltip-subtitle">Breakdown</div>${rows}</div>`;
 }
 
 function ensureScoreTooltip() {
@@ -1727,10 +1879,13 @@ function ensureScoreTooltip() {
 function scoreTooltipHtml(rawScore) {
   const score = clampScoreForBadge(rawScore);
   const scoreText = score == null ? 'unavailable' : String(Math.round(score));
-  const meaning = score == null ? 'Neutral' : scoreMeaningBucket(score);
+  const direction = scoreDirectionText(score);
+  const meaning = score == null ? 'No directional advantage.' : scoreMeaningBucket(score);
+  const directionGlyph = score == null ? '→' : (score >= 0 ? '↑' : '↓');
   return `
     <div class="score-tooltip-title">Signal Strength</div>
-    <div class="score-tooltip-score">Score ${scoreText}: ${meaning}</div>
+    <div class="score-tooltip-score">${directionGlyph} Score: ${scoreText} (${direction})</div>
+    <div class="score-tooltip-meaning">${meaning}</div>
     <div class="score-tooltip-ranges">
       <div><strong>80-100</strong> Strong BUY signal</div>
       <div><strong>60-79</strong> BUY bias</div>
@@ -1741,9 +1896,34 @@ function scoreTooltipHtml(rawScore) {
       <div><strong>-61--100</strong> Strong SELL signal</div>
     </div>
     <div class="score-tooltip-note">
-      Score is calculated from combined signals including price momentum, institutional activity, social sentiment, news signals, and technical indicators.
-      The higher the score, the stronger the opportunity.
+      Score is calculated from combined signals including:
+      <span>• price momentum</span>
+      <span>• institutional activity</span>
+      <span>• social sentiment</span>
+      <span>• news signals</span>
+      <span>• technical indicators</span>
     </div>
+    <div class="score-tooltip-tail">The higher the score, the stronger the opportunity. Negative scores indicate downside risk.</div>
+  `;
+}
+
+function scoreTooltipHtmlFromBadge(target) {
+  const components = normalizeScoreComponents(decodeDataJson(target?.dataset?.components || ''));
+  const evidence = decodeDataJson(target?.dataset?.evidence || '');
+  const base = scoreTooltipHtml(target?.dataset?.score);
+  const breakdown = scoreBreakdownRows(components);
+  let evidenceBlock = '';
+  if (evidence && typeof evidence === 'object') {
+    const posts = Number(evidence.posts);
+    const net = Number(evidence.net);
+    if (Number.isFinite(posts) || Number.isFinite(net)) {
+      evidenceBlock = `<div class="score-tooltip-evidence">${Number.isFinite(posts) ? `Posts: ${posts}` : ''}${Number.isFinite(posts) && Number.isFinite(net) ? ', ' : ''}${Number.isFinite(net) ? `Net: ${net >= 0 ? '+' : ''}${net}` : ''}</div>`;
+    }
+  }
+  return `
+    ${base}
+    ${breakdown}
+    ${evidenceBlock}
   `;
 }
 
@@ -1761,7 +1941,7 @@ function placeScoreTooltip(target) {
 function showScoreTooltip(target, pinned) {
   if (!target) return;
   const tip = ensureScoreTooltip();
-  tip.innerHTML = scoreTooltipHtml(target.dataset.score);
+  tip.innerHTML = scoreTooltipHtmlFromBadge(target);
   tip.hidden = false;
   scoreTooltipPinned = Boolean(pinned);
   placeScoreTooltip(target);
@@ -2157,7 +2337,14 @@ function renderSymbolList(container, rows, panelName, options = {}) {
       const momentumClass = sentimentClass(row.signal.momentum);
       const loadingClass = row.isLoading ? 'loading' : '';
       const priceText = row.hasData ? `$${formatPrice(row.quote.last)}` : '...';
-      const scoreBadge = renderScoreBadge(row.signal.score, { small: true, loading: !row.hasData });
+      const scoreBadge = renderScoreBadge(row.signal.score, {
+        small: true,
+        loading: !row.hasData,
+        symbol: row.symbol,
+        confidence: row.signal.confidence,
+        scoreComponents: row.signal.score_components,
+        evidence: row.signal.evidence,
+      });
       const { trendText, momentumText } = (() => {
         const t = sentimentChipText(row);
         return { trendText: t.trend, momentumText: t.momentum };
@@ -2257,6 +2444,8 @@ function renderPortfolio() {
 
 function renderMonitor() {
   renderMonitorPanel();
+  const symbols = state.monitorRows.map((row) => normalizeSymbol(row.symbol)).filter(Boolean);
+  warmSymbols(symbols, 'monitor');
 }
 
 function renderPaperTrading() {

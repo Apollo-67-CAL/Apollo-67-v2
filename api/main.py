@@ -334,6 +334,70 @@ def _as_float_or_none(value: Any) -> Optional[float]:
     return num if num == num else None
 
 
+def _normalise_score_components(raw: Dict[str, Any]) -> Optional[Dict[str, float]]:
+    keys = ("technical", "social", "news", "institution")
+    values: Dict[str, float] = {}
+    total = 0.0
+    for key in keys:
+        try:
+            val = float(raw.get(key, 0.0))
+        except Exception:
+            val = 0.0
+        val = max(0.0, val)
+        values[key] = val
+        total += val
+    if total <= 0:
+        return None
+    return {key: float(values[key] / total) for key in keys}
+
+
+def _components_for_signal_basic(signal: Dict[str, Any]) -> Dict[str, float]:
+    # Basic signal currently derives from technical indicators.
+    components = _normalise_score_components(
+        {
+            "technical": 1.0,
+            "social": 0.0,
+            "news": 0.0,
+            "institution": 0.0,
+        }
+    )
+    return components or {"technical": 1.0, "social": 0.0, "news": 0.0, "institution": 0.0}
+
+
+def _components_for_scanner_tab(
+    tab: str,
+    source_summary: Dict[str, Any],
+    support_summaries: Optional[Dict[str, Dict[str, Any]]] = None,
+) -> Optional[Dict[str, float]]:
+    tab_value = str(tab or "overall").strip().lower()
+    posts_social = float((support_summaries or {}).get("social", {}).get("posts", 0) or 0)
+    posts_news = float((support_summaries or {}).get("news", {}).get("posts", 0) or 0)
+    posts_inst = float((support_summaries or {}).get("institution", {}).get("posts", 0) or 0)
+    total_support_posts = posts_social + posts_news + posts_inst
+
+    if tab_value == "social":
+        return _normalise_score_components({"technical": 0.35, "social": 0.65, "news": 0.0, "institution": 0.0})
+    if tab_value == "news":
+        return _normalise_score_components({"technical": 0.35, "social": 0.0, "news": 0.65, "institution": 0.0})
+    if tab_value == "institution":
+        return _normalise_score_components({"technical": 0.35, "social": 0.0, "news": 0.0, "institution": 0.65})
+
+    if total_support_posts > 0:
+        return _normalise_score_components(
+            {
+                "technical": 0.60,
+                "social": 0.40 * (posts_social / total_support_posts),
+                "news": 0.40 * (posts_news / total_support_posts),
+                "institution": 0.40 * (posts_inst / total_support_posts),
+            }
+        )
+
+    posts = float(source_summary.get("posts") or 0)
+    if posts > 0:
+        return _normalise_score_components({"technical": 0.65, "social": 0.12, "news": 0.12, "institution": 0.11})
+    return _normalise_score_components({"technical": 1.0, "social": 0.0, "news": 0.0, "institution": 0.0})
+
+
 def _build_sources_payload_from_row(row: Dict[str, Any], scanner_type: str) -> List[Dict[str, Any]]:
     candidate_sources = row.get("sources")
     sources_payload: List[Dict[str, Any]] = []
@@ -1269,6 +1333,7 @@ def _compute_basic_signal_payload(symbol: str) -> dict[str, Any]:
     debug.setdefault("provider_used", result.provider)
     debug.setdefault("bars_count", len(bars_for_signal) if bars_for_signal else None)
     signal["debug"] = debug
+    signal["score_components"] = _components_for_signal_basic(signal)
     return signal
 
 
@@ -1676,6 +1741,20 @@ def _row_from_breakdown_snapshot(symbol: str, scanner_type: str, payload: Dict[s
                 "low": merged.get("entry_low"),
                 "high": merged.get("entry_high"),
             }
+        if not isinstance(merged.get("score_components"), dict):
+            merged["score_components"] = _components_for_scanner_tab(
+                tab=scanner_type,
+                source_summary=merged.get("source_summary") if isinstance(merged.get("source_summary"), dict) else {},
+                support_summaries=None,
+            )
+        if not isinstance(merged.get("evidence"), dict):
+            summary = merged.get("source_summary") if isinstance(merged.get("source_summary"), dict) else {}
+            merged["evidence"] = {
+                "posts": int(summary.get("posts") or 0),
+                "positive": int(summary.get("positive") or 0),
+                "negative": int(summary.get("negative") or 0),
+                "net": int(summary.get("net") or 0),
+            }
         return merged
 
     symbol_u = str(symbol or "").strip().upper()
@@ -1711,6 +1790,8 @@ def _row_from_breakdown_snapshot(symbol: str, scanner_type: str, payload: Dict[s
         "action": action,
         "confidence": confidence,
         "score": score,
+        "score_components": _components_for_scanner_tab(tab=scanner_type, source_summary={}, support_summaries=None),
+        "evidence": {"posts": 0, "positive": 0, "negative": 0, "net": 0},
         "price": None,
         "timeframe": "1day",
         "entry_low": None,
@@ -2024,6 +2105,17 @@ def _to_scanner_discover_item(
     change_pct_value = _as_float_or_none(base_row.get("change_pct"))
     momentum_gain_score = _momentum_gain_score(change_pct=change_pct_value, volume_boost=0.0)
     final_rank_score = _final_rank_score(base_score=score_val, momentum_gain_score=momentum_gain_score)
+    score_components = _components_for_scanner_tab(
+        tab=tab,
+        source_summary=source_summary,
+        support_summaries=support_summaries,
+    )
+    evidence = {
+        "posts": int(source_summary.get("posts") or 0),
+        "positive": int(source_summary.get("positive") or 0),
+        "negative": int(source_summary.get("negative") or 0),
+        "net": int(source_summary.get("net") or 0),
+    }
 
     return {
         "symbol": str(base_row.get("symbol") or live_row.get("symbol") or "").strip().upper(),
@@ -2043,6 +2135,8 @@ def _to_scanner_discover_item(
         "stop": live_row.get("stop"),
         "trail": live_row.get("trail"),
         "source_summary": source_summary,
+        "score_components": score_components,
+        "evidence": evidence,
         "explanation_short": explanation_short,
         "momentum_gain_score": momentum_gain_score,
         "final_rank_score": final_rank_score,
@@ -2938,6 +3032,20 @@ def monitor_create(payload: dict[str, Any]):
 @app.get("/monitor/list")
 def monitor_list(status: Optional[str] = None, limit: int = 200):
     rows = _monitor_repo.list_positions(status=status, limit=limit)
+    for row in rows:
+        symbol = str(row.get("symbol") or "").strip().upper()
+        if not symbol:
+            continue
+        try:
+            signal_payload = _compute_basic_signal_payload(symbol)
+            row["signal_score"] = _as_float_or_none(signal_payload.get("score"))
+            row["signal_confidence"] = _as_float_or_none(signal_payload.get("confidence"))
+            row["score_components"] = signal_payload.get("score_components")
+            evidence = signal_payload.get("evidence")
+            if isinstance(evidence, dict):
+                row["evidence"] = evidence
+        except Exception:
+            continue
     return {"ok": True, "rows": rows}
 
 
