@@ -446,6 +446,34 @@ html, body {
   width: 100%;
 }
 
+.scanner-panel .scan-buy-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.scanner-panel .scan-buy-wrap .scan-buy-btn {
+  min-width: 110px;
+  width: auto;
+}
+
+.scanner-panel .scan-confidence-bar {
+  width: 64px;
+  height: 6px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.10);
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+.scanner-panel .scan-confidence-fill {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: rgba(22, 163, 74, 0.85);
+}
+
 h2 {
   margin: 0;
   font-size: 1.02rem;

@@ -618,7 +618,10 @@ function renderScannerRows(rows) {
     const provider = row.provider || '-';
     const timeframe = row.timeframe || '1day';
     const rrText = row.rr != null ? `RR ${Number(row.rr).toFixed(2)}` : null;
-    const confText = `${Math.round((Number(row.confidence) || 0) * 100)}%`;
+    const confValue = Number(row.confidence);
+    const confPct = Number.isFinite(confValue) ? Math.max(0, Math.min(100, Math.round(confValue * 100))) : 0;
+    const confText = `${confPct}%`;
+    const confTooltip = Number.isFinite(confValue) ? `Confidence: ${confValue.toFixed(2)}` : 'Confidence: n/a';
     const scoreValue = resolveScannerScore(row);
     const entryLow = resolveScannerLevelValue(row.entry_low, row.entryLow, row?.entry_zone?.low, row?.trade?.entry_zone?.low);
     const entryHigh = resolveScannerLevelValue(row.entry_high, row.entryHigh, row?.entry_zone?.high, row?.trade?.entry_zone?.high);
@@ -682,7 +685,12 @@ function renderScannerRows(rows) {
         ${sourceSummaryText ? `<div class="scan-subline">${sourceSummaryText}</div>` : ''}
       </button>
       <div class="scan-actions">
-        <button type="button" class="button-ghost scanner-monitor-btn" data-action="scanner-buy-now" data-symbol="${symbol}" data-price="${resolvedPrice != null ? Number(resolvedPrice) : ''}">BUY NOW</button>
+        <div class="scan-buy-wrap">
+          <button type="button" class="button-ghost scanner-monitor-btn scan-buy-btn" data-action="scanner-buy-now" aria-label="Buy ${symbol}" data-symbol="${symbol}" data-price="${resolvedPrice != null ? Number(resolvedPrice) : ''}">BUY NOW</button>
+          <span class="scan-confidence-bar" role="img" aria-label="${confTooltip}" title="${confTooltip}">
+            <span class="scan-confidence-fill" style="width:${confPct}%;"></span>
+          </span>
+        </div>
         <button type="button" class="button-ghost scanner-monitor-btn" data-action="scanner-watch" data-symbol="${symbol}" data-entry-low="${entryLow != null ? Number(entryLow) : ''}" data-entry-high="${entryHigh != null ? Number(entryHigh) : ''}">WATCH</button>
         <button type="button" class="button-ghost scanner-monitor-btn" data-action="scanner-monitor" data-symbol="${symbol}" data-price="${resolvedPrice != null ? Number(resolvedPrice) : ''}" data-entry-low="${entryLow != null ? Number(entryLow) : ''}" data-entry-high="${entryHigh != null ? Number(entryHigh) : ''}">MONITOR</button>
         <button type="button" class="button-ghost scanner-monitor-btn" data-action="scanner-sources" data-symbol="${symbol}">SOURCES</button>
