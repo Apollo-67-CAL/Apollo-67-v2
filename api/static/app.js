@@ -1698,7 +1698,80 @@ function renderScoreBadge(rawScore, options = {}) {
   const className = ['score-badge', small ? 'score-badge--sm' : '', loading ? 'skeleton-chip' : '']
     .filter(Boolean)
     .join(' ');
-  return `<span class="${className}" style="--sb-h:${hue}; --sb-s:70%; --sb-l:40%;" aria-label="Score ${ariaValue}" title="Score: ${ariaValue}">${scoreText}</span>`;
+  return `<span class="${className}" style="--sb-h:${hue}; --sb-s:70%; --sb-l:40%;" data-score="${ariaValue}" aria-label="Score ${ariaValue}" title="Signal strength score" tabindex="0">${scoreText}</span>`;
+}
+
+let scoreTooltipEl = null;
+let scoreTooltipPinned = false;
+
+function scoreMeaningBucket(score) {
+  if (score >= 80) return 'Strong BUY signal';
+  if (score >= 60) return 'BUY bias';
+  if (score >= 40) return 'Candidate opportunity';
+  if (score >= 20) return 'Weak signal';
+  if (score >= -20) return 'Neutral';
+  if (score >= -60) return 'Bearish bias';
+  return 'Strong SELL signal';
+}
+
+function ensureScoreTooltip() {
+  if (scoreTooltipEl) return scoreTooltipEl;
+  scoreTooltipEl = document.createElement('div');
+  scoreTooltipEl.className = 'score-badge-tooltip';
+  scoreTooltipEl.setAttribute('role', 'tooltip');
+  scoreTooltipEl.hidden = true;
+  document.body.appendChild(scoreTooltipEl);
+  return scoreTooltipEl;
+}
+
+function scoreTooltipHtml(rawScore) {
+  const score = clampScoreForBadge(rawScore);
+  const scoreText = score == null ? 'unavailable' : String(Math.round(score));
+  const meaning = score == null ? 'Neutral' : scoreMeaningBucket(score);
+  return `
+    <div class="score-tooltip-title">Signal Strength</div>
+    <div class="score-tooltip-score">Score ${scoreText}: ${meaning}</div>
+    <div class="score-tooltip-ranges">
+      <div><strong>80-100</strong> Strong BUY signal</div>
+      <div><strong>60-79</strong> BUY bias</div>
+      <div><strong>40-59</strong> Candidate opportunity</div>
+      <div><strong>20-39</strong> Weak signal</div>
+      <div><strong>-20-19</strong> Neutral</div>
+      <div><strong>-21--60</strong> Bearish bias</div>
+      <div><strong>-61--100</strong> Strong SELL signal</div>
+    </div>
+    <div class="score-tooltip-note">
+      Score is calculated from combined signals including price momentum, institutional activity, social sentiment, news signals, and technical indicators.
+      The higher the score, the stronger the opportunity.
+    </div>
+  `;
+}
+
+function placeScoreTooltip(target) {
+  const tip = ensureScoreTooltip();
+  const rect = target.getBoundingClientRect();
+  const width = tip.offsetWidth || 320;
+  const top = Math.max(8, rect.top - 12);
+  const left = Math.min(window.innerWidth - width - 8, Math.max(8, rect.left + rect.width / 2 - width / 2));
+  tip.style.top = `${top}px`;
+  tip.style.left = `${left}px`;
+  tip.style.transform = 'translateY(-100%)';
+}
+
+function showScoreTooltip(target, pinned) {
+  if (!target) return;
+  const tip = ensureScoreTooltip();
+  tip.innerHTML = scoreTooltipHtml(target.dataset.score);
+  tip.hidden = false;
+  scoreTooltipPinned = Boolean(pinned);
+  placeScoreTooltip(target);
+}
+
+function hideScoreTooltip(force = false) {
+  if (!scoreTooltipEl) return;
+  if (!force && scoreTooltipPinned) return;
+  scoreTooltipEl.hidden = true;
+  scoreTooltipPinned = false;
 }
 
 function entryZoneText(zone) {
@@ -2393,6 +2466,22 @@ document.addEventListener('keydown', (event) => {
   }
   if (event.key === 'Escape' && scannerSourcesModal && !scannerSourcesModal.hidden) {
     closeScannerSourcesModal();
+    return;
+  }
+  if (event.key === 'Escape') {
+    hideScoreTooltip(true);
+    return;
+  }
+  const activeScoreBadge = document.activeElement && document.activeElement.classList?.contains('score-badge')
+    ? document.activeElement
+    : null;
+  if (activeScoreBadge && (event.key === 'Enter' || event.key === ' ')) {
+    event.preventDefault();
+    if (!scoreTooltipEl || scoreTooltipEl.hidden || !scoreTooltipPinned) {
+      showScoreTooltip(activeScoreBadge, true);
+    } else {
+      hideScoreTooltip(true);
+    }
   }
 });
 
@@ -2409,7 +2498,43 @@ if (watchlistInput) {
   });
 }
 
+document.addEventListener('mouseover', (event) => {
+  const badge = event.target.closest('.score-badge');
+  if (badge) {
+    showScoreTooltip(badge, false);
+    return;
+  }
+  hideScoreTooltip();
+});
+
+document.addEventListener('focusin', (event) => {
+  const badge = event.target.closest('.score-badge');
+  if (badge) {
+    showScoreTooltip(badge, true);
+  }
+});
+
+document.addEventListener('focusout', (event) => {
+  const badge = event.target.closest('.score-badge');
+  if (badge) {
+    hideScoreTooltip(true);
+  }
+});
+
 document.addEventListener('click', (event) => {
+  const scoreBadge = event.target.closest('.score-badge');
+  if (scoreBadge) {
+    event.preventDefault();
+    event.stopPropagation();
+    if (!scoreTooltipEl || scoreTooltipEl.hidden || !scoreTooltipPinned) {
+      showScoreTooltip(scoreBadge, true);
+    } else {
+      hideScoreTooltip(true);
+    }
+    return;
+  }
+  hideScoreTooltip(true);
+
   const scannerBuyNow = event.target.closest('[data-action="scanner-buy-now"]');
   if (scannerBuyNow) {
     const symbol = normalizeSymbol(scannerBuyNow.dataset.symbol);

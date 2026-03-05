@@ -895,6 +895,46 @@ h2 {
   min-width: 28px;
 }
 
+.score-badge:focus-visible {
+  outline: 2px solid rgba(0, 113, 227, 0.45);
+  outline-offset: 2px;
+}
+
+.score-badge-tooltip {
+  position: fixed;
+  z-index: 9000;
+  width: min(360px, calc(100vw - 16px));
+  border: 1px solid var(--border-strong);
+  background: #ffffff;
+  border-radius: 10px;
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.16);
+  padding: 10px 12px;
+  color: var(--text);
+  font-size: 0.76rem;
+  line-height: 1.35;
+  pointer-events: none;
+}
+
+.score-tooltip-title {
+  font-weight: 700;
+  margin-bottom: 4px;
+}
+
+.score-tooltip-score {
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+
+.score-tooltip-ranges {
+  display: grid;
+  gap: 2px;
+  margin-bottom: 6px;
+}
+
+.score-tooltip-note {
+  color: var(--muted);
+}
+
 .metric {
   font-size: 0.82rem;
   color: #1f2937;
