@@ -7,6 +7,7 @@ import logging
 import os
 import time
 import asyncio
+import contextlib
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
@@ -79,6 +80,9 @@ _curated_repo = CuratedDatasetsRepository()
 _monitor_repo = MonitorPositionsRepository()
 _paper_repo = PaperTradingRepository()
 _paper_engine = PaperTradingEngine(_paper_repo)
+_paper_engine_task: Optional[asyncio.Task[Any]] = None
+_paper_engine_stop = asyncio.Event()
+_paper_engine_last_run_at: Optional[str] = None
 _scanner_sources_repo = ScannerSourceBreakdownsRepository()
 _scanner_source_controls_repo = ScannerSourceControlsRepository()
 _scanner_connectors_repo = ScannerConnectorsRepository()
@@ -179,6 +183,62 @@ _TACTIC_PRESETS: dict[str, dict[str, Any]] = {
         "timeframe_bias": "1day",
     },
 }
+
+
+def _paper_engine_interval_seconds() -> int:
+    env_val = os.getenv("PAPER_ENGINE_INTERVAL_SECONDS")
+    if env_val:
+        try:
+            parsed = int(env_val)
+            if parsed > 0:
+                return parsed
+        except Exception:
+            pass
+    app_env = str(os.getenv("APP_ENV") or os.getenv("ENV") or "development").strip().lower()
+    return 30 if app_env in {"production", "prod"} else 15
+
+
+def _paper_engine_tick_once() -> None:
+    global _paper_engine_last_run_at
+    positions = _paper_repo.list_positions(limit=500)
+    if not positions:
+        _paper_engine_last_run_at = datetime.now(timezone.utc).isoformat()
+        return
+
+    prices_by_symbol: Dict[str, float] = {}
+    for row in positions:
+        symbol = str(row.get("symbol") or "").strip().upper()
+        if not symbol:
+            continue
+        try:
+            quote_result = get_quote_with_fallback(symbol=symbol, freshness_seconds=20)
+            quote = quote_result.quote
+            last_val = float(quote.last)
+            if last_val > 0:
+                prices_by_symbol[symbol] = last_val
+        except Exception:
+            continue
+
+    _paper_engine.evaluate_positions(prices_by_symbol=prices_by_symbol, trade_params_by_symbol={})
+    _paper_engine_last_run_at = datetime.now(timezone.utc).isoformat()
+
+
+async def _paper_engine_loop() -> None:
+    interval = _paper_engine_interval_seconds()
+    logger.info("paper engine loop started interval=%ss", interval)
+    while not _paper_engine_stop.is_set():
+        started = time.monotonic()
+        try:
+            await asyncio.to_thread(_paper_engine_tick_once)
+        except Exception as exc:
+            logger.warning("paper engine tick failed: %s", exc)
+        elapsed = time.monotonic() - started
+        wait_for = max(1.0, float(interval) - elapsed)
+        try:
+            await asyncio.wait_for(_paper_engine_stop.wait(), timeout=wait_for)
+        except asyncio.TimeoutError:
+            continue
+    logger.info("paper engine loop stopped")
 
 _SCANNER_AGENT_UNIVERSES: Dict[str, List[str]] = {
     "overall": ["AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSLA", "AVGO", "AMD", "NFLX", "CRM", "ORCL", "INTC", "ADBE", "QCOM"],
@@ -627,6 +687,7 @@ def _monitor_summary_by_strategy(rows: List[Dict[str, Any]]) -> Dict[str, Dict[s
 
 @app.on_event("startup")
 async def startup() -> None:
+    global _paper_engine_task
     cfg = initialise_config()
     try:
         init_db()
@@ -647,15 +708,43 @@ async def startup() -> None:
         await ws_client.start()
     except Exception as exc:
         logger.warning("ws startup failed: %s", exc)
+    try:
+        _paper_engine_stop.clear()
+        if _paper_engine_task is None or _paper_engine_task.done():
+            _paper_engine_task = asyncio.create_task(_paper_engine_loop())
+    except Exception as exc:
+        logger.warning("paper engine startup failed: %s", exc)
     print(f"DB_DRIVER={DB_DRIVER_MARKER}")
 
 
 @app.on_event("shutdown")
 async def shutdown() -> None:
+    global _paper_engine_task
     try:
         await get_ws_client().stop()
     except Exception:
         pass
+    try:
+        _paper_engine_stop.set()
+        if _paper_engine_task is not None:
+            _paper_engine_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await _paper_engine_task
+    except Exception:
+        pass
+    finally:
+        _paper_engine_task = None
+
+
+@app.exception_handler(ValueError)
+async def handle_value_error(_: Request, exc: ValueError):
+    return JSONResponse(status_code=400, content={"ok": False, "error": {"code": "value_error", "message": str(exc)}})
+
+
+@app.exception_handler(Exception)
+async def handle_uncaught_error(_: Request, exc: Exception):
+    logger.exception("uncaught error: %s", exc)
+    return JSONResponse(status_code=500, content={"ok": False, "error": {"code": "server_error", "message": str(exc)}})
 
 
 @app.get("/healthz")
@@ -3306,7 +3395,7 @@ def _paper_submit_order(payload: Dict[str, Any]) -> Tuple[Optional[Dict[str, Any
     if qty_val is not None and qty_val <= 0:
         return None, "qty must be > 0", 400
 
-    strategy_key = _paper_strategy_key(payload.get("strategy_key"))
+    strategy_key = _paper_strategy_key(payload.get("strategy_key") or payload.get("strategy_id"))
     tactic_label = str(payload.get("tactic_label") or "").strip() or None
     notes = str(payload.get("notes") or "").strip() or None
     source = str(payload.get("source") or "ui")
@@ -3431,6 +3520,7 @@ def paper_status():
         positions = _paper_repo.list_positions(limit=1000)
         open_orders = _paper_repo.list_orders(status="OPEN", limit=2000)
         closed_orders = _paper_repo.list_orders(status="CLOSED", limit=2000)
+        all_orders = _paper_repo.list_orders(limit=5000)
         runs = _paper_repo.list_runs(limit=20)
         total_unreal = 0.0
         total_real = 0.0
@@ -3450,6 +3540,20 @@ def paper_status():
                     closed_wins += 1
             except Exception:
                 pass
+        starting_cash = float(os.getenv("PAPER_STARTING_CASH") or 100000.0)
+        cash_delta = 0.0
+        for row in all_orders:
+            try:
+                notional = float(row.get("notional") or 0.0)
+                side = str(row.get("side") or "").upper()
+                if side == "BUY":
+                    cash_delta -= notional
+                elif side == "SELL":
+                    cash_delta += notional
+            except Exception:
+                continue
+        cash_available = starting_cash + cash_delta
+        equity = cash_available + sum(float(r.get("last_price") or 0.0) * float(r.get("qty") or 0.0) for r in positions)
         return JSONResponse(
             status_code=200,
             content={
@@ -3463,6 +3567,12 @@ def paper_status():
                     "realised_pnl": total_real,
                     "net_pnl": total_unreal + total_real,
                 },
+                "funds": {
+                    "starting_cash": starting_cash,
+                    "cash_available": cash_available,
+                    "equity": equity,
+                },
+                "last_engine_run_at": _paper_engine_last_run_at,
                 "leaderboard": runs,
                 "config": _paper_config(),
                 "strategies": _paper_strategy_rows(),
@@ -3476,7 +3586,53 @@ def paper_status():
 def paper_positions():
     try:
         rows = _paper_repo.list_positions(limit=2000)
-        return JSONResponse(status_code=200, content={"ok": True, "rows": [_paper_position_view(row) for row in rows]})
+        out = [_paper_position_view(row) for row in rows]
+        return JSONResponse(status_code=200, content={"ok": True, "rows": out, "positions": out})
+    except Exception as exc:
+        return JSONResponse(status_code=500, content={"ok": False, "error": str(exc)})
+
+
+@app.post("/paper/positions/{position_id}/close")
+def paper_close_position(position_id: str, payload: Optional[Dict[str, Any]] = None):
+    try:
+        symbol = str(position_id or "").strip().upper()
+        if not symbol:
+            return JSONResponse(status_code=400, content={"ok": False, "error": "position_id is required"})
+        existing = _paper_repo.get_position(symbol)
+        if not existing:
+            return JSONResponse(status_code=404, content={"ok": False, "error": "position not found"})
+        qty = _as_float_or_none(existing.get("qty")) or 0.0
+        if qty <= 0:
+            return JSONResponse(status_code=400, content={"ok": False, "error": "position has zero qty"})
+
+        try:
+            quote = get_quote_with_fallback(symbol=symbol, freshness_seconds=60)
+            last_price = float(quote.quote.last)
+        except Exception:
+            last_price = _as_float_or_none(existing.get("last_price")) or _as_float_or_none(existing.get("avg_price")) or 0.0
+        if last_price <= 0:
+            return JSONResponse(status_code=503, content={"ok": False, "error": "quote unavailable for close"})
+
+        close_payload = {
+            "symbol": symbol,
+            "side": "SELL",
+            "amount_usd": float(qty) * float(last_price) * 1.05,
+            "strategy_key": str(existing.get("tactic_id") or "manual"),
+            "tactic_label": str(((payload or {}) if isinstance(payload, dict) else {}).get("reason") or "manual_close"),
+            "source": "paper_close",
+        }
+        order, err, code = _paper_submit_order(close_payload)
+        if err:
+            return JSONResponse(status_code=code, content={"ok": False, "error": err})
+        position_after = _paper_repo.get_position(symbol)
+        return JSONResponse(
+            status_code=200,
+            content={
+                "ok": True,
+                "position": _paper_position_view(position_after) if position_after else None,
+                "order": order,
+            },
+        )
     except Exception as exc:
         return JSONResponse(status_code=500, content={"ok": False, "error": str(exc)})
 
@@ -3498,18 +3654,21 @@ def paper_orders(status: Optional[str] = None):
 @app.post("/paper/orders")
 def paper_orders_create(payload: Dict[str, Any]):
     started = time.monotonic()
+    payload_body: Dict[str, Any] = payload if isinstance(payload, dict) else {}
+    if "strategy_id" in payload_body and "strategy_key" not in payload_body:
+        payload_body["strategy_key"] = payload_body.get("strategy_id")
     try:
-        order, err, code = _paper_submit_order(payload if isinstance(payload, dict) else {})
+        order, err, code = _paper_submit_order(payload_body)
     except Exception as exc:
         return JSONResponse(status_code=500, content={"ok": False, "error": f"server_error: {exc}"})
     if err:
         elapsed_ms = int((time.monotonic() - started) * 1000)
         logger.info(
             "paper_order_fail symbol=%s side=%s amount=%s strategy=%s elapsed_ms=%s err=%s",
-            str((payload or {}).get("symbol") or "").upper(),
-            str((payload or {}).get("side") or "BUY").upper(),
-            (payload or {}).get("amount_usd") or (payload or {}).get("notional"),
-            str((payload or {}).get("strategy_key") or "manual"),
+            str((payload_body or {}).get("symbol") or "").upper(),
+            str((payload_body or {}).get("side") or "BUY").upper(),
+            (payload_body or {}).get("amount_usd") or (payload_body or {}).get("notional"),
+            str((payload_body or {}).get("strategy_key") or "manual"),
             elapsed_ms,
             err,
         )
@@ -3517,24 +3676,27 @@ def paper_orders_create(payload: Dict[str, Any]):
     elapsed_ms = int((time.monotonic() - started) * 1000)
     logger.info(
         "paper_order_ok symbol=%s side=%s amount=%s strategy=%s fill=%s qty=%s elapsed_ms=%s",
-        str((payload or {}).get("symbol") or "").upper(),
-        str((payload or {}).get("side") or "BUY").upper(),
-        (payload or {}).get("amount_usd") or (payload or {}).get("notional"),
-        str((payload or {}).get("strategy_key") or "manual"),
+        str((payload_body or {}).get("symbol") or "").upper(),
+        str((payload_body or {}).get("side") or "BUY").upper(),
+        (payload_body or {}).get("amount_usd") or (payload_body or {}).get("notional"),
+        str((payload_body or {}).get("strategy_key") or "manual"),
         order.get("fill_price"),
         order.get("qty"),
         elapsed_ms,
     )
+    position = _paper_repo.get_position(str(order.get("symbol") or "").upper())
     return JSONResponse(
         status_code=200,
         content={
             "ok": True,
             "order": order,
+            "position": _paper_position_view(position) if position else None,
             "order_id": order.get("id"),
             "symbol": order.get("symbol"),
             "side": order.get("side"),
             "fill_price": order.get("fill_price"),
             "qty": order.get("qty"),
+            "message": f"Paper {str(order.get('side') or '').upper()} filled",
         },
     )
 

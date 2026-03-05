@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+import csv
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -9,6 +10,7 @@ from app.providers.selector import get_bars_cached_first, get_quote_with_fallbac
 
 _BASE_DIR = Path(__file__).resolve().parents[2]
 _DATA_DIR = _BASE_DIR / "app" / "data"
+_ROOT_DATA_DIR = _BASE_DIR / "data"
 
 _CACHE_TTL_SECONDS = 600
 _DISCOVERY_CACHE: Dict[str, Tuple[float, List[Dict[str, Any]]]] = {}
@@ -19,11 +21,27 @@ def _now_iso() -> str:
 
 
 def _load_symbols(filename: str) -> List[str]:
-    path = _DATA_DIR / filename
+    path = Path(filename)
+    if not path.is_absolute():
+        path = _DATA_DIR / filename
     if not path.exists():
         return []
     out: List[str] = []
     seen = set()
+    if path.suffix.lower() == ".csv":
+        try:
+            with path.open("r", newline="", encoding="utf-8") as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    raw = row.get("symbol") or row.get("ticker") or row.get("code")
+                    symbol = str(raw or "").strip().upper()
+                    if not symbol or symbol.startswith("#") or symbol in seen:
+                        continue
+                    seen.add(symbol)
+                    out.append(symbol)
+            return out
+        except Exception:
+            return []
     for raw in path.read_text().splitlines():
         symbol = str(raw or "").strip().upper()
         if not symbol or symbol.startswith("#") or symbol in seen:
@@ -131,17 +149,31 @@ def _discover_segment(market: str, segment: str, filename: str, limit: int = 80,
 
 
 def discover_us_movers(limit: int = 80, force_refresh: bool = False) -> Dict[str, List[Dict[str, Any]]]:
+    us_small_csv = _ROOT_DATA_DIR / "universe_us_small.csv"
     return {
         "large": _discover_segment("US", "large", "us_universe_large.txt", limit=limit, force_refresh=force_refresh),
-        "small": _discover_segment("US", "small", "us_universe_small.txt", limit=limit, force_refresh=force_refresh),
+        "small": _discover_segment(
+            "US",
+            "small",
+            str(us_small_csv if us_small_csv.exists() else (_DATA_DIR / "us_universe_small.txt")),
+            limit=limit,
+            force_refresh=force_refresh,
+        ),
     }
 
 
 def discover_au_movers(limit: int = 80, force_refresh: bool = False) -> Dict[str, List[Dict[str, Any]]]:
+    au_small_csv = _ROOT_DATA_DIR / "universe_au_small.csv"
     return {
         "large": _discover_segment("AU", "large", "asx_universe_large.txt", limit=limit, force_refresh=force_refresh),
         "mid": _discover_segment("AU", "mid", "asx_universe_mid.txt", limit=limit, force_refresh=force_refresh),
-        "small": _discover_segment("AU", "small", "asx_universe_small.txt", limit=limit, force_refresh=force_refresh),
+        "small": _discover_segment(
+            "AU",
+            "small",
+            str(au_small_csv if au_small_csv.exists() else (_DATA_DIR / "asx_universe_small.txt")),
+            limit=limit,
+            force_refresh=force_refresh,
+        ),
     }
 
 

@@ -773,6 +773,7 @@ function buildWsSubscriptionSymbols() {
 
   state.monitorRows.forEach((row) => add(row?.symbol));
   state.watchlist.forEach((sym) => add(sym));
+  state.paperPositions.forEach((row) => add(row?.symbol));
   add(state.selectedSymbol);
   state.scannerRows.slice(0, 20).forEach((row) => add(resolveScannerSymbol(row, row?.symbol)));
   return out;

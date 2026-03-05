@@ -1,0 +1,172 @@
+symbol,name,sector,market_cap_bucket
+PLTR,Palantir,Software,small
+SOFI,SoFi,Financial,small
+GME,GameStop,Retail,small
+COIN,Coinbase,Financial,small
+RIVN,Rivian,Auto,small
+LCID,Lucid,Auto,small
+AFRM,Affirm,Financial,small
+UPST,Upstart,Financial,small
+MARA,Marathon Digital,Financial,small
+RIOT,Riot Platforms,Financial,small
+IONQ,IonQ,Technology,small
+RKLB,Rocket Lab,Industrials,small
+HIMS,Hims & Hers,Healthcare,small
+HOOD,Robinhood,Financial,small
+FUBO,FuboTV,Media,small
+OPEN,Opendoor,Real Estate,small
+AI,C3.ai,Software,small
+CHPT,ChargePoint,Industrials,small
+SOUN,SoundHound,Software,small
+CLOV,Clover Health,Healthcare,small
+BBAI,BigBear.ai,Software,small
+BB,BlackBerry,Software,small
+TLRY,Tilray,Healthcare,small
+SPCE,Virgin Galactic,Industrials,small
+ENVX,Enovix,Technology,small
+CRSR,Corsair,Technology,small
+ACHR,Archer Aviation,Industrials,small
+JOBY,Joby Aviation,Industrials,small
+DNA,Ginkgo Bioworks,Healthcare,small
+QS,QuantumScape,Industrials,small
+NKLA,Nikola,Industrials,small
+ASTS,AST SpaceMobile,Communication,small
+LUNR,Intuitive Machines,Industrials,small
+LAZR,Luminar,Technology,small
+MVIS,MicroVision,Technology,small
+SAVA,Cassava Sciences,Healthcare,small
+RGTI,Rigetti,Technology,small
+ARQQ,Arqit,Technology,small
+BMEA,Biomea Fusion,Healthcare,small
+TOST,Toast,Software,small
+IOT,Samsara,Software,small
+PATH,UiPath,Software,small
+DOCN,DigitalOcean,Software,small
+CFLT,Confluent,Software,small
+NET,Cloudflare,Software,small
+BILL,BILL Holdings,Software,small
+U,Unity,Software,small
+PINS,Pinterest,Communication,small
+SNAP,Snap,Communication,small
+RBLX,Roblox,Communication,small
+DUOL,Duolingo,Software,small
+ETSY,Etsy,Retail,small
+W,Wayfair,Retail,small
+BYND,Beyond Meat,Consumer,small
+PTON,Peloton,Consumer,small
+CHGG,Chegg,Education,small
+CARG,CarGurus,Retail,small
+ROOT,Root,Financial,small
+LMND,Lemonade,Financial,small
+RUN,Sunrun,Energy,small
+SEDG,SolarEdge,Energy,small
+FSLR,First Solar,Energy,small
+ENPH,Enphase,Energy,small
+ARRY,Array Tech,Energy,small
+HUT,Hut 8,Financial,small
+BITF,Bitfarms,Financial,small
+CIFR,Cipher Mining,Financial,small
+CLSK,CleanSpark,Financial,small
+CAN,Canaan,Technology,small
+FROG,JFrog,Software,small
+S,SentinelOne,Software,small
+ASAN,Asana,Software,small
+SMAR,Smartsheet,Software,small
+PCOR,Procore,Software,small
+GTLB,GitLab,Software,small
+ESTC,Elastic,Software,small
+PUBM,PubMatic,Software,small
+APPS,Digital Turbine,Software,small
+YEXT,Yext,Software,small
+FVRR,Fiverr,Software,small
+UPWK,Upwork,Software,small
+PCTY,Paylocity,Software,small
+SMCI,Super Micro,Technology,small
+NIO,NIO,Auto,small
+XPEV,XPeng,Auto,small
+LI,Li Auto,Auto,small
+BILI,Bilibili,Communication,small
+IQ,iQIYI,Communication,small
+TME,Tencent Music,Communication,small
+JD,JD.com,Retail,small
+BABA,Alibaba,Retail,small
+PDD,PDD,Retail,small
+SE,Sea Ltd,Communication,small
+SHOP,Shopify,Software,small
+SQ,Block,Financial,small
+PYPL,PayPal,Financial,small
+ROKU,Roku,Communication,small
+CRWD,CrowdStrike,Software,small
+OKTA,Okta,Software,small
+MDB,MongoDB,Software,small
+DDOG,Datadog,Software,small
+ZS,Zscaler,Software,small
+TWLO,Twilio,Software,small
+BMBL,Bumble,Communication,small
+MTCH,Match Group,Communication,small
+CVNA,Carvana,Retail,small
+Z,Zillow,Real Estate,small
+RDFN,Redfin,Real Estate,small
+EXPI,eXp World,Real Estate,small
+APP,AppLovin,Software,small
+ONON,On Running,Consumer,small
+CROX,Crocs,Consumer,small
+DKNG,DraftKings,Consumer,small
+PENN,Penn Entertainment,Consumer,small
+WBD,Warner Bros Discovery,Media,small
+PARA,Paramount,Media,small
+SIRI,SiriusXM,Media,small
+TTD,Trade Desk,Software,small
+ZI,ZoomInfo,Software,small
+DOCU,DocuSign,Software,small
+WIX,Wix,Software,small
+BAND,Bandwidth,Communication,small
+MNDY,monday.com,Software,small
+GDRX,GoodRx,Healthcare,small
+RXRX,Recursion,Healthcare,small
+SDGR,Schrodinger,Healthcare,small
+BEAM,Beam Therapeutics,Healthcare,small
+NTLA,Intellia,Healthcare,small
+CRSP,CRISPR Therapeutics,Healthcare,small
+EDIT,Editas Medicine,Healthcare,small
+VERV,Verve Therapeutics,Healthcare,small
+CERE,Cerevel,Healthcare,small
+SRRK,Scholar Rock,Healthcare,small
+VKTX,Viking Therapeutics,Healthcare,small
+ARDX,Ardelyx,Healthcare,small
+RXDX,Prometheus Biosciences,Healthcare,small
+PACB,PacBio,Healthcare,small
+NTRA,Natera,Healthcare,small
+BMRN,BioMarin,Healthcare,small
+SANA,Sana Biotechnology,Healthcare,small
+ALLO,Allogene,Healthcare,small
+FATE,Fate Therapeutics,Healthcare,small
+ARVN,Arvinas,Healthcare,small
+MRVI,Maravai,Healthcare,small
+AMWL,Amwell,Healthcare,small
+TDOC,Teladoc,Healthcare,small
+OSCR,Oscar Health,Healthcare,small
+BHVN,Biohaven,Healthcare,small
+GH,Guardant Health,Healthcare,small
+XMTR,Xometry,Industrials,small
+BLDE,Blade Air Mobility,Industrials,small
+EVGO,EVgo,Industrials,small
+CHWY,Chewy,Retail,small
+KMX,CarMax,Retail,small
+GXO,GXO Logistics,Industrials,small
+RXO,RXO,Industrials,small
+FLNC,Fluence,Energy,small
+BE,Bloom Energy,Energy,small
+NEE,NextEra Energy,Energy,small
+PLUG,Plug Power,Energy,small
+FCEL,FuelCell,Energy,small
+BLNK,Blink Charging,Energy,small
+VLTA,Volta,Energy,small
+STEM,Stem,Energy,small
+ARRY,Array Technologies,Energy,small
+NOVA,Sunnova,Energy,small
+SPWR,SunPower,Energy,small
+MAXN,Maxeon,Energy,small
+AES,AES Corp,Energy,small
+GEVO,Gevo,Energy,small
+AMTX,Aemetis,Energy,small

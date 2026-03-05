@@ -1,0 +1,147 @@
+symbol,name,sector,market_cap_bucket
+R8R.AX,R8 Resources,Materials,small
+AOK.AX,Australian Oil,Energy,small
+BLZ.AX,Blaze Minerals,Materials,small
+GLL.AX,Galilee Energy,Energy,small
+RLC.AX,Reedy Lagoon,Materials,small
+LTR.AX,Liontown,Materials,small
+PDN.AX,Paladin Energy,Energy,small
+BRN.AX,Brainchip,Technology,small
+CXO.AX,Core Lithium,Materials,small
+DYL.AX,Deep Yellow,Energy,small
+SYA.AX,Sayona Mining,Materials,small
+LKE.AX,Lake Resources,Materials,small
+PLS.AX,Pilbara Minerals,Materials,small
+INR.AX,Ioneer,Materials,small
+PEN.AX,Peninsula Energy,Energy,small
+AKE.AX,Allkem,Materials,small
+NVA.AX,Nova Minerals,Materials,small
+VUL.AX,Vulcan Energy,Energy,small
+AVA.AX,Avecho,Healthcare,small
+RNU.AX,Renascor,Materials,small
+IDP.AX,IDP Education,Consumer,small
+EMR.AX,Emerald Resources,Materials,small
+ZIP.AX,Zip Co,Financial,small
+TLX.AX,Telix Pharma,Healthcare,small
+MND.AX,Monadelphous,Industrials,small
+BOE.AX,Boss Energy,Energy,small
+CXM.AX,Centrex,Materials,small
+NVX.AX,Novonix,Materials,small
+IMU.AX,Imugene,Healthcare,small
+AZL.AX,Arizona Lithium,Materials,small
+ASN.AX,Anson Resources,Materials,small
+RSG.AX,Resolute Mining,Materials,small
+VMT.AX,Vmoto,Consumer,small
+RLF.AX,RLF AgTech,Technology,small
+NHC.AX,New Hope,Energy,small
+TUA.AX,Tuas,Communication,small
+SRL.AX,Sunrise Energy,Energy,small
+WBT.AX,Weebit Nano,Technology,small
+4DS.AX,4DS Memory,Technology,small
+MEM.AX,Memphasys,Healthcare,small
+DUB.AX,Dubber,Technology,small
+KAR.AX,Karoon Energy,Energy,small
+E25.AX,Element 25,Materials,small
+LTRN.AX,Laterite,Materials,small
+PYC.AX,PYC Therapeutics,Healthcare,small
+HZR.AX,Hazer,Energy,small
+MAY.AX,Melbana Energy,Energy,small
+S32.AX,South32,Materials,small
+AGL.AX,AGL Energy,Utilities,small
+MTS.AX,Metcash,Consumer,small
+NAN.AX,Nanosonics,Healthcare,small
+WTC.AX,WiseTech,Technology,small
+NXT.AX,NextDC,Technology,small
+TNE.AX,Technology One,Technology,small
+XRO.AX,Xero,Technology,small
+CPU.AX,Computershare,Financial,small
+SEK.AX,Seek,Communication,small
+REA.AX,REA Group,Communication,small
+CAR.AX,Carsales,Communication,small
+JHX.AX,James Hardie,Materials,small
+ALL.AX,Aristocrat,Consumer,small
+CSL.AX,CSL,Healthcare,small
+COH.AX,Cochlear,Healthcare,small
+RMD.AX,ResMed,Healthcare,small
+SHL.AX,Sonic Healthcare,Healthcare,small
+FPH.AX,Fisher Paykel,Healthcare,small
+ANN.AX,Ansell,Healthcare,small
+SIQ.AX,Smartgroup,Financial,small
+NEA.AX,Nearmap,Technology,small
+MP1.AX,Megaport,Technology,small
+TPG.AX,TPG Telecom,Communication,small
+SGM.AX,Sims,Industrials,small
+ORI.AX,Orica,Materials,small
+MIN.AX,Mineral Resources,Materials,small
+IGO.AX,IGO,Materials,small
+ILU.AX,Iluka,Materials,small
+SFR.AX,Sandfire,Materials,small
+BGL.AX,Bellevue Gold,Materials,small
+WGX.AX,Westgold,Materials,small
+NST.AX,Northern Star,Materials,small
+EVN.AX,Evolution Mining,Materials,small
+PRU.AX,Perseus Mining,Materials,small
+GOR.AX,Gold Road,Materials,small
+RED.AX,Red 5,Materials,small
+RMS.AX,Ramelius,Materials,small
+DEG.AX,De Grey,Materials,small
+MML.AX,Medallion,Materials,small
+QAN.AX,Qantas,Industrials,small
+WEB.AX,Webjet,Consumer,small
+FLT.AX,Flight Centre,Consumer,small
+A2M.AX,a2 Milk,Consumer,small
+BAP.AX,Bapcor,Consumer,small
+SUL.AX,Super Retail,Consumer,small
+PMV.AX,Premier Investments,Consumer,small
+HVN.AX,Harvey Norman,Consumer,small
+JBH.AX,JB Hi-Fi,Consumer,small
+WES.AX,Wesfarmers,Consumer,small
+WOW.AX,Woolworths,Consumer,small
+COL.AX,Coles,Consumer,small
+MYR.AX,Myer,Consumer,small
+TPW.AX,Temple and Webster,Consumer,small
+KGN.AX,Kogan,Consumer,small
+AD8.AX,Audinate,Technology,small
+VGL.AX,Vista Group,Technology,small
+XRF.AX,XRF Scientific,Technology,small
+AVA.AX,Ava Risk,Technology,small
+DVL.AX,Dorsavi,Healthcare,small
+RHT.AX,Resonance Health,Healthcare,small
+MSB.AX,Mesoblast,Healthcare,small
+RAC.AX,Race Oncology,Healthcare,small
+PAR.AX,Paradigm,Healthcare,small
+ACR.AX,Acrux,Healthcare,small
+DXB.AX,Dimerix,Healthcare,small
+CTD.AX,Corporate Travel,Consumer,small
+MFG.AX,Magellan,Financial,small
+HUB.AX,Hub24,Financial,small
+PNI.AX,Pinnacle,Financial,small
+GQG.AX,GQG Partners,Financial,small
+IFL.AX,Insignia Financial,Financial,small
+AZJ.AX,Aurizon,Industrials,small
+ALD.AX,Ampol,Energy,small
+STO.AX,Santos,Energy,small
+WDS.AX,Woodside,Energy,small
+BPT.AX,Beach Energy,Energy,small
+KAR.AX,Karoon Energy,Energy,small
+EXR.AX,Elixir Energy,Energy,small
+IVZ.AX,Invictus Energy,Energy,small
+88E.AX,88 Energy,Energy,small
+LRS.AX,Latin Resources,Materials,small
+GL1.AX,Global Lithium,Materials,small
+SYR.AX,Syrah,Materials,small
+BHP.AX,BHP,Materials,small
+RIO.AX,Rio Tinto,Materials,small
+FMG.AX,Fortescue,Materials,small
+CHN.AX,Chalice Mining,Materials,small
+A1M.AX,AIC Mines,Materials,small
+NC6.AX,Nanollose,Materials,small
+QPM.AX,QPM Energy,Energy,small
+MTH.AX,Mithril Silver,Materials,small
+MTM.AX,MTM Critical Metals,Materials,small
+CXM.AX,Centrex Metals,Materials,small
+CXL.AX,Calix,Materials,small
+C7A.AX,Clarity Pharma,Healthcare,small
+DRO.AX,Droneshield,Technology,small
+EOS.AX,Electro Optic Systems,Technology,small
+EOS.AX,Electro Optic Systems,Technology,small
