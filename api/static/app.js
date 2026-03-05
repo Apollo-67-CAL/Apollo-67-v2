@@ -2321,6 +2321,61 @@ function sentimentChipText(row) {
   return { trend, momentum };
 }
 
+function trendStateForWatchlist(row) {
+  const trendRaw = String(row?.signal?.trend || '').toLowerCase();
+  const momentumRaw = String(row?.signal?.momentum || '').toLowerCase();
+  const scoreNum = Number(row?.signal?.score);
+
+  let stateLabel = 'neutral';
+  if (trendRaw.includes('bull')) {
+    stateLabel = 'bullish';
+  } else if (trendRaw.includes('bear')) {
+    stateLabel = 'bearish';
+  } else if (Number.isFinite(scoreNum)) {
+    if (scoreNum >= 20) stateLabel = 'bullish';
+    else if (scoreNum <= -20) stateLabel = 'bearish';
+    else stateLabel = 'neutral';
+  }
+
+  if (
+    stateLabel === 'neutral'
+    && momentumRaw.includes('negative')
+    && Number.isFinite(scoreNum)
+    && scoreNum > -20
+    && scoreNum < 20
+  ) {
+    stateLabel = 'caution';
+  }
+  return stateLabel;
+}
+
+function trendTooltipForState(stateLabel) {
+  if (stateLabel === 'bullish') return 'Bullish';
+  if (stateLabel === 'bearish') return 'Bearish';
+  if (stateLabel === 'caution') return 'Caution';
+  return 'Neutral';
+}
+
+function renderWatchlistTrendIcon(row, loading) {
+  const stateLabel = trendStateForWatchlist(row);
+  const tip = trendTooltipForState(stateLabel);
+  const classes = [
+    'trend-icon',
+    `trend-icon--${stateLabel}`,
+    loading ? 'skeleton-chip' : '',
+  ].filter(Boolean).join(' ');
+  return `
+    <span
+      class="${classes}"
+      role="img"
+      aria-label="${tip}"
+      title="${tip}"
+    >
+      <span class="trend-icon-glyph" aria-hidden="true"></span>
+    </span>
+  `;
+}
+
 function renderSymbolList(container, rows, panelName, options = {}) {
   const showQty = Boolean(options.showQty);
   const qtyBySymbol = options.qtyBySymbol || {};
@@ -2356,6 +2411,9 @@ function renderSymbolList(container, rows, panelName, options = {}) {
         : '';
       const hasErr = row.hasData && (row.quote.error || row.signal.error);
       const errBadge = hasErr ? '<span class="badge bear">ERR</span>' : '';
+      const trendElement = panelName === 'watchlist'
+        ? renderWatchlistTrendIcon(row, !row.hasData)
+        : `<span class="badge ${row.hasData ? trendClass : 'neutral'} ${row.hasData ? '' : 'skeleton-chip'}">${trendText}</span>`;
 
       return `
       <article class="symbol-card ${row.isSelected ? 'selected' : ''} ${loadingClass}" data-panel="${panelName}" data-symbol="${row.symbol}">
@@ -2365,7 +2423,7 @@ function renderSymbolList(container, rows, panelName, options = {}) {
             ${scoreBadge}
           </span>
           <span class="metric ${row.hasData ? '' : 'skeleton-chip'}">${priceText}</span>
-          <span class="badge ${row.hasData ? trendClass : 'neutral'} ${row.hasData ? '' : 'skeleton-chip'}">${trendText}</span>
+          ${trendElement}
           <span class="badge ${row.hasData ? momentumClass : 'neutral'} ${row.hasData ? '' : 'skeleton-chip'}">${momentumText}</span>
           ${errBadge}
           ${qty}

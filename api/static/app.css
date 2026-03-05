@@ -969,6 +969,69 @@ h2 {
   min-width: 28px;
 }
 
+.trend-icon {
+  width: 16px;
+  height: 16px;
+  min-width: 16px;
+  border-radius: 999px;
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+}
+
+.trend-icon-glyph {
+  display: inline-block;
+  width: 0;
+  height: 0;
+}
+
+.trend-icon--bullish {
+  background: rgba(22, 163, 74, 0.2);
+}
+
+.trend-icon--bullish .trend-icon-glyph {
+  border-left: 4px solid transparent;
+  border-right: 4px solid transparent;
+  border-bottom: 6px solid #15803d;
+  transform: translateY(-1px);
+}
+
+.trend-icon--bearish {
+  background: rgba(220, 38, 38, 0.2);
+}
+
+.trend-icon--bearish .trend-icon-glyph {
+  border-left: 4px solid transparent;
+  border-right: 4px solid transparent;
+  border-top: 6px solid #b91c1c;
+  transform: translateY(1px);
+}
+
+.trend-icon--neutral {
+  background: rgba(148, 163, 184, 0.2);
+}
+
+.trend-icon--neutral .trend-icon-glyph {
+  width: 7px;
+  height: 2px;
+  background: #64748b;
+  border-radius: 2px;
+}
+
+.trend-icon--caution {
+  background: rgba(245, 158, 11, 0.22);
+}
+
+.trend-icon--caution .trend-icon-glyph {
+  width: 2px;
+  height: 8px;
+  background: #b45309;
+  border-radius: 2px;
+  transform: rotate(18deg);
+}
+
 .score-badge:focus-visible {
   outline: 2px solid rgba(0, 113, 227, 0.45);
   outline-offset: 2px;
@@ -1504,6 +1567,12 @@ pre {
     height: 24px;
     min-width: 24px;
     font-size: 11px;
+  }
+
+  .trend-icon {
+    width: 14px;
+    height: 14px;
+    min-width: 14px;
   }
 
   .scanner-controls {
