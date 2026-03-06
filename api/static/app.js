@@ -47,6 +47,10 @@ const scannerSourcesTotals = document.getElementById('scannerSourcesTotals');
 const scannerSourcesList = document.getElementById('scannerSourcesList');
 const scannerSourcesError = document.getElementById('scannerSourcesError');
 const scannerSourcesCloseBtn = document.getElementById('scannerSourcesCloseBtn');
+const scannerDetailModal = document.getElementById('scannerDetailModal');
+const scannerDetailTitle = document.getElementById('scannerDetailTitle');
+const scannerDetailCloseBtn = document.getElementById('scannerDetailCloseBtn');
+const scannerDetailContent = document.getElementById('scannerDetailContent');
 const portfolioAddBtn = document.getElementById('portfolioAddBtn');
 const portfolioList = document.getElementById('portfolioList');
 const paperRefreshBtn = document.getElementById('paperRefreshBtn');
@@ -108,6 +112,7 @@ const chartCanvas = document.getElementById('priceChart');
 const chartMeta = document.getElementById('chartMeta');
 const chartOhlc = document.getElementById('chartOhlc');
 let priceChart = null;
+let scannerDetailChart = null;
 
 const dataCache = new Map();
 const inFlight = new Map();
@@ -166,6 +171,17 @@ const state = {
   scannerSourcesChannel: null,
   scannerSourcesTimeframe: '1day',
   scannerSourcesByKey: {},
+  scannerDetail: {
+    open: false,
+    symbol: null,
+    row: null,
+    normalized: null,
+    quote: null,
+    trade: null,
+    bars: null,
+    loading: false,
+    error: '',
+  },
   scannerRuntimeStatus: { state: 'idle', run_id: null, error: null },
   scannerRuntimeProgress: null,
   scannerRuntimeStale: false,
@@ -910,6 +926,288 @@ function renderScannerRows(rows) {
     </article>
     `;
   }).join('');
+}
+
+function findScannerRowBySymbol(symbol) {
+  const sym = normalizeSymbol(symbol);
+  if (!sym) return null;
+  const rows = Array.isArray(state.scannerRows) ? state.scannerRows : [];
+  return rows.find((row) => resolveScannerSymbol(row, row?.symbol) === sym) || null;
+}
+
+function normalizeScannerDetail(raw) {
+  const row = raw && typeof raw === 'object' ? raw : {};
+  const symbol = resolveScannerSymbol(row, row?.symbol);
+  const confidenceRaw = resolveScannerLevelValue(row.confidence, row?.trade?.confidence, row?.signal?.confidence);
+  const confidence = confidenceRaw != null ? Math.max(0, Math.min(1, Number(confidenceRaw))) : null;
+  const entryLow = resolveScannerLevelValue(row.entry_low, row.entryLow, row?.entry_zone?.low, row?.trade?.entry_zone?.low);
+  const entryHigh = resolveScannerLevelValue(row.entry_high, row.entryHigh, row?.entry_zone?.high, row?.trade?.entry_zone?.high);
+  return {
+    raw: row,
+    symbol,
+    name: String(row.name || row.company_name || row.company || '').trim() || null,
+    market: String(row.market || '').trim() || null,
+    segment: String(row.segment || '').trim() || null,
+    price: resolveScannerPrice(row),
+    changePct: resolveScannerLevelValue(row.change_pct, row.change),
+    action: String(row.action || row?.trade?.action || 'HOLD').toUpperCase(),
+    score: resolveScannerScore(row),
+    confidence,
+    provider: String(row.provider || row.provider_used || row?.quote?.provider || '').trim() || null,
+    timeframe: String(row.timeframe || '1day'),
+    entryLow,
+    entryHigh,
+    target: resolveScannerTarget(row),
+    stop: resolveScannerLevelValue(row.stop, row?.trade?.stop_loss_price),
+    trail: resolveScannerLevelValue(row.trail, row?.trade?.trailing_stop_price),
+    rr: resolveScannerLevelValue(row.rr, row?.trade?.rr),
+    dataQuality: String(row.data_quality || ((resolveScannerTarget(row) != null || resolveScannerLevelValue(row.stop, row?.trade?.stop_loss_price) != null) ? 'full' : 'partial')),
+    boostReasons: Array.isArray(row.boost_reasons) ? row.boost_reasons : [],
+    holdingBack: row.holding_back_reason || row.blocker || null,
+    failReason: row.fail_reason || null,
+    reasons: Array.isArray(row.reasons) ? row.reasons : [],
+    explanation: row.explanation_short || row.explanation || row.snapshot || null,
+    sourceSummary: row.source_summary || row.sources_summary || null,
+  };
+}
+
+function openScannerResultDetail(symbol, rawRow) {
+  if (!scannerDetailModal || !scannerDetailContent) return;
+  const sym = normalizeSymbol(symbol);
+  const row = rawRow || findScannerRowBySymbol(sym) || {};
+  const normalized = normalizeScannerDetail(row);
+  state.scannerDetail = {
+    open: true,
+    symbol: sym || normalized.symbol,
+    row,
+    normalized,
+    quote: null,
+    trade: null,
+    bars: null,
+    loading: true,
+    error: '',
+  };
+  if (scannerDetailTitle) {
+    scannerDetailTitle.textContent = `Scanner Result • ${normalized.symbol || sym || '-'}`;
+  }
+  if (scannerDetailModal.hidden) {
+    openModalCount += 1;
+  }
+  scannerDetailModal.hidden = false;
+  document.body.style.overflow = 'hidden';
+  renderScannerDetailView();
+  loadScannerResultDetailAsync(state.scannerDetail.symbol, normalized.timeframe || '1day');
+}
+
+function closeScannerResultDetail() {
+  if (!scannerDetailModal) return;
+  if (!scannerDetailModal.hidden) {
+    openModalCount = Math.max(0, openModalCount - 1);
+  }
+  scannerDetailModal.hidden = true;
+  document.body.style.overflow = openModalCount > 0 ? 'hidden' : '';
+  state.scannerDetail.open = false;
+  if (scannerDetailChart) {
+    scannerDetailChart.destroy();
+    scannerDetailChart = null;
+  }
+}
+
+async function loadScannerResultDetailAsync(symbol, timeframe = '1day') {
+  const sym = normalizeSymbol(symbol);
+  if (!sym) {
+    state.scannerDetail.loading = false;
+    state.scannerDetail.error = 'Symbol unavailable';
+    renderScannerDetailView();
+    return;
+  }
+  try {
+    const [quoteResult, tradeResult, barsResult] = await Promise.all([
+      fetchJsonWithTimeout(`/market/quote?symbol=${encodeURIComponent(sym)}`, undefined, 5000),
+      fetchJsonWithTimeout(`/signal/trade?symbol=${encodeURIComponent(sym)}&interval=${encodeURIComponent(String(timeframe || '1day'))}&outputsize=60`, undefined, 6000),
+      fetchJsonWithTimeout(`/market/bars?symbol=${encodeURIComponent(sym)}&interval=${encodeURIComponent(String(timeframe || '1day'))}&outputsize=120`, undefined, 7000),
+    ]);
+    if (!state.scannerDetail.open || normalizeSymbol(state.scannerDetail.symbol) !== sym) return;
+    state.scannerDetail.quote = quoteResult;
+    state.scannerDetail.trade = tradeResult;
+    state.scannerDetail.bars = barsResult;
+    state.scannerDetail.error = '';
+  } catch (error) {
+    if (!state.scannerDetail.open || normalizeSymbol(state.scannerDetail.symbol) !== sym) return;
+    state.scannerDetail.error = error?.message || 'Failed to load scanner detail';
+  } finally {
+    if (state.scannerDetail.open && normalizeSymbol(state.scannerDetail.symbol) === sym) {
+      state.scannerDetail.loading = false;
+      renderScannerDetailView();
+    }
+  }
+}
+
+function renderScannerDetailChart(normalized, barsPayload) {
+  const canvas = document.getElementById('scannerDetailChart');
+  const emptyEl = document.getElementById('scannerDetailChartEmpty');
+  if (!canvas) return;
+  const bars = barsPayload?.body?.bars;
+  if (!Array.isArray(bars) || !bars.length || !window.Chart) {
+    if (scannerDetailChart) {
+      scannerDetailChart.destroy();
+      scannerDetailChart = null;
+    }
+    if (emptyEl) emptyEl.hidden = false;
+    return;
+  }
+  if (emptyEl) emptyEl.hidden = true;
+  const ordered = [...bars].sort((a, b) => Date.parse(a.ts_event || '') - Date.parse(b.ts_event || ''));
+  const labels = ordered.map((bar) => String(bar.ts_event || '').slice(0, 10));
+  const closes = ordered.map((bar) => Number(bar.close));
+  const lineDataset = (label, value, color) => ({
+    label,
+    data: closes.map(() => (Number.isFinite(value) ? Number(value) : null)),
+    borderColor: color,
+    borderWidth: 1.2,
+    pointRadius: 0,
+    fill: false,
+    tension: 0,
+  });
+  const datasets = [
+    {
+      label: 'Close',
+      data: closes,
+      borderColor: '#1d4ed8',
+      backgroundColor: 'rgba(29,78,216,0.12)',
+      borderWidth: 1.8,
+      pointRadius: 0,
+      tension: 0.2,
+    },
+  ];
+  if (Number.isFinite(normalized?.target)) datasets.push(lineDataset('Target', normalized.target, '#16a34a'));
+  if (Number.isFinite(normalized?.stop)) datasets.push(lineDataset('Stop', normalized.stop, '#dc2626'));
+  if (Number.isFinite(normalized?.trail)) datasets.push(lineDataset('Trail', normalized.trail, '#f59e0b'));
+  if (Number.isFinite(normalized?.entryLow)) datasets.push(lineDataset('Entry Low', normalized.entryLow, '#0ea5e9'));
+  if (Number.isFinite(normalized?.entryHigh)) datasets.push(lineDataset('Entry High', normalized.entryHigh, '#0ea5e9'));
+
+  if (scannerDetailChart) {
+    scannerDetailChart.destroy();
+    scannerDetailChart = null;
+  }
+  scannerDetailChart = new Chart(canvas, {
+    type: 'line',
+    data: { labels, datasets },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      animation: false,
+      plugins: { legend: { display: false } },
+      scales: {
+        x: { ticks: { maxTicksLimit: 6 } },
+        y: { ticks: { callback: (v) => `$${formatPrice(v)}` } },
+      },
+    },
+  });
+}
+
+function renderScannerDetailView() {
+  if (!scannerDetailContent) return;
+  const detail = state.scannerDetail || {};
+  const normalized = detail.normalized || normalizeScannerDetail(detail.row || {});
+  const quote = detail.quote?.ok ? detail.quote.body : null;
+  const trade = detail.trade?.ok ? (detail.trade.body?.trade || detail.trade.body || null) : null;
+  const lastPrice = resolveScannerLevelValue(
+    normalized.price,
+    quote?.quote?.last,
+    quote?.last,
+    trade?.last_close,
+  );
+  const confidence = resolveScannerLevelValue(normalized.confidence, trade?.confidence);
+  const confidencePct = Number.isFinite(Number(confidence)) ? Math.max(0, Math.min(100, Math.round(Number(confidence) * 100))) : null;
+  const entryLow = resolveScannerLevelValue(normalized.entryLow, trade?.entry_zone?.low);
+  const entryHigh = resolveScannerLevelValue(normalized.entryHigh, trade?.entry_zone?.high);
+  const target = resolveScannerLevelValue(normalized.target, trade?.target_sell_price);
+  const stop = resolveScannerLevelValue(normalized.stop, trade?.stop_loss_price);
+  const trail = resolveScannerLevelValue(normalized.trail, trade?.trailing_stop_price);
+  const rr = resolveScannerLevelValue(normalized.rr, trade?.rr);
+  const reasons = Array.isArray(normalized.reasons) ? normalized.reasons.filter(Boolean).slice(0, 6) : [];
+  const boosts = Array.isArray(normalized.boostReasons) ? normalized.boostReasons.filter(Boolean).slice(0, 3) : [];
+  const sourceSummary = normalized.sourceSummary && typeof normalized.sourceSummary === 'object'
+    ? normalized.sourceSummary
+    : null;
+  const explanationAction = trade?.explanation?.action_why || normalized.explanation || 'Explanation not available';
+  const explanationTarget = trade?.explanation?.target_why || (target != null ? 'Target derived from scanner/trade setup.' : 'Target not computed.');
+  const explanationStop = trade?.explanation?.stop_why || (stop != null ? 'Stop derived from scanner/trade setup.' : 'Stop not computed.');
+
+  scannerDetailContent.innerHTML = `
+    <div class="scanner-detail-header">
+      <div class="scanner-detail-id">
+        <div class="scanner-detail-symbol">${normalized.symbol || '-'}</div>
+        ${normalized.name ? `<div class="scanner-detail-name">${escapeHtml(normalized.name)}</div>` : ''}
+      </div>
+      <div class="scanner-detail-meta">
+        <span class="pill ${normalized.action === 'BUY' ? 'bull' : (normalized.action === 'SELL' ? 'bear' : 'neutral')}">${escapeHtml(normalized.action || 'HOLD')}</span>
+        <span class="pill">Score ${formatScore(normalized.score)}</span>
+        <span class="pill">${confidencePct != null ? `Conf ${confidencePct}%` : 'Conf -'}</span>
+        <span class="pill">${lastPrice != null ? `$${formatPrice(lastPrice)}` : 'Price unavailable'}</span>
+      </div>
+    </div>
+
+    <div class="scanner-detail-grid">
+      <div class="scanner-detail-block"><span>Market</span><strong>${escapeHtml(normalized.market || '-')}</strong></div>
+      <div class="scanner-detail-block"><span>Segment</span><strong>${escapeHtml(normalized.segment || '-')}</strong></div>
+      <div class="scanner-detail-block"><span>Provider</span><strong>${escapeHtml(normalized.provider || quote?.provider || '-')}</strong></div>
+      <div class="scanner-detail-block"><span>Data quality</span><strong>${escapeHtml(normalized.dataQuality || 'partial')}</strong></div>
+      <div class="scanner-detail-block"><span>Entry</span><strong>${entryLow != null && entryHigh != null ? `${formatPrice(entryLow)}-${formatPrice(entryHigh)}` : '—'}</strong></div>
+      <div class="scanner-detail-block"><span>Target</span><strong>${target != null ? formatPrice(target) : '—'}</strong></div>
+      <div class="scanner-detail-block"><span>Stop</span><strong>${stop != null ? formatPrice(stop) : '—'}</strong></div>
+      <div class="scanner-detail-block"><span>Trail</span><strong>${trail != null ? formatPrice(trail) : '—'}</strong></div>
+      <div class="scanner-detail-block"><span>Risk/Reward</span><strong>${rr != null ? Number(rr).toFixed(2) : '—'}</strong></div>
+    </div>
+
+    <div class="scanner-detail-section">
+      <h4>Explanation</h4>
+      <p><strong>Why action:</strong> ${escapeHtml(String(explanationAction))}</p>
+      <p><strong>Why target:</strong> ${escapeHtml(String(explanationTarget))}</p>
+      <p><strong>Why stop:</strong> ${escapeHtml(String(explanationStop))}</p>
+      ${boosts.length ? `<p><strong>Boost reasons:</strong> ${boosts.map((r) => escapeHtml(String(r))).join(' • ')}</p>` : ''}
+      ${normalized.holdingBack ? `<p><strong>Holding back:</strong> ${escapeHtml(String(normalized.holdingBack))}</p>` : ''}
+      ${normalized.failReason ? `<p><strong>Fail reason:</strong> ${escapeHtml(String(normalized.failReason))}</p>` : ''}
+      ${reasons.length ? `<p><strong>Reasons:</strong> ${reasons.map((r) => escapeHtml(String(r))).join(' • ')}</p>` : ''}
+    </div>
+
+    <div class="scanner-detail-section">
+      <h4>Chart</h4>
+      <div class="scanner-detail-chart-wrap">
+        <canvas id="scannerDetailChart" aria-label="Scanner detail chart"></canvas>
+        <div id="scannerDetailChartEmpty" class="muted"${detail.loading ? ' hidden' : ''}>Chart unavailable</div>
+      </div>
+    </div>
+
+    <div class="scanner-detail-section">
+      <h4>Sources / Evidence</h4>
+      ${sourceSummary
+        ? `<div class="scanner-detail-sources">
+            <span class="pill">Posts ${Number(sourceSummary.posts || 0)}</span>
+            <span class="pill">Mentions ${Number(sourceSummary.mentions || 0)}</span>
+            <span class="pill">Positive ${Number(sourceSummary.positive || 0)}</span>
+            <span class="pill">Negative ${Number(sourceSummary.negative || 0)}</span>
+            <span class="pill">Neutral ${Number(sourceSummary.neutral || 0)}</span>
+            <span class="pill">Net ${Number(sourceSummary.net || 0)}</span>
+          </div>`
+        : '<div class="muted">Detailed source breakdown not available</div>'
+      }
+    </div>
+
+    ${detail.error ? `<div class="panel-error">${escapeHtml(detail.error)}</div>` : ''}
+    ${detail.loading ? '<div class="muted">Loading quote/trade/chart…</div>' : ''}
+
+    <div class="scanner-detail-actions">
+      <button type="button" class="button-ghost scanner-monitor-btn scan-buy-btn" data-action="scanner-buy-now" data-symbol="${escapeHtml(normalized.symbol || '')}" data-price="${lastPrice != null ? Number(lastPrice) : ''}">BUY</button>
+      <button type="button" class="button-ghost scanner-monitor-btn" data-action="scanner-sell-now" data-symbol="${escapeHtml(normalized.symbol || '')}">SELL</button>
+      <button type="button" class="button-ghost scanner-monitor-btn" data-action="scanner-watch" data-symbol="${escapeHtml(normalized.symbol || '')}" data-entry-low="${entryLow != null ? Number(entryLow) : ''}" data-entry-high="${entryHigh != null ? Number(entryHigh) : ''}">WATCH</button>
+      <button type="button" class="button-ghost scanner-monitor-btn" data-action="scanner-monitor" data-symbol="${escapeHtml(normalized.symbol || '')}" data-price="${lastPrice != null ? Number(lastPrice) : ''}" data-entry-low="${entryLow != null ? Number(entryLow) : ''}" data-entry-high="${entryHigh != null ? Number(entryHigh) : ''}">MONITOR</button>
+      <button type="button" class="button-ghost scanner-monitor-btn" data-action="scanner-sources" data-symbol="${escapeHtml(normalized.symbol || '')}">SOURCES</button>
+    </div>
+  `;
+
+  renderScannerDetailChart(normalized, detail.bars);
 }
 
 function parseCacheAgeSeconds(rawTs) {
@@ -2354,6 +2652,7 @@ function forceCloseAllModalsOnInit() {
   if (monitorModal) monitorModal.hidden = true;
   if (paperOrderModal) paperOrderModal.hidden = true;
   if (scannerSourcesModal) scannerSourcesModal.hidden = true;
+  if (scannerDetailModal) scannerDetailModal.hidden = true;
   if (monitorModalError) {
     monitorModalError.hidden = true;
     monitorModalError.textContent = '';
@@ -3368,6 +3667,20 @@ if (scannerSourcesModal) {
   });
 }
 
+if (scannerDetailCloseBtn) {
+  scannerDetailCloseBtn.addEventListener('click', () => {
+    closeScannerResultDetail();
+  });
+}
+
+if (scannerDetailModal) {
+  scannerDetailModal.addEventListener('click', (event) => {
+    if (event.target === scannerDetailModal) {
+      closeScannerResultDetail();
+    }
+  });
+}
+
 document.addEventListener('keydown', (event) => {
   if (event.key === 'Escape' && monitorModal && !monitorModal.hidden) {
     closeMonitorModal();
@@ -3379,6 +3692,10 @@ document.addEventListener('keydown', (event) => {
   }
   if (event.key === 'Escape' && paperOrderModal && !paperOrderModal.hidden) {
     closePaperOrderModal();
+    return;
+  }
+  if (event.key === 'Escape' && scannerDetailModal && !scannerDetailModal.hidden) {
+    closeScannerResultDetail();
     return;
   }
   if (event.key === 'Escape') {
@@ -3476,6 +3793,37 @@ document.addEventListener('click', (event) => {
     return;
   }
 
+  const scannerSellNow = event.target.closest('[data-action="scanner-sell-now"]');
+  if (scannerSellNow) {
+    const symbol = normalizeSymbol(scannerSellNow.dataset.symbol || getSymbol());
+    const amount = state.paperLastAmountUsd || PAPER_DEFAULT_AMOUNT;
+    scannerSellNow.disabled = true;
+    const prev = scannerSellNow.textContent || 'SELL';
+    scannerSellNow.textContent = 'Selling...';
+    fetchJsonWithTimeout('/paper/orders', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        symbol,
+        side: 'SELL',
+        amount_usd: amount,
+        strategy_key: 'manual',
+        source: 'scanner-detail',
+      }),
+    }, 6000).then(async (res) => {
+      if (!res.ok || !res.body?.ok) {
+        setInlineButtonFeedback(scannerSellNow, getErrorMessage(res, 'Failed to place paper SELL order'), true);
+        return;
+      }
+      await refreshPaperTrading();
+      setInlineButtonFeedback(scannerSellNow, `Paper SELL placed: ${symbol}`, false);
+    }).finally(() => {
+      scannerSellNow.disabled = false;
+      scannerSellNow.textContent = prev;
+    });
+    return;
+  }
+
   const genericBuy = event.target.closest('[data-action="buy"], [data-action="paper-buy"], [data-action="buy-now"]');
   if (genericBuy) {
     const symbol = normalizeSymbol(genericBuy.dataset.symbol || getSymbol());
@@ -3562,6 +3910,9 @@ document.addEventListener('click', (event) => {
   if (!panel || !symbol) return;
 
   state.expandedByPanel[panel] = state.expandedByPanel[panel] === symbol ? null : symbol;
+  if (panel === 'scanner') {
+    openScannerResultDetail(symbol, findScannerRowBySymbol(symbol));
+  }
   safeSelectSymbol(symbol);
 });
 

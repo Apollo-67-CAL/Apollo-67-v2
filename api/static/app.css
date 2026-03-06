@@ -848,6 +848,131 @@ h2 {
   font-size: 1rem;
 }
 
+.scanner-detail-card {
+  width: min(960px, 100%);
+  max-height: min(88vh, 900px);
+  overflow-y: auto;
+}
+
+.scanner-detail-content {
+  display: grid;
+  gap: 12px;
+}
+
+.scanner-detail-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  align-items: flex-start;
+}
+
+.scanner-detail-symbol {
+  font-size: 24px;
+  font-weight: 800;
+  line-height: 1.1;
+}
+
+.scanner-detail-name {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.scanner-detail-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.scanner-detail-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.scanner-detail-block {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 8px 10px;
+  background: #f8fafc;
+  display: grid;
+  gap: 4px;
+}
+
+.scanner-detail-block span {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.scanner-detail-block strong {
+  font-size: 13px;
+}
+
+.scanner-detail-section {
+  border-top: 1px solid var(--border);
+  padding-top: 10px;
+  display: grid;
+  gap: 8px;
+}
+
+.scanner-detail-section h4 {
+  margin: 0;
+  font-size: 14px;
+}
+
+.scanner-detail-section p {
+  margin: 0;
+  font-size: 12px;
+}
+
+.scanner-detail-chart-wrap {
+  height: 220px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: #fff;
+  padding: 8px;
+  position: relative;
+}
+
+.scanner-detail-chart-wrap canvas {
+  width: 100% !important;
+  height: 100% !important;
+}
+
+#scannerDetailChartEmpty {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  font-size: 12px;
+}
+
+.scanner-detail-sources {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.scanner-detail-actions {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.scanner-detail-actions .scanner-monitor-btn {
+  font-size: 12px;
+  padding: 7px 8px;
+}
+
+@media (max-width: 900px) {
+  .scanner-detail-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .scanner-detail-actions {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
 .monitor-modal-actions {
   display: flex;
   justify-content: flex-end;
