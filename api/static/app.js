@@ -5,6 +5,7 @@ const SCANNER_SYMBOLS = [
 ];
 
 console.log('ACTIVE_DASHBOARD_JS_LOADED');
+console.log('ACTIVE_PAPER_RENDER_PATH');
 
 const symbolInput = document.getElementById('symbol');
 const quoteBtn = document.getElementById('quoteBtn');
