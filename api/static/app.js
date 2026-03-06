@@ -3111,6 +3111,31 @@ function getPanelRows(symbols, panelName) {
 
 function renderCardDetails(row, panelName = '') {
   const debug = row.signal.debug || {};
+  const trendRaw = String(row?.signal?.trend || '').toLowerCase();
+  const momentumRaw = String(row?.signal?.momentum || '').toLowerCase();
+  const trendTone = trendRaw.includes('bull')
+    ? 'green-text'
+    : trendRaw.includes('bear')
+      ? 'red-text'
+      : 'grey-text';
+  const momentumTone = momentumRaw.includes('positive') || momentumRaw.includes('bull')
+    ? 'green-text'
+    : momentumRaw.includes('negative') || momentumRaw.includes('bear')
+      ? 'red-text'
+      : 'grey-text';
+  const watchlistSignalLine = panelName === 'watchlist'
+    ? `
+          <div class="expand-line">
+            <span class="watchlist-signal-group">
+              <span class="watchlist-signal-label ${trendTone}">Trend</span>
+              <span class="watchlist-signal-label ${momentumTone}">Momentum</span>
+            </span>
+          </div>
+        `
+    : `
+          <div class="expand-line">trend: ${row.signal.trend || '-'}</div>
+          <div class="expand-line">momentum: ${row.signal.momentum || '-'}</div>
+        `;
   const watchlistActions = panelName === 'watchlist'
     ? `
       <div class="watchlist-expand-actions">
@@ -3133,8 +3158,7 @@ function renderCardDetails(row, panelName = '') {
           <div class="label">Signal summary</div>
           <div class="expand-line">score: ${formatScore(row.signal.score)}</div>
           <div class="expand-line">confidence: ${Math.round((row.signal.confidence || 0) * 100)}%</div>
-          <div class="expand-line">trend: ${row.signal.trend || '-'}</div>
-          <div class="expand-line">momentum: ${row.signal.momentum || '-'}</div>
+          ${watchlistSignalLine}
           <div class="expand-line">error: ${row.signal.error || '-'}</div>
           <div class="expand-line">ma10: ${debug.ma10 != null ? debug.ma10 : '-'}</div>
           <div class="expand-line">ma20: ${debug.ma20 != null ? debug.ma20 : '-'}</div>
@@ -3293,9 +3317,9 @@ function renderWatchlistIndicatorGroup(row, loading) {
       : 'grey-text';
   return `
     <span class="watchlist-indicator-pack">
-      <span class="watchlist-indicator-head">
-        <span class="watchlist-indicator-label trend-label ${trendTone}">Trend</span>
-        <span class="watchlist-indicator-label momentum-label ${momentumTone}">Momentum</span>
+      <span class="watchlist-signal-group">
+        <span class="watchlist-signal-label trend-label ${trendTone}">Trend</span>
+        <span class="watchlist-signal-label momentum-label ${momentumTone}">Momentum</span>
       </span>
     </span>
   `;

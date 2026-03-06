@@ -1454,30 +1454,31 @@ h2 {
   min-width: 0;
 }
 
-#watchlistList .watchlist-indicator-head {
+#watchlistList .watchlist-signal-group {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: 10px;
+  white-space: nowrap;
 }
 
-#watchlistList .watchlist-indicator-label {
-  font-size: 11px;
-  line-height: 1.1;
+#watchlistList .watchlist-signal-label {
+  font-size: 14px;
+  line-height: 1;
   font-weight: 500;
   color: var(--muted);
   white-space: nowrap;
 }
 
 #watchlistList .green-text {
-  color: hsl(140, 60%, 45%);
+  color: hsl(140, 55%, 45%);
 }
 
 #watchlistList .red-text {
-  color: hsl(0, 65%, 45%);
+  color: hsl(6, 65%, 48%);
 }
 
 #watchlistList .grey-text {
-  color: hsl(0, 0%, 55%);
+  color: hsl(0, 0%, 50%);
 }
 
 #watchlistList .indicator-pill {
