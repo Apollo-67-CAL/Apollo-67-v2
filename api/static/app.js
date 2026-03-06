@@ -688,8 +688,24 @@ function renderScannerRuntimeStatus() {
     : 'n/a';
   const etaText = Number.isFinite(eta) ? ` ETA ${eta}s` : '';
   const stageText = stage ? `${stage}${etaText}` : '';
+  const summary = state.scannerRuntimeResult && typeof state.scannerRuntimeResult === 'object'
+    ? state.scannerRuntimeResult
+    : {};
+  const quoteOk = Number(summary.quote_ok_count || 0);
+  const barsOk = Number(summary.bars_ok_count || 0);
+  const candidateCount = Number(summary.candidate_buy_count || summary.candidate_count || 0);
+  const confirmedCount = Number(summary.confirmed_buy_count || summary.buy_count || 0);
+  const coverageMarkets = summary.by_market && typeof summary.by_market === 'object'
+    ? Object.keys(summary.by_market).filter(Boolean).sort().join('+')
+    : '';
+  const validRate = Number(summary.valid_data_rate || 0);
+  const quoteFirstMode = Boolean(summary.quote_first_mode) || (quoteOk > 0 && barsOk < quoteOk);
+  const countersText = coverageMarkets
+    ? `${coverageMarkets} ${state.scannerSegment || 'small'} • Q ${quoteOk} • B ${barsOk} • Cand ${candidateCount} • Buy ${confirmedCount} • Valid ${Math.round(validRate * 100)}%`
+    : `Q ${quoteOk} • B ${barsOk} • Cand ${candidateCount} • Buy ${confirmedCount}`;
+  const modeHint = quoteFirstMode ? ' • Quote-first mode (bars partially unavailable)' : '';
   const errText = st.error ? ` • ${st.error}` : '';
-  scannerStatusMeta.textContent = `${stageText ? `${stageText} • ` : ''}Updated ${lastUpdated}${errText}`;
+  scannerStatusMeta.textContent = `${stageText ? `${stageText} • ` : ''}Updated ${lastUpdated} • ${countersText}${modeHint}${errText}`;
 }
 
 async function fetchScannerStatus() {
@@ -851,7 +867,11 @@ function renderScannerRows(rows) {
     const action = String(row.action || '').toUpperCase();
     const isNoData = action === 'NO_DATA';
     const actionPillClass = action === 'BUY' ? 'bull' : action === 'SELL' ? 'bear' : 'neutral';
+    const stage = String(row.stage || (action === 'BUY' ? 'confirmed' : 'candidate')).toLowerCase();
+    const stageLabel = stage === 'confirmed' ? 'Confirmed' : 'Candidate';
+    const stagePillClass = stage === 'confirmed' ? 'bull' : 'pill-muted';
     const provider = row.provider || '-';
+    const market = String(row.market || '').toUpperCase();
     const timeframe = row.timeframe || '1day';
     const rrText = row.rr != null ? `RR ${Number(row.rr).toFixed(2)}` : null;
     const confValue = Number(row.confidence);
@@ -894,6 +914,7 @@ function renderScannerRows(rows) {
       ? `${formatPrice(entryLow)}-${formatPrice(entryHigh)}`
       : '—';
     const reasons = (Array.isArray(row.reasons) ? row.reasons : []).map((r) => String(r || '').trim()).filter(Boolean).slice(0, 2);
+    const holdingBackReason = String(row.holding_back_reason || row.holdingBackReason || '').trim();
 
     return `
     <article class="scan-card ${state.selectedSymbol === symbol ? 'selected' : ''}" data-panel="scanner" data-symbol="${symbol}">
@@ -908,9 +929,10 @@ function renderScannerRows(rows) {
           </div>
           <div class="scan-price">${scannerPriceText(resolvedPrice)}</div>
         </div>
-          <div class="scan-subline">${provider} • ${timeframe}</div>
+          <div class="scan-subline">${market || '-'} • ${provider} • ${timeframe}</div>
         <div class="scan-badges">
           <span class="pill pill-action ${actionPillClass}">${action || 'HOLD'}</span>
+          <span class="pill ${stagePillClass}">${stageLabel}</span>
           ${!isNoData ? `<span class="scan-inline-confidence" role="img" aria-label="Confidence: ${confPct}%" title="Confidence: ${confPct}%"><span class="scan-confidence-bar"><span class="scan-confidence-fill" style="width:${confPct}%;"></span></span></span>` : ''}
           ${rrText ? `<span class="pill">${rrText}</span>` : ''}
           ${nearEntry ? '<span class="pill pill-muted">Near Entry</span>' : ''}
@@ -933,6 +955,7 @@ function renderScannerRows(rows) {
             )
         }
         ${sourceSummaryText ? `<div class="scan-subline">${sourceSummaryText}</div>` : ''}
+        ${holdingBackReason ? `<div class="scan-subline">Holding: ${escapeHtml(holdingBackReason)}</div>` : ''}
       </button>
       <div class="scan-actions">
         <button type="button" class="button-ghost scanner-monitor-btn scan-buy-btn" data-action="scanner-buy-now" aria-label="Buy ${symbol}" data-symbol="${symbol}" data-price="${resolvedPrice != null ? Number(resolvedPrice) : ''}">BUY NOW</button>

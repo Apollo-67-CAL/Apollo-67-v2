@@ -32,6 +32,7 @@ from app.ws.twelvedata_ws import get_ws_client
 from app.services.basic_signal import compute_basic_signal
 from app.services.scanner import build_scanner_row, rank_buy_opportunity
 from app.services.trade_signal import compute_trade_signal
+from app.scanner.discovery import discover_candidates
 from app.validation.market_data import ValidationError, validate_bars
 from core.config import get_config, initialise_config
 from core.repositories.curated_datasets import CuratedDatasetsRepository
@@ -49,7 +50,6 @@ from core.strategies.library import STRATEGY_LIBRARY, strategy_by_id, strategy_l
 from core.scanners.connectors.registry import get_default_connector_registry, registry_by_group
 from core.scanners.pipeline import fetch_items
 from core.scanners.analyse import analyse_items_openai
-from core.scanners.discovery import discover_market_segment
 from core.papertrading.engine import (
     EVAL_INTERVAL_SECONDS,
     MAX_POSITIONS,
@@ -1813,6 +1813,39 @@ def _scanner_update_progress(key: str, stage: str, done: int, total: int, starte
     )
 
 
+def _scanner_priority_symbols_by_market() -> Dict[str, List[str]]:
+    out: Dict[str, List[str]] = {"US": [], "AU": []}
+    seen: Dict[str, set[str]] = {"US": set(), "AU": set()}
+
+    def _add(raw_symbol: Any) -> None:
+        symbol = str(raw_symbol or "").strip().upper()
+        if not symbol:
+            return
+        market_key = "AU" if symbol.endswith(".AX") else "US"
+        if symbol in seen[market_key]:
+            return
+        seen[market_key].add(symbol)
+        out[market_key].append(symbol)
+
+    try:
+        monitor_rows = _monitor_repo.list_positions(status="open", limit=500)
+        for row in monitor_rows:
+            if isinstance(row, dict):
+                _add(row.get("symbol"))
+    except Exception:
+        pass
+
+    try:
+        paper_rows = _paper_repo.list_positions(limit=500)
+        for row in paper_rows:
+            if isinstance(row, dict):
+                _add(row.get("symbol"))
+    except Exception:
+        pass
+
+    return out
+
+
 def _scanner_discover_payload(
     tab: str = "overall",
     market: str = "ALL",
@@ -1842,53 +1875,46 @@ def _scanner_discover_payload(
     segments = {"large": [], "mid": [], "small": []}
     cfg = get_config()
     live_sources_enabled = str(os.getenv("SCANNER_LIVE_SOURCES", "0")).strip().lower() in {"1", "true", "yes", "on"}
-    discovered_batches: Dict[str, List[Dict[str, Any]]] = {}
-    total_symbols = 0
-    if progress_key:
-        _scanner_update_progress(progress_key, "universe", 0, max(1, len(markets_to_scan)), run_started)
-    for idx, mk in enumerate(markets_to_scan, start=1):
-        discovered = discover_market_segment(
-            market=mk,
-            segment=segment_value,
-            limit=limit_value,
-            force_refresh=bool(refresh),
-        )
-        discovered_batches[mk] = discovered
-        total_symbols += len(discovered)
-        if progress_key:
-            _scanner_update_progress(progress_key, "universe", idx, max(1, len(markets_to_scan)), run_started)
+    scan_universe_per_market = max(80, min(int(os.getenv("SCANNER_DISCOVERY_UNIVERSE_PER_MARKET", "240")), 500))
+    stage1_top_per_market = max(limit_value, min(int(os.getenv("SCANNER_STAGE1_TOP_PER_MARKET", "30")), 60))
+    stage2_confirm_top_n = max(10, min(int(os.getenv("SCANNER_STAGE2_CONFIRM_TOP_N", "40")), 120))
+    live_quote_budget = max(0, min(int(os.getenv("SCANNER_LIVE_QUOTE_BUDGET", "12")), 120))
 
-    scanned_done = 0
-    quote_ok_count = 0
     bars_ok_count = 0
     trade_ok_count = 0
-    valid_data_count = 0
     fail_reason_counts: Dict[str, int] = {}
+    holding_back_breakdown: Dict[str, int] = {}
     all_rows: List[Dict[str, Any]] = []
     by_market: Dict[str, Dict[str, Any]] = {}
-    bars_top_n = max(5, min(int(os.getenv("SCANNER_BARS_TOP_N", "30")), 100))
-    live_quote_budget = max(0, min(int(os.getenv("SCANNER_LIVE_QUOTE_BUDGET", "8")), 50))
+
+    if progress_key:
+        _scanner_update_progress(progress_key, "universe", 0, max(1, len(markets_to_scan)), run_started)
 
     def _mark_fail(reason: str) -> None:
         fail_reason_counts[reason] = int(fail_reason_counts.get(reason) or 0) + 1
 
-    def _source_data_for_symbol(symbol: str) -> Tuple[Dict[str, Any], Optional[Dict[str, Dict[str, Any]]]]:
+    def _mark_holding(reason: str) -> None:
+        holding_back_breakdown[reason] = int(holding_back_breakdown.get(reason) or 0) + 1
+
+    def _source_data_for_symbol(symbol: str, allow_live_sources: bool = False) -> Tuple[Dict[str, Any], Optional[Dict[str, Dict[str, Any]]]]:
         source_summary: Dict[str, Any] = {"posts": 0, "mentions": 0, "positive": 0, "negative": 0, "neutral": 0, "net": 0}
         support_summaries: Optional[Dict[str, Dict[str, Any]]] = None
-        def _get_cached_or_live(scanner_type: str) -> Dict[str, Any]:
-            if live_sources_enabled:
+
+        def _get_summary(scanner_type: str) -> Dict[str, Any]:
+            if allow_live_sources and live_sources_enabled:
                 return _get_or_build_source_summary(symbol=symbol, scanner_type=scanner_type, timeframe=interval)
             cached_payload = _get_cached_scanner_sources(symbol=symbol, scanner_type=scanner_type, timeframe=interval)
             if isinstance(cached_payload, dict):
                 return _source_summary_from_payload(cached_payload)
             return {"posts": 0, "mentions": 0, "positive": 0, "negative": 0, "neutral": 0, "net": 0}
+
         if tab_value in {"social", "news", "institution"}:
-            source_summary = _get_cached_or_live(tab_value)
+            source_summary = _get_summary(tab_value)
         elif tab_value == "overall":
             support_summaries = {
-                "social": _get_cached_or_live("social"),
-                "news": _get_cached_or_live("news"),
-                "institution": _get_cached_or_live("institution"),
+                "social": _get_summary("social"),
+                "news": _get_summary("news"),
+                "institution": _get_summary("institution"),
             }
             source_summary = {
                 "posts": int(support_summaries["social"].get("posts") or 0)
@@ -1912,144 +1938,167 @@ def _scanner_discover_payload(
             }
         return source_summary, support_summaries
 
-    for mk in markets_to_scan:
-        rows: List[Dict[str, Any]] = []
-        discovered = discovered_batches.get(mk, [])
-        quote_stage_rows: List[Dict[str, Any]] = []
-        for idx, base in enumerate(discovered, start=1):
-            symbol = str(base.get("symbol") or "").strip().upper()
-            if not symbol:
-                _mark_fail("invalid_symbol")
-                scanned_done += 1
-                if progress_key:
-                    _scanner_update_progress(progress_key, "quotes", scanned_done, max(1, total_symbols), run_started)
-                continue
+    def _candidate_evidence(symbol: str, _: str) -> Dict[str, Any]:
+        summary, support = _source_data_for_symbol(symbol, allow_live_sources=False)
+        source_counts: Dict[str, Any] = {}
+        if isinstance(support, dict):
+            for key, payload in support.items():
+                if isinstance(payload, dict):
+                    source_counts[key] = int(payload.get("posts") or payload.get("mentions") or 0)
+        elif tab_value in {"social", "news", "institution"}:
+            source_counts[tab_value] = int(summary.get("posts") or summary.get("mentions") or 0)
+        return {"evidence_summary": summary, "source_counts": source_counts}
 
-            quote_price = _as_float_or_none(base.get("price"))
-            provider_used = str(base.get("provider_used") or "")
-            quote_provider = provider_used
-            try:
-                quote_result = get_quote_cached_first(
-                    symbol=symbol,
-                    max_age_seconds=int(cfg.scanner_quote_ttl_seconds),
-                    allow_live=idx <= live_quote_budget,
-                    freshness_seconds=60,
-                )
-                quote_last = _as_float_or_none(getattr(quote_result.quote, "last", None))
-                if quote_last is not None and quote_last > 0:
-                    quote_price = quote_last
-                    quote_ok_count += 1
-                quote_provider = quote_result.provider
-            except Exception:
-                pass
+    priority_symbols_by_market = _scanner_priority_symbols_by_market()
+    include_symbols = priority_symbols_by_market.get("US", []) + priority_symbols_by_market.get("AU", [])
+    discovery_payload = discover_candidates(
+        market=market_value,
+        segment=segment_value,
+        per_market_limit=stage1_top_per_market,
+        pool_size=scan_universe_per_market,
+        include_symbols=include_symbols,
+        force_refresh=bool(refresh),
+        quote_live_budget=live_quote_budget,
+        evidence_lookup=_candidate_evidence,
+    )
+    if progress_key:
+        _scanner_update_progress(progress_key, "universe", len(markets_to_scan), max(1, len(markets_to_scan)), run_started)
 
-            change_pct_value = _as_float_or_none(base.get("change_pct"))
-            pre_rank = _final_rank_score(
-                base_score=change_pct_value,
-                momentum_gain_score=_momentum_gain_score(change_pct=change_pct_value, volume_boost=0.0),
-            )
+    total_symbols = int(discovery_payload.get("universe_size") or 0)
+    scanned_done = int(discovery_payload.get("scanned_count") or 0)
+    quote_ok_count = int(discovery_payload.get("quote_ok_count") or 0)
+    stage1_rows: List[Dict[str, Any]] = list(discovery_payload.get("merged") or [])
+    if progress_key:
+        _scanner_update_progress(progress_key, "quotes", scanned_done, max(1, scanned_done), run_started)
 
-            quote_stage_rows.append(
-                {
-                    "base": base,
-                    "symbol": symbol,
-                    "price": quote_price,
-                    "provider": quote_provider or provider_used,
-                    "pre_rank": pre_rank,
-                }
-            )
-            scanned_done += 1
-            if progress_key:
-                _scanner_update_progress(progress_key, "quotes", scanned_done, max(1, total_symbols), run_started)
+    bars_eval_count = min(len(stage1_rows), max(stage2_confirm_top_n, limit_value * 2))
+    bars_done = 0
+    for idx, prelim in enumerate(stage1_rows, start=1):
+        symbol = str(prelim.get("symbol") or "").strip().upper()
+        if not symbol:
+            _mark_fail("invalid_symbol")
+            continue
+        base_row = {
+            "symbol": symbol,
+            "display_symbol": str(prelim.get("display_symbol") or symbol).strip().upper(),
+            "market": str(prelim.get("market") or "US").strip().upper(),
+            "segment": str(prelim.get("segment") or segment_value).strip().lower(),
+            "price": prelim.get("price"),
+            "change_pct": prelim.get("change_pct"),
+            "provider_used": prelim.get("provider_used"),
+            "score_prelim": prelim.get("score_prelim"),
+            "confidence_prelim": prelim.get("confidence_prelim"),
+            "source_counts": prelim.get("source_counts") if isinstance(prelim.get("source_counts"), dict) else {},
+            "evidence_summary": prelim.get("evidence_summary") if isinstance(prelim.get("evidence_summary"), dict) else {},
+        }
+        source_summary = base_row["evidence_summary"] if isinstance(base_row.get("evidence_summary"), dict) else {
+            "posts": 0, "mentions": 0, "positive": 0, "negative": 0, "neutral": 0, "net": 0
+        }
+        support_summaries: Optional[Dict[str, Dict[str, Any]]] = None
 
-        ranked_quote_rows = sorted(
-            quote_stage_rows,
-            key=lambda x: _as_float_or_none(x.get("pre_rank")) or float("-inf"),
-            reverse=True,
-        )
-        bars_eval_count = min(len(ranked_quote_rows), max(limit_value * 2, bars_top_n))
-        bars_eval_symbols = {str(row.get("symbol") or "").strip().upper() for row in ranked_quote_rows[:bars_eval_count]}
-        bars_done = 0
-        for row_ctx in ranked_quote_rows:
-            symbol = str(row_ctx.get("symbol") or "").strip().upper()
-            base = row_ctx.get("base") if isinstance(row_ctx.get("base"), dict) else {}
-            source_summary: Dict[str, Any] = {"posts": 0, "mentions": 0, "positive": 0, "negative": 0, "neutral": 0, "net": 0}
-            support_summaries: Optional[Dict[str, Dict[str, Any]]] = None
-            live_row: Dict[str, Any] = {
-                "symbol": symbol,
-                "price": row_ctx.get("price"),
-                "provider": row_ctx.get("provider"),
-                "provider_used": row_ctx.get("provider"),
-                "timeframe": interval,
-                "action": "HOLD",
-                "recommendation": "HOLD",
-                "confidence": 0.3,
-                "entry_zone": {"low": None, "high": None},
-                "entry_low": None,
-                "entry_high": None,
-                "target": None,
-                "stop": None,
-                "trail": None,
-                "rr": None,
-                "score": _as_float_or_none(base.get("change_pct")),
-                "trend": "neutral",
-                "momentum": "neutral",
-                "short_reason": "Awaiting bar validation",
-            }
-            if symbol in bars_eval_symbols:
-                try:
-                    source_summary, support_summaries = _source_data_for_symbol(symbol)
-                except Exception:
-                    source_summary = {"posts": 0, "mentions": 0, "positive": 0, "negative": 0, "neutral": 0, "net": 0}
-                    support_summaries = None
-                built_row: Optional[Dict[str, Any]] = None
-                try:
-                    built_row = build_scanner_row(
-                        symbol=symbol,
-                        interval=interval,
-                        bars=bars_value,
-                        allow_live=False,
-                        bars_ttl_seconds=int(cfg.scanner_bars_ttl_seconds),
-                        quote_ttl_seconds=int(cfg.scanner_quote_ttl_seconds),
-                    )
-                except Exception:
-                    _mark_fail("bars_error")
-                if built_row:
-                    live_row = built_row
-                    if _as_float_or_none(live_row.get("target")) is not None or _as_float_or_none(live_row.get("stop")) is not None:
-                        bars_ok_count += 1
-                        trade_ok_count += 1
-                bars_done += 1
-                if progress_key:
-                    _scanner_update_progress(progress_key, "bars", bars_done, max(1, bars_eval_count), run_started)
-
-            if _as_float_or_none(live_row.get("confidence")) is not None:
-                valid_data_count += 1
-            item = _to_scanner_discover_item(
-                tab=tab_value,
-                base_row=base,
-                live_row=live_row,
-                source_summary=source_summary,
-                support_summaries=support_summaries,
-            )
-            rows.append(item)
-
-        all_rows.extend(rows)
-        market_buys = [item for item in rows if str(item.get("action") or "").upper() == "BUY"]
-        market_buys.sort(key=lambda x: _as_float_or_none(x.get("final_rank_score")) or float("-inf"), reverse=True)
-        by_market[mk] = {
-            "universe_size": len(discovered),
-            "scanned_count": len(rows),
-            "buy_count": len(market_buys),
-            "top": market_buys[:limit_value],
+        live_row: Dict[str, Any] = {
+            "symbol": symbol,
+            "price": base_row.get("price"),
+            "provider": base_row.get("provider_used"),
+            "provider_used": base_row.get("provider_used"),
+            "timeframe": interval,
+            "action": "BUY_CANDIDATE",
+            "recommendation": "BUY_CANDIDATE",
+            "confidence": _as_float_or_none(base_row.get("confidence_prelim")) or 0.35,
+            "entry_zone": {"low": None, "high": None},
+            "entry_low": None,
+            "entry_high": None,
+            "target": None,
+            "stop": None,
+            "trail": None,
+            "rr": None,
+            "score": _as_float_or_none(base_row.get("score_prelim")),
+            "trend": "neutral",
+            "momentum": "neutral",
+            "short_reason": "Opportunity detected, awaiting bar confirmation.",
+            "holding_back_reason": "bars_unavailable",
+            "data_quality": "partial",
+            "stage": "candidate",
+            "reasons": ["Quote-first opportunity surfaced in discovery stage."],
         }
 
-    buy_rows = [item for item in all_rows if str(item.get("action") or "").upper() == "BUY"]
-    buy_rows.sort(key=lambda x: _as_float_or_none(x.get("final_rank_score")) or float("-inf"), reverse=True)
-    candidates = sorted(all_rows, key=lambda x: _as_float_or_none(x.get("final_rank_score")) or float("-inf"), reverse=True)
-    segments[segment_value] = buy_rows[:limit_value]
+        if idx <= bars_eval_count:
+            try:
+                source_summary, support_summaries = _source_data_for_symbol(symbol, allow_live_sources=False)
+            except Exception:
+                source_summary = {"posts": 0, "mentions": 0, "positive": 0, "negative": 0, "neutral": 0, "net": 0}
+                support_summaries = None
+
+            built_row: Optional[Dict[str, Any]] = None
+            try:
+                built_row = build_scanner_row(
+                    symbol=symbol,
+                    interval=interval,
+                    bars=bars_value,
+                    allow_live=False,
+                    bars_ttl_seconds=int(cfg.scanner_bars_ttl_seconds),
+                    quote_ttl_seconds=int(cfg.scanner_quote_ttl_seconds),
+                )
+            except Exception:
+                _mark_fail("bars_unavailable")
+            if built_row:
+                live_row = built_row
+                live_row["stage"] = "confirmed"
+                live_row["data_quality"] = "full"
+                live_row["holding_back_reason"] = None
+                if _as_float_or_none(live_row.get("target")) is not None or _as_float_or_none(live_row.get("stop")) is not None:
+                    bars_ok_count += 1
+                    trade_ok_count += 1
+            else:
+                _mark_holding("bars_unavailable")
+            bars_done += 1
+            if progress_key:
+                _scanner_update_progress(progress_key, "bars", bars_done, max(1, bars_eval_count), run_started)
+        else:
+            live_row["holding_back_reason"] = "awaiting_confirmation"
+            _mark_holding("awaiting_confirmation")
+
+        item = _to_scanner_discover_item(
+            tab=tab_value,
+            base_row=base_row,
+            live_row=live_row,
+            source_summary=source_summary,
+            support_summaries=support_summaries,
+            bars_confirmed=bool(live_row.get("stage") == "confirmed"),
+            prelim_score=_as_float_or_none(base_row.get("score_prelim")),
+            prelim_confidence=_as_float_or_none(base_row.get("confidence_prelim")),
+            source_counts=base_row.get("source_counts") if isinstance(base_row.get("source_counts"), dict) else {},
+        )
+        all_rows.append(item)
+
+    all_rows.sort(key=lambda x: _as_float_or_none(x.get("final_rank_score")) or float("-inf"), reverse=True)
+
+    confirmed_buys = [row for row in all_rows if str(row.get("action") or "").upper() == "BUY"]
+    candidate_buys = [row for row in all_rows if str(row.get("action") or "").upper() == "BUY_CANDIDATE"]
+    watchlist_candidates = [row for row in all_rows if str(row.get("action") or "").upper() == "WATCHLIST_CANDIDATE"]
+
+    for mk in markets_to_scan:
+        market_rows = [row for row in all_rows if str(row.get("market") or "").upper() == mk]
+        market_confirmed = [row for row in market_rows if str(row.get("action") or "").upper() == "BUY"]
+        market_candidates = [row for row in market_rows if str(row.get("action") or "").upper() in {"BUY_CANDIDATE", "WATCHLIST_CANDIDATE"}]
+        by_market[mk] = {
+            "universe_size": int((discovery_payload.get("universe_size_by_market") or {}).get(mk) or 0),
+            "scanned_count": int((discovery_payload.get("scanned_by_market") or {}).get(mk) or 0),
+            "quote_ok_count": int((discovery_payload.get("quote_ok_by_market") or {}).get(mk) or 0),
+            "buy_count": len(market_confirmed),
+            "candidate_count": len(market_candidates),
+            "top": market_confirmed[:limit_value],
+        }
+
+    segments[segment_value] = all_rows[:limit_value]
     if progress_key:
-        _scanner_update_progress(progress_key, "finalize", max(1, total_symbols), max(1, total_symbols), run_started)
+        _scanner_update_progress(progress_key, "finalize", max(1, scanned_done), max(1, scanned_done), run_started)
+
+    confirmed_buy_count = len(confirmed_buys)
+    candidate_buy_count = len(candidate_buys)
+    candidate_count = len(candidate_buys) + len(watchlist_candidates)
+    valid_data_rate = float(quote_ok_count / max(1, scanned_done))
+    quote_first_mode = bool(quote_ok_count > 0 and bars_ok_count < quote_ok_count)
 
     return {
         "ok": True,
@@ -2057,18 +2106,28 @@ def _scanner_discover_payload(
         "tab": tab_value,
         "market": market_value,
         "segments": segments,
-        "buy_opportunities": buy_rows[:limit_value],
-        "candidates_top": candidates[:limit_value],
+        "buy_opportunities": confirmed_buys[:limit_value],
+        "candidate_opportunities": candidate_buys[:limit_value],
+        "candidates_top": (candidate_buys + watchlist_candidates + confirmed_buys)[:limit_value],
         "by_market": by_market,
         "universe_size": total_symbols,
         "scanned_count": scanned_done,
         "quote_ok_count": quote_ok_count,
         "bars_ok_count": bars_ok_count,
         "trade_ok_count": trade_ok_count,
-        "buy_count": len(buy_rows),
-        "candidate_count": len(candidates),
-        "valid_data_rate": float(valid_data_count / max(1, scanned_done)),
+        "buy_count": confirmed_buy_count,
+        "confirmed_buy_count": confirmed_buy_count,
+        "candidate_buy_count": candidate_buy_count,
+        "candidate_count": candidate_count,
+        "valid_data_rate": valid_data_rate,
+        "quote_first_mode": quote_first_mode,
         "fail_reason_counts": fail_reason_counts,
+        "holding_back_breakdown": holding_back_breakdown,
+        "filtered_breakdown": {
+            "confirmed_buy": confirmed_buy_count,
+            "buy_candidate": candidate_buy_count,
+            "watchlist_candidate": len(watchlist_candidates),
+        },
     }
 
 
@@ -2194,6 +2253,7 @@ def scanner_status(
             "market": str(market or "ALL").strip().upper(),
             "segments": {"large": [], "mid": [], "small": []},
             "buy_opportunities": [],
+            "candidate_opportunities": [],
             "candidates_top": [],
             "by_market": {},
             "universe_size": 0,
@@ -2202,10 +2262,65 @@ def scanner_status(
             "bars_ok_count": 0,
             "trade_ok_count": 0,
             "buy_count": 0,
+            "confirmed_buy_count": 0,
+            "candidate_buy_count": 0,
             "candidate_count": 0,
             "valid_data_rate": 0.0,
+            "quote_first_mode": False,
             "fail_reason_counts": {},
+            "holding_back_breakdown": {},
+            "filtered_breakdown": {"confirmed_buy": 0, "buy_candidate": 0, "watchlist_candidate": 0},
         },
+    }
+
+
+@app.get("/scanner/debug")
+def scanner_debug(
+    tab: str = "overall",
+    market: str = "ALL",
+    segment: str = "small",
+    interval: str = "1day",
+    bars: int = 60,
+    limit: int = 20,
+    refresh: bool = False,
+):
+    payload = _scanner_discover_payload(
+        tab=tab,
+        market=market,
+        segment=segment,
+        limit=limit,
+        interval=interval,
+        bars=bars,
+        refresh=refresh,
+    )
+    if not payload.get("ok"):
+        return JSONResponse(status_code=400, content=payload)
+
+    segment_key = str(segment or "small").strip().lower()
+    top_results = payload.get("segments", {}).get(segment_key)
+    if not isinstance(top_results, list) or not top_results:
+        top_results = payload.get("candidates_top", [])
+
+    return {
+        "ok": True,
+        "tab": payload.get("tab"),
+        "market": payload.get("market"),
+        "segment": segment_key,
+        "universe_size": int(payload.get("universe_size") or 0),
+        "scanned_count": int(payload.get("scanned_count") or 0),
+        "quote_ok_count": int(payload.get("quote_ok_count") or 0),
+        "bars_ok_count": int(payload.get("bars_ok_count") or 0),
+        "trade_ok_count": int(payload.get("trade_ok_count") or 0),
+        "candidate_count": int(payload.get("candidate_count") or 0),
+        "confirmed_buy_count": int(payload.get("confirmed_buy_count") or payload.get("buy_count") or 0),
+        "candidate_buy_count": int(payload.get("candidate_buy_count") or 0),
+        "valid_data_rate": float(payload.get("valid_data_rate") or 0.0),
+        "quote_first_mode": bool(payload.get("quote_first_mode")),
+        "holding_back_breakdown": payload.get("holding_back_breakdown") if isinstance(payload.get("holding_back_breakdown"), dict) else {},
+        "fail_reason_counts": payload.get("fail_reason_counts") if isinstance(payload.get("fail_reason_counts"), dict) else {},
+        "filtered_breakdown": payload.get("filtered_breakdown") if isinstance(payload.get("filtered_breakdown"), dict) else {},
+        "by_market": payload.get("by_market") if isinstance(payload.get("by_market"), dict) else {},
+        "top_results": (top_results or [])[: max(1, min(int(limit), 50))],
     }
 
 
@@ -2590,24 +2705,36 @@ def _to_scanner_discover_item(
     live_row: Dict[str, Any],
     source_summary: Dict[str, Any],
     support_summaries: Optional[Dict[str, Dict[str, Any]]] = None,
+    bars_confirmed: bool = False,
+    prelim_score: Optional[float] = None,
+    prelim_confidence: Optional[float] = None,
+    source_counts: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     action = str(live_row.get("action") or "HOLD").upper()
     score_val = _as_float_or_none(live_row.get("score"))
     confidence_val = _as_float_or_none(live_row.get("confidence")) or 0.0
     explanation_short = str(live_row.get("short_reason") or "")
-    action, score_val, confidence_val, explanation_short = _apply_scanner_evidence_policy(
-        tab=tab,
-        action=action,
-        score_val=score_val,
-        confidence_val=confidence_val,
-        explanation_short=explanation_short,
-        source_summary=source_summary,
-        support_summaries=support_summaries,
-    )
+
+    if bars_confirmed:
+        action, score_val, confidence_val, explanation_short = _apply_scanner_evidence_policy(
+            tab=tab,
+            action=action,
+            score_val=score_val,
+            confidence_val=confidence_val,
+            explanation_short=explanation_short,
+            source_summary=source_summary,
+            support_summaries=support_summaries,
+        )
+    else:
+        score_val = score_val if score_val is not None else prelim_score
+        confidence_val = max(confidence_val, prelim_confidence or 0.0)
+        action = "BUY_CANDIDATE"
+        explanation_short = explanation_short or "Opportunity detected, awaiting bar confirmation."
 
     change_pct_value = _as_float_or_none(base_row.get("change_pct"))
     momentum_gain_score = _momentum_gain_score(change_pct=change_pct_value, volume_boost=0.0)
-    final_rank_score = _final_rank_score(base_score=score_val, momentum_gain_score=momentum_gain_score)
+    base_for_rank = score_val if score_val is not None else prelim_score
+    final_rank_score = _final_rank_score(base_score=base_for_rank, momentum_gain_score=momentum_gain_score)
     score_components = _components_for_scanner_tab(
         tab=tab,
         source_summary=source_summary,
@@ -2620,6 +2747,17 @@ def _to_scanner_discover_item(
         "net": int(source_summary.get("net") or 0),
     }
 
+    stage = str(live_row.get("stage") or ("confirmed" if bars_confirmed else "candidate")).strip().lower()
+    holding_back_reason = str(live_row.get("holding_back_reason") or "").strip() or None
+    data_quality = str(live_row.get("data_quality") or ("full" if bars_confirmed else "partial")).strip().lower()
+
+    if bars_confirmed and action == "NO_DATA":
+        action = "BUY_CANDIDATE"
+        stage = "candidate"
+        data_quality = "partial"
+        holding_back_reason = holding_back_reason or "evidence_unavailable"
+        explanation_short = explanation_short or "Opportunity detected, awaiting evidence confirmation."
+
     return {
         "symbol": str(base_row.get("symbol") or live_row.get("symbol") or "").strip().upper(),
         "display_symbol": str(base_row.get("display_symbol") or base_row.get("symbol") or "").strip().upper(),
@@ -2630,6 +2768,10 @@ def _to_scanner_discover_item(
         "action": action,
         "score": score_val,
         "confidence": confidence_val,
+        "stage": stage,
+        "data_quality": data_quality,
+        "holding_back_reason": holding_back_reason,
+        "source_counts": source_counts if isinstance(source_counts, dict) else {},
         "entry": live_row.get("entry_zone") if isinstance(live_row.get("entry_zone"), dict) else {
             "low": live_row.get("entry_low"),
             "high": live_row.get("entry_high"),
