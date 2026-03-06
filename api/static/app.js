@@ -4,6 +4,8 @@ const SCANNER_SYMBOLS = [
   'SNOW', 'MU', 'CRWD', 'ASML', 'TSM', 'PYPL', 'ABNB', 'DIS', 'JPM', 'V'
 ];
 
+console.log('ACTIVE_DASHBOARD_JS_LOADED');
+
 const symbolInput = document.getElementById('symbol');
 const quoteBtn = document.getElementById('quoteBtn');
 const signalBtn = document.getElementById('signalBtn');
@@ -3535,6 +3537,8 @@ async function selectSymbol(symbol, { force = false } = {}) {
 
   renderQuote(data.quoteResult, normalized);
   renderSignal(data.signalResult);
+  const tradeResult = await fetchTrade(normalized, getInterval(), getOutputsize());
+  renderTrade(tradeResult);
 
   try {
     await loadBarsChart(normalized);
@@ -3553,6 +3557,7 @@ async function safeSelectSymbol(symbol, options = {}) {
     const message = error?.message || 'Failed to load symbol data';
     renderQuote({ ok: false, status: 0, body: { error: message } }, normalizeSymbol(symbol));
     renderSignal({ ok: false, status: 0, body: { error: message } });
+    renderTrade({ ok: false, status: 0, body: { error: message } });
     renderPanels();
   }
 }
