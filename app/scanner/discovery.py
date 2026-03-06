@@ -9,6 +9,7 @@ from app.providers.selector import get_bars_cached_first
 from app.providers.selector import get_quote_cached_first
 
 EvidenceLookup = Callable[[str, str], Dict[str, Any]]
+ProgressCallback = Callable[[Dict[str, Any]], None]
 _ROOT_DIR = Path(__file__).resolve().parents[2]
 _ROOT_DATA_DIR = _ROOT_DIR / "data"
 _UNIVERSE_FILE_SMALL = {
@@ -230,6 +231,7 @@ def discover_candidates(
     force_refresh: bool = False,
     quote_live_budget: int = 12,
     evidence_lookup: Optional[EvidenceLookup] = None,
+    on_progress: Optional[ProgressCallback] = None,
 ) -> Dict[str, Any]:
     markets = _market_list(market)
     segment_value = str(segment or "small").strip().lower()
@@ -259,6 +261,42 @@ def discover_candidates(
     if load_errors:
         universe_errors.extend(load_errors)
     first_10_symbols = first_10
+    progress_every = max(20, min(top_n, 40))
+
+    def _emit_progress(extra_market_rows: Optional[List[Dict[str, Any]]] = None, market_key: Optional[str] = None) -> None:
+        if on_progress is None:
+            return
+        try:
+            merged_preview: List[Dict[str, Any]] = []
+            for mk_key, rows in per_market.items():
+                if isinstance(rows, list):
+                    merged_preview.extend(rows[:top_n])
+            if market_key and isinstance(extra_market_rows, list):
+                merged_preview.extend(extra_market_rows[:top_n])
+            merged_preview.sort(
+                key=lambda row: (
+                    _as_float_or_none(row.get("score_prelim")) or float("-inf"),
+                    _as_float_or_none(row.get("confidence_prelim")) or float("-inf"),
+                ),
+                reverse=True,
+            )
+            on_progress(
+                {
+                    "markets": per_market,
+                    "merged": merged_preview[: max(top_n * 2, 40)],
+                    "universe_sources": universe_size_by_market,
+                    "universe_errors": universe_errors,
+                    "first_10_symbols": first_10_symbols,
+                    "universe_size_by_market": universe_size_by_market,
+                    "scanned_by_market": scanned_by_market,
+                    "quote_ok_by_market": quote_ok_by_market,
+                    "universe_size": sum(int(v or 0) for v in universe_size_by_market.values()),
+                    "scanned_count": sum(int(v or 0) for v in scanned_by_market.values()),
+                    "quote_ok_count": sum(int(v or 0) for v in quote_ok_by_market.values()),
+                }
+            )
+        except Exception:
+            pass
 
     for mk in markets:
         market_symbols, market_errors = _load_universe_for_market(mk, segment_value)
@@ -376,6 +414,16 @@ def discover_candidates(
                     "stage": "candidate",
                 }
             )
+            if scanned_by_market[mk] % progress_every == 0:
+                snapshot = sorted(
+                    market_candidates,
+                    key=lambda row: (
+                        _as_float_or_none(row.get("score_prelim")) or float("-inf"),
+                        _as_float_or_none(row.get("confidence_prelim")) or float("-inf"),
+                    ),
+                    reverse=True,
+                )
+                _emit_progress(extra_market_rows=snapshot, market_key=mk)
 
         market_candidates.sort(
             key=lambda row: (
@@ -387,6 +435,7 @@ def discover_candidates(
         top_market = market_candidates[:top_n]
         per_market[mk] = top_market
         merged_candidates.extend(top_market)
+        _emit_progress()
 
     merged_candidates.sort(
         key=lambda row: (
@@ -395,6 +444,7 @@ def discover_candidates(
         ),
         reverse=True,
     )
+    _emit_progress()
 
     return {
         "markets": per_market,
