@@ -1929,6 +1929,7 @@ def _scanner_discover_payload(
         watchlist_candidates_partial = [
             row for row in ranked_rows if str(row.get("action") or "").upper() == "WATCHLIST_CANDIDATE"
         ]
+        rejected_partial = [row for row in ranked_rows if str(row.get("action") or "").upper() == "REJECTED"]
         near_misses_partial = [
             row
             for row in ranked_rows
@@ -1954,6 +1955,12 @@ def _scanner_discover_payload(
         candidate_count_partial = len(candidate_buys_partial) + len(watchlist_candidates_partial)
         valid_data_rate_partial = float(quote_ok_count / max(1, scanned_done))
         quote_first_mode_partial = bool(quote_ok_count > 0 and bars_ok_count < quote_ok_count)
+        technical_only_count_partial = sum(1 for row in ranked_rows if str(row.get("signal_basis") or "") == "technical_only")
+        technical_plus_evidence_count_partial = sum(
+            1 for row in ranked_rows if str(row.get("signal_basis") or "") == "technical_plus_evidence"
+        )
+        confirmed_watch_count_partial = len(watchlist_candidates_partial)
+        rejected_count_partial = len(rejected_partial)
         _scanner_set_result(
             progress_key,
             {
@@ -1966,6 +1973,8 @@ def _scanner_discover_payload(
                 "confirmed_buy_opportunities": confirmed_buys_partial[:limit_value],
                 "candidate_opportunities": candidate_buys_partial[:limit_value],
                 "candidate_buy_opportunities": candidate_buys_partial[:limit_value],
+                "watch_candidates": watchlist_candidates_partial[:limit_value],
+                "rejected_opportunities": rejected_partial[:limit_value],
                 "near_misses": near_misses_partial[:limit_value],
                 "candidates_top": (candidate_buys_partial + watchlist_candidates_partial + confirmed_buys_partial)[:limit_value],
                 "by_market": by_market_partial,
@@ -1981,6 +1990,10 @@ def _scanner_discover_payload(
                 "confirmed_buy_count": len(confirmed_buys_partial),
                 "candidate_buy_count": len(candidate_buys_partial),
                 "candidate_count": candidate_count_partial,
+                "confirmed_watch_count": confirmed_watch_count_partial,
+                "rejected_count": rejected_count_partial,
+                "technical_only_count": technical_only_count_partial,
+                "technical_plus_evidence_count": technical_plus_evidence_count_partial,
                 "valid_data_rate": valid_data_rate_partial,
                 "quote_first_mode": quote_first_mode_partial,
                 "fail_reason_counts": fail_reason_counts,
@@ -2302,6 +2315,7 @@ def _scanner_discover_payload(
     confirmed_buys = [row for row in all_rows if str(row.get("action") or "").upper() == "BUY"]
     candidate_buys = [row for row in all_rows if str(row.get("action") or "").upper() == "BUY_CANDIDATE"]
     watchlist_candidates = [row for row in all_rows if str(row.get("action") or "").upper() == "WATCHLIST_CANDIDATE"]
+    rejected_rows = [row for row in all_rows if str(row.get("action") or "").upper() == "REJECTED"]
     near_misses = [
         row for row in all_rows
         if str(row.get("action") or "").upper() not in {"BUY", "BUY_CANDIDATE"}
@@ -2328,6 +2342,12 @@ def _scanner_discover_payload(
     confirmed_buy_count = len(confirmed_buys)
     candidate_buy_count = len(candidate_buys)
     candidate_count = len(candidate_buys) + len(watchlist_candidates)
+    confirmed_watch_count = len(watchlist_candidates)
+    rejected_count = len(rejected_rows)
+    technical_only_count = sum(1 for row in all_rows if str(row.get("signal_basis") or "") == "technical_only")
+    technical_plus_evidence_count = sum(
+        1 for row in all_rows if str(row.get("signal_basis") or "") == "technical_plus_evidence"
+    )
     valid_data_rate = float(quote_ok_count / max(1, scanned_done))
     quote_first_mode = bool(quote_ok_count > 0 and bars_ok_count < quote_ok_count)
 
@@ -2341,6 +2361,8 @@ def _scanner_discover_payload(
         "confirmed_buy_opportunities": confirmed_buys[:limit_value],
         "candidate_opportunities": candidate_buys[:limit_value],
         "candidate_buy_opportunities": candidate_buys[:limit_value],
+        "watch_candidates": watchlist_candidates[:limit_value],
+        "rejected_opportunities": rejected_rows[:limit_value],
         "near_misses": near_misses[:limit_value],
         "candidates_top": (candidate_buys + watchlist_candidates + confirmed_buys)[:limit_value],
         "by_market": by_market,
@@ -2356,6 +2378,10 @@ def _scanner_discover_payload(
         "confirmed_buy_count": confirmed_buy_count,
         "candidate_buy_count": candidate_buy_count,
         "candidate_count": candidate_count,
+        "confirmed_watch_count": confirmed_watch_count,
+        "rejected_count": rejected_count,
+        "technical_only_count": technical_only_count,
+        "technical_plus_evidence_count": technical_plus_evidence_count,
         "valid_data_rate": valid_data_rate,
         "quote_first_mode": quote_first_mode,
         "fail_reason_counts": fail_reason_counts,
@@ -2439,6 +2465,8 @@ async def scanner_run(payload: Dict[str, Any]):
         "confirmed_buy_opportunities": [],
         "candidate_opportunities": [],
         "candidate_buy_opportunities": [],
+        "watch_candidates": [],
+        "rejected_opportunities": [],
         "near_misses": [],
         "candidates_top": [],
         "by_market": {},
@@ -2454,6 +2482,10 @@ async def scanner_run(payload: Dict[str, Any]):
         "confirmed_buy_count": 0,
         "candidate_buy_count": 0,
         "candidate_count": 0,
+        "confirmed_watch_count": 0,
+        "rejected_count": 0,
+        "technical_only_count": 0,
+        "technical_plus_evidence_count": 0,
         "valid_data_rate": 0.0,
         "quote_first_mode": False,
         "fail_reason_counts": {},
@@ -2528,6 +2560,8 @@ def scanner_status(
             "confirmed_buy_opportunities": [],
             "candidate_opportunities": [],
             "candidate_buy_opportunities": [],
+            "watch_candidates": [],
+            "rejected_opportunities": [],
             "near_misses": [],
             "candidates_top": [],
             "by_market": {},
@@ -2543,6 +2577,10 @@ def scanner_status(
             "confirmed_buy_count": 0,
             "candidate_buy_count": 0,
             "candidate_count": 0,
+            "confirmed_watch_count": 0,
+            "rejected_count": 0,
+            "technical_only_count": 0,
+            "technical_plus_evidence_count": 0,
             "valid_data_rate": 0.0,
             "quote_first_mode": False,
             "fail_reason_counts": {},
@@ -2595,6 +2633,10 @@ def scanner_debug(
         "candidate_count": int(payload.get("candidate_count") or 0),
         "confirmed_buy_count": int(payload.get("confirmed_buy_count") or payload.get("buy_count") or 0),
         "candidate_buy_count": int(payload.get("candidate_buy_count") or 0),
+        "confirmed_watch_count": int(payload.get("confirmed_watch_count") or 0),
+        "rejected_count": int(payload.get("rejected_count") or 0),
+        "technical_only_count": int(payload.get("technical_only_count") or 0),
+        "technical_plus_evidence_count": int(payload.get("technical_plus_evidence_count") or 0),
         "valid_data_rate": float(payload.get("valid_data_rate") or 0.0),
         "quote_first_mode": bool(payload.get("quote_first_mode")),
         "holding_back_breakdown": payload.get("holding_back_breakdown") if isinstance(payload.get("holding_back_breakdown"), dict) else {},
@@ -2900,6 +2942,144 @@ def _final_rank_score(base_score: Optional[float], momentum_gain_score: float) -
     return float(base_value) + (float(momentum_gain_score) * 0.6)
 
 
+def _score_fallback_from_trade(
+    technical_action: str,
+    trend_value: str,
+    momentum_value: str,
+    prelim_score: Optional[float],
+) -> float:
+    action_u = str(technical_action or "HOLD").strip().upper()
+    trend = str(trend_value or "").strip().lower()
+    momentum = str(momentum_value or "").strip().lower()
+
+    agreement = 0
+    if "bull" in trend:
+        agreement += 1
+    if "positive" in momentum:
+        agreement += 1
+    if action_u == "BUY":
+        agreement += 2
+    elif action_u == "HOLD":
+        agreement += 1
+    elif action_u == "SELL":
+        agreement -= 2
+
+    if action_u == "SELL":
+        base = -40.0 - (max(0, -agreement) * 10.0)
+        return max(-70.0, min(-40.0, base))
+
+    base = 40.0 + (max(0, agreement) * 7.5)
+    if prelim_score is not None:
+        base = (base * 0.7) + (float(prelim_score) * 0.3)
+    return max(40.0, min(70.0, base))
+
+
+def _confidence_fallback_from_trade(technical_action: str, trend_value: str, momentum_value: str) -> float:
+    action_u = str(technical_action or "HOLD").strip().upper()
+    trend = str(trend_value or "").strip().lower()
+    momentum = str(momentum_value or "").strip().lower()
+    votes = 0
+    if action_u == "BUY":
+        votes += 2
+    elif action_u == "HOLD":
+        votes += 1
+    if "bull" in trend or "bear" in trend:
+        votes += 1
+    if "positive" in momentum or "negative" in momentum:
+        votes += 1
+    return max(0.25, min(0.85, 0.25 + (votes * 0.12)))
+
+
+def _signal_basis(score_components: Optional[Dict[str, Any]], evidence_state: str) -> str:
+    technical_weight = 0.0
+    if isinstance(score_components, dict):
+        technical_weight = float(_as_float_or_none(score_components.get("technical")) or 0.0)
+    if evidence_state == "evidence_unavailable":
+        return "technical_only" if technical_weight > 0 else "evidence_only"
+    if technical_weight > 0:
+        return "technical_plus_evidence"
+    return "evidence_only"
+
+
+def resolve_final_action(candidate: Dict[str, Any], trade_result: Dict[str, Any], evidence_state: str) -> Dict[str, Any]:
+    bars_confirmed = bool(candidate.get("bars_confirmed"))
+    technical_action = str(candidate.get("technical_action") or trade_result.get("action") or "HOLD").strip().upper()
+    score_val = _as_float_or_none(candidate.get("score"))
+    confidence_val = _as_float_or_none(candidate.get("confidence")) or 0.0
+    buy_conf_threshold = float(os.getenv("SCANNER_CONFIRM_BUY_MIN_CONFIDENCE", "0.55"))
+    buy_score_threshold = float(os.getenv("SCANNER_CONFIRM_BUY_MIN_SCORE", "55"))
+
+    if not bars_confirmed:
+        return {
+            "action": "BUY_CANDIDATE",
+            "stage": "candidate",
+            "holding_back_reason": "bars_unavailable",
+            "explanation": "Opportunity detected, awaiting bar confirmation.",
+            "final_action_source": "bars_missing",
+        }
+
+    if technical_action == "BUY":
+        if confidence_val >= buy_conf_threshold or (score_val is not None and score_val >= buy_score_threshold):
+            return {
+                "action": "BUY",
+                "stage": "confirmed",
+                "holding_back_reason": None,
+                "explanation": "Bar-confirmed BUY setup from trade signal.",
+                "final_action_source": "trade_signal",
+            }
+        reason = (
+            "evidence_unavailable"
+            if evidence_state == "evidence_unavailable"
+            else ("confidence_below_threshold" if confidence_val < buy_conf_threshold else "score_below_threshold")
+        )
+        return {
+            "action": "BUY_CANDIDATE",
+            "stage": "candidate",
+            "holding_back_reason": reason,
+            "explanation": "Trade setup is BUY but confirmation thresholds are not fully met yet.",
+            "final_action_source": "trade_signal_thresholds",
+        }
+
+    if technical_action == "HOLD":
+        reason = (
+            "evidence_unavailable"
+            if evidence_state == "evidence_unavailable"
+            else ("confidence_below_threshold" if confidence_val < buy_conf_threshold else "score_below_threshold")
+        )
+        return {
+            "action": "WATCHLIST_CANDIDATE",
+            "stage": "confirmed_watch",
+            "holding_back_reason": reason,
+            "explanation": "Trade signal is HOLD; keep on watchlist, not a BUY candidate.",
+            "final_action_source": "trade_signal_hold",
+        }
+
+    if technical_action == "SELL":
+        if score_val is not None and score_val >= buy_score_threshold:
+            return {
+                "action": "WATCHLIST_CANDIDATE",
+                "stage": "confirmed_watch",
+                "holding_back_reason": "technical_sell_signal",
+                "explanation": "Trade signal is SELL despite elevated score; watch only.",
+                "final_action_source": "trade_signal_sell_watch",
+            }
+        return {
+            "action": "REJECTED",
+            "stage": "rejected",
+            "holding_back_reason": "technical_sell_signal",
+            "explanation": "Trade signal is SELL; excluded from buy opportunities.",
+            "final_action_source": "trade_signal_sell_rejected",
+        }
+
+    return {
+        "action": "WATCHLIST_CANDIDATE",
+        "stage": "confirmed_watch",
+        "holding_back_reason": "confidence_below_threshold",
+        "explanation": "Setup is mixed; watching for stronger confirmation.",
+        "final_action_source": "mixed_signal",
+    }
+
+
 def _get_or_build_source_summary(symbol: str, scanner_type: str, timeframe: str) -> Dict[str, Any]:
     runtime = _get_cached_scanner_sources(symbol, scanner_type, timeframe)
     if runtime is None:
@@ -2991,21 +3171,24 @@ def _to_scanner_discover_item(
     prelim_confidence: Optional[float] = None,
     source_counts: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    action = str(live_row.get("action") or "HOLD").upper()
+    technical_action = str(live_row.get("action") or "HOLD").upper()
+    action = technical_action
     score_val = _as_float_or_none(live_row.get("score"))
     confidence_val = _as_float_or_none(live_row.get("confidence")) or 0.0
     explanation_short = str(live_row.get("short_reason") or "")
 
     if bars_confirmed:
-        action, score_val, confidence_val, explanation_short = _apply_scanner_evidence_policy(
+        policy_action, score_val, confidence_val, explanation_short = _apply_scanner_evidence_policy(
             tab=tab,
-            action=action,
+            action=technical_action,
             score_val=score_val,
             confidence_val=confidence_val,
             explanation_short=explanation_short,
             source_summary=source_summary,
             support_summaries=support_summaries,
         )
+        if policy_action == "NO_DATA":
+            explanation_short = explanation_short or "No external evidence found in lookback window."
     else:
         score_val = score_val if score_val is not None else prelim_score
         confidence_val = max(confidence_val, prelim_confidence or 0.0)
@@ -3029,18 +3212,68 @@ def _to_scanner_discover_item(
     }
 
     stage = str(live_row.get("stage") or ("confirmed" if bars_confirmed else "candidate")).strip().lower()
-    holding_back_reason = str(live_row.get("holding_back_reason") or "").strip() or None
+    holding_back_reason_initial = str(live_row.get("holding_back_reason") or "").strip() or None
     data_quality = str(live_row.get("data_quality") or ("full" if bars_confirmed else "partial")).strip().lower()
 
-    if bars_confirmed and action == "NO_DATA":
-        action = "BUY_CANDIDATE"
-        stage = "candidate"
-        data_quality = "partial"
-        holding_back_reason = holding_back_reason or "evidence_unavailable"
-        explanation_short = explanation_short or "Opportunity detected, awaiting evidence confirmation."
+    has_evidence = _has_source_data(source_summary) or any(
+        _has_source_data(summary)
+        for summary in ((support_summaries or {}).values() if isinstance(support_summaries, dict) else [])
+        if isinstance(summary, dict)
+    )
+    evidence_state = "available" if has_evidence else "evidence_unavailable"
+
+    if score_val is None and bars_confirmed:
+        score_val = _score_fallback_from_trade(
+            technical_action=technical_action,
+            trend_value=str(live_row.get("trend") or ""),
+            momentum_value=str(live_row.get("momentum") or ""),
+            prelim_score=prelim_score,
+        )
+    if confidence_val <= 0.0 and bars_confirmed:
+        confidence_val = _confidence_fallback_from_trade(
+            technical_action=technical_action,
+            trend_value=str(live_row.get("trend") or ""),
+            momentum_value=str(live_row.get("momentum") or ""),
+        )
+
+    resolved = resolve_final_action(
+        candidate={
+            "bars_confirmed": bars_confirmed,
+            "technical_action": technical_action,
+            "score": score_val,
+            "confidence": confidence_val,
+        },
+        trade_result=live_row,
+        evidence_state=evidence_state,
+    )
+    action = str(resolved.get("action") or action).upper()
+    stage = str(resolved.get("stage") or stage).strip().lower()
+    holding_back_reason = str(resolved.get("holding_back_reason") or "").strip() or holding_back_reason_initial
+    explanation_short = str(resolved.get("explanation") or explanation_short or "")
+    final_action_source = str(resolved.get("final_action_source") or "resolver").strip().lower()
+    if action == "BUY":
+        holding_back_reason = None
+
+    if holding_back_reason is None and action != "BUY":
+        if not bars_confirmed:
+            holding_back_reason = "bars_unavailable"
+        elif evidence_state == "evidence_unavailable":
+            holding_back_reason = "evidence_unavailable"
+        elif confidence_val < float(os.getenv("SCANNER_CONFIRM_BUY_MIN_CONFIDENCE", "0.55")):
+            holding_back_reason = "confidence_below_threshold"
+        else:
+            buy_score_threshold = float(os.getenv("SCANNER_CONFIRM_BUY_MIN_SCORE", "55"))
+            if (score_val is not None) and score_val < buy_score_threshold:
+                holding_back_reason = "score_below_threshold"
 
     reasons = live_row.get("reasons") if isinstance(live_row.get("reasons"), list) else []
     explanation_value = live_row.get("explanation")
+    explanation_out: Any = explanation_short
+    if isinstance(explanation_value, dict):
+        explanation_out = dict(explanation_value)
+        explanation_out["action_why"] = explanation_short
+
+    signal_basis = _signal_basis(score_components=score_components, evidence_state=evidence_state)
 
     return {
         "symbol": str(base_row.get("symbol") or live_row.get("symbol") or "").strip().upper(),
@@ -3055,6 +3288,9 @@ def _to_scanner_discover_item(
         "stage": stage,
         "data_quality": data_quality,
         "holding_back_reason": holding_back_reason,
+        "signal_basis": signal_basis,
+        "evidence_state": evidence_state,
+        "final_action_source": final_action_source,
         "source_counts": source_counts if isinstance(source_counts, dict) else {},
         "entry": live_row.get("entry_zone") if isinstance(live_row.get("entry_zone"), dict) else {
             "low": live_row.get("entry_low"),
@@ -3067,7 +3303,7 @@ def _to_scanner_discover_item(
         "score_components": score_components,
         "evidence": evidence,
         "explanation_short": explanation_short,
-        "explanation": explanation_value if isinstance(explanation_value, dict) else explanation_short,
+        "explanation": explanation_out,
         "reasons": reasons[:5],
         "momentum_gain_score": momentum_gain_score,
         "final_rank_score": final_rank_score,
