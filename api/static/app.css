@@ -905,6 +905,18 @@ h2 {
   background: #f8fafc;
 }
 
+.recent-orders-subsection {
+  margin-top: 16px;
+  padding-top: 12px;
+  border-top: 1px solid rgba(0, 0, 0, 0.08);
+}
+
+.recent-orders-subsection h4 {
+  margin: 0 0 8px;
+  font-size: 14px;
+  font-weight: 600;
+}
+
 .source-row {
   border: 1px solid var(--border);
   border-radius: 10px;
