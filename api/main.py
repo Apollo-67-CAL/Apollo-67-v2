@@ -10,7 +10,7 @@ import asyncio
 import contextlib
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from threading import Lock
 from typing import Any, Dict, List, Optional, Tuple
@@ -33,6 +33,7 @@ from app.services.basic_signal import compute_basic_signal
 from app.services.scanner import build_scanner_row, rank_buy_opportunity
 from app.services.trade_signal import compute_trade_signal
 from app.scanner.discovery import discover_candidates, universe_health
+from app.scanner.evidence import get_symbol_evidence
 from app.validation.market_data import ValidationError, validate_bars
 from core.config import get_config, initialise_config
 from core.repositories.curated_datasets import CuratedDatasetsRepository
@@ -1848,6 +1849,36 @@ def _scanner_priority_symbols_by_market() -> Dict[str, List[str]]:
     except Exception:
         pass
 
+    try:
+        evidence_limit = max(40, min(int(os.getenv("SCANNER_PRIORITY_EVIDENCE_SYMBOLS", "180")), 1000))
+    except Exception:
+        evidence_limit = 180
+    try:
+        lookback_days = max(1, min(int(os.getenv("SCANNER_PRIORITY_EVIDENCE_LOOKBACK_DAYS", "7")), 30))
+    except Exception:
+        lookback_days = 7
+    cutoff = datetime.now(timezone.utc) - timedelta(days=lookback_days)
+
+    for scanner_type in ("social", "news", "institution"):
+        try:
+            rows = _scanner_sources_repo.list_recent_breakdowns(scanner_type=scanner_type, limit=evidence_limit)
+        except Exception:
+            rows = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            created_at = row.get("created_at")
+            if isinstance(created_at, str) and created_at:
+                try:
+                    created_dt = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+                    if created_dt.tzinfo is None:
+                        created_dt = created_dt.replace(tzinfo=timezone.utc)
+                    if created_dt < cutoff:
+                        continue
+                except Exception:
+                    pass
+            _add(row.get("symbol"))
+
     return out
 
 
@@ -1891,6 +1922,9 @@ def _scanner_discover_payload(
 
     bars_ok_count = 0
     trade_ok_count = 0
+    evidence_enabled = True
+    evidence_lookup_count = 0
+    evidence_hit_count = 0
     fail_reason_counts: Dict[str, int] = {}
     holding_back_breakdown: Dict[str, int] = {}
     all_rows: List[Dict[str, Any]] = []
@@ -1959,6 +1993,7 @@ def _scanner_discover_payload(
         technical_plus_evidence_count_partial = sum(
             1 for row in ranked_rows if str(row.get("signal_basis") or "") == "technical_plus_evidence"
         )
+        evidence_only_count_partial = sum(1 for row in ranked_rows if str(row.get("signal_basis") or "") == "evidence_only")
         confirmed_watch_count_partial = len(watchlist_candidates_partial)
         rejected_count_partial = len(rejected_partial)
         _scanner_set_result(
@@ -1994,6 +2029,10 @@ def _scanner_discover_payload(
                 "rejected_count": rejected_count_partial,
                 "technical_only_count": technical_only_count_partial,
                 "technical_plus_evidence_count": technical_plus_evidence_count_partial,
+                "evidence_only_count": evidence_only_count_partial,
+                "evidence_enabled": bool(evidence_enabled),
+                "evidence_lookup_count": int(evidence_lookup_count),
+                "evidence_hit_count": int(evidence_hit_count),
                 "valid_data_rate": valid_data_rate_partial,
                 "quote_first_mode": quote_first_mode_partial,
                 "fail_reason_counts": fail_reason_counts,
@@ -2031,7 +2070,11 @@ def _scanner_discover_payload(
                 "score_prelim": prelim.get("score_prelim"),
                 "confidence_prelim": prelim.get("confidence_prelim"),
                 "source_counts": prelim.get("source_counts") if isinstance(prelim.get("source_counts"), dict) else {},
+                "source_breakdown": prelim.get("source_breakdown") if isinstance(prelim.get("source_breakdown"), dict) else _empty_source_breakdown(),
                 "evidence_summary": prelim.get("evidence_summary") if isinstance(prelim.get("evidence_summary"), dict) else {},
+                "evidence_score_raw": _as_float_or_none(prelim.get("evidence_score_raw")) or 0.0,
+                "evidence_confidence": _as_float_or_none(prelim.get("evidence_confidence")) or 0.0,
+                "evidence_state": str(prelim.get("evidence_state") or "").strip().lower() or "evidence_unavailable",
             }
             source_summary = base_row["evidence_summary"] if isinstance(base_row.get("evidence_summary"), dict) else {
                 "posts": 0,
@@ -2123,16 +2166,58 @@ def _scanner_discover_payload(
             }
         return source_summary, support_summaries
 
-    def _candidate_evidence(symbol: str, _: str) -> Dict[str, Any]:
-        summary, support = _source_data_for_symbol(symbol, allow_live_sources=False)
-        source_counts: Dict[str, Any] = {}
-        if isinstance(support, dict):
-            for key, payload in support.items():
-                if isinstance(payload, dict):
-                    source_counts[key] = int(payload.get("posts") or payload.get("mentions") or 0)
-        elif tab_value in {"social", "news", "institution"}:
-            source_counts[tab_value] = int(summary.get("posts") or summary.get("mentions") or 0)
-        return {"evidence_summary": summary, "source_counts": source_counts}
+    def _candidate_evidence(symbol: str, market_hint: str) -> Dict[str, Any]:
+        nonlocal evidence_lookup_count, evidence_hit_count
+        evidence_lookup_count += 1
+        market_value = str(market_hint or "").strip().upper()
+        if market_value not in {"US", "AU"}:
+            market_value = "AU" if str(symbol or "").strip().upper().endswith(".AX") else "US"
+        try:
+            evidence_payload = get_symbol_evidence(
+                symbol=symbol,
+                market=market_value,
+                lookback_days=7,
+            )
+        except Exception:
+            evidence_payload = {}
+        summary = evidence_payload.get("evidence") if isinstance(evidence_payload.get("evidence"), dict) else {}
+        if not summary:
+            summary, support = _source_data_for_symbol(symbol, allow_live_sources=False)
+            source_counts: Dict[str, Any] = {}
+            if isinstance(support, dict):
+                for key, payload in support.items():
+                    if isinstance(payload, dict):
+                        source_counts[key] = int(payload.get("posts") or payload.get("mentions") or 0)
+            elif tab_value in {"social", "news", "institution"}:
+                source_counts[tab_value] = int(summary.get("posts") or summary.get("mentions") or 0)
+            source_breakdown = _empty_source_breakdown()
+            evidence_score_raw = 0.0
+            evidence_confidence = 0.0
+            evidence_state = "evidence_unavailable"
+        else:
+            source_counts = (
+                evidence_payload.get("source_counts")
+                if isinstance(evidence_payload.get("source_counts"), dict)
+                else {"social": 0, "news": 0, "institution": 0}
+            )
+            source_breakdown = (
+                evidence_payload.get("source_breakdown")
+                if isinstance(evidence_payload.get("source_breakdown"), dict)
+                else _empty_source_breakdown()
+            )
+            evidence_score_raw = float(_as_float_or_none(evidence_payload.get("evidence_score_raw")) or 0.0)
+            evidence_confidence = float(_as_float_or_none(evidence_payload.get("evidence_confidence")) or 0.0)
+            evidence_state = str(evidence_payload.get("evidence_state") or "").strip().lower() or "evidence_unavailable"
+        if int(summary.get("posts") or 0) > 0 or int(summary.get("mentions") or 0) > 0:
+            evidence_hit_count += 1
+        return {
+            "evidence_summary": summary,
+            "source_counts": source_counts,
+            "source_breakdown": source_breakdown,
+            "evidence_score_raw": evidence_score_raw,
+            "evidence_confidence": evidence_confidence,
+            "evidence_state": evidence_state,
+        }
 
     def _on_discovery_progress(partial: Dict[str, Any]) -> None:
         nonlocal total_symbols, scanned_done, quote_ok_count, universe_sources, universe_errors, first_10_symbols, discovery_payload
@@ -2206,7 +2291,11 @@ def _scanner_discover_payload(
             "score_prelim": prelim.get("score_prelim"),
             "confidence_prelim": prelim.get("confidence_prelim"),
             "source_counts": prelim.get("source_counts") if isinstance(prelim.get("source_counts"), dict) else {},
+            "source_breakdown": prelim.get("source_breakdown") if isinstance(prelim.get("source_breakdown"), dict) else _empty_source_breakdown(),
             "evidence_summary": prelim.get("evidence_summary") if isinstance(prelim.get("evidence_summary"), dict) else {},
+            "evidence_score_raw": _as_float_or_none(prelim.get("evidence_score_raw")) or 0.0,
+            "evidence_confidence": _as_float_or_none(prelim.get("evidence_confidence")) or 0.0,
+            "evidence_state": str(prelim.get("evidence_state") or "").strip().lower() or "evidence_unavailable",
         }
         source_summary = base_row["evidence_summary"] if isinstance(base_row.get("evidence_summary"), dict) else {
             "posts": 0, "mentions": 0, "positive": 0, "negative": 0, "neutral": 0, "net": 0
@@ -2348,6 +2437,7 @@ def _scanner_discover_payload(
     technical_plus_evidence_count = sum(
         1 for row in all_rows if str(row.get("signal_basis") or "") == "technical_plus_evidence"
     )
+    evidence_only_count = sum(1 for row in all_rows if str(row.get("signal_basis") or "") == "evidence_only")
     valid_data_rate = float(quote_ok_count / max(1, scanned_done))
     quote_first_mode = bool(quote_ok_count > 0 and bars_ok_count < quote_ok_count)
 
@@ -2382,6 +2472,10 @@ def _scanner_discover_payload(
         "rejected_count": rejected_count,
         "technical_only_count": technical_only_count,
         "technical_plus_evidence_count": technical_plus_evidence_count,
+        "evidence_only_count": evidence_only_count,
+        "evidence_enabled": bool(evidence_enabled),
+        "evidence_lookup_count": int(evidence_lookup_count),
+        "evidence_hit_count": int(evidence_hit_count),
         "valid_data_rate": valid_data_rate,
         "quote_first_mode": quote_first_mode,
         "fail_reason_counts": fail_reason_counts,
@@ -2486,6 +2580,10 @@ async def scanner_run(payload: Dict[str, Any]):
         "rejected_count": 0,
         "technical_only_count": 0,
         "technical_plus_evidence_count": 0,
+        "evidence_only_count": 0,
+        "evidence_enabled": True,
+        "evidence_lookup_count": 0,
+        "evidence_hit_count": 0,
         "valid_data_rate": 0.0,
         "quote_first_mode": False,
         "fail_reason_counts": {},
@@ -2581,6 +2679,10 @@ def scanner_status(
             "rejected_count": 0,
             "technical_only_count": 0,
             "technical_plus_evidence_count": 0,
+            "evidence_only_count": 0,
+            "evidence_enabled": True,
+            "evidence_lookup_count": 0,
+            "evidence_hit_count": 0,
             "valid_data_rate": 0.0,
             "quote_first_mode": False,
             "fail_reason_counts": {},
@@ -2637,6 +2739,10 @@ def scanner_debug(
         "rejected_count": int(payload.get("rejected_count") or 0),
         "technical_only_count": int(payload.get("technical_only_count") or 0),
         "technical_plus_evidence_count": int(payload.get("technical_plus_evidence_count") or 0),
+        "evidence_only_count": int(payload.get("evidence_only_count") or 0),
+        "evidence_enabled": bool(payload.get("evidence_enabled", True)),
+        "evidence_lookup_count": int(payload.get("evidence_lookup_count") or 0),
+        "evidence_hit_count": int(payload.get("evidence_hit_count") or 0),
         "valid_data_rate": float(payload.get("valid_data_rate") or 0.0),
         "quote_first_mode": bool(payload.get("quote_first_mode")),
         "holding_back_breakdown": payload.get("holding_back_breakdown") if isinstance(payload.get("holding_back_breakdown"), dict) else {},
@@ -2884,6 +2990,29 @@ def _source_summary_from_payload(payload: Optional[Dict[str, Any]]) -> Dict[str,
         "negative": negative,
         "neutral": neutral,
         "net": net,
+    }
+
+
+def _empty_source_breakdown() -> Dict[str, Dict[str, int]]:
+    return {
+        "social": {
+            "reddit": 0,
+            "x": 0,
+            "hotcopper": 0,
+            "youtube": 0,
+            "facebook": 0,
+            "tiktok": 0,
+        },
+        "news": {
+            "articles": 0,
+            "publishers": 0,
+        },
+        "institution": {
+            "filings": 0,
+            "upgrades": 0,
+            "downgrades": 0,
+            "unusual_volume": 0,
+        },
     }
 
 
@@ -3209,7 +3338,16 @@ def _to_scanner_discover_item(
         "positive": int(source_summary.get("positive") or 0),
         "negative": int(source_summary.get("negative") or 0),
         "net": int(source_summary.get("net") or 0),
+        "mentions": int(source_summary.get("mentions") or source_summary.get("posts") or 0),
+        "neutral": int(source_summary.get("neutral") or 0),
     }
+    source_breakdown = (
+        base_row.get("source_breakdown")
+        if isinstance(base_row.get("source_breakdown"), dict)
+        else _empty_source_breakdown()
+    )
+    evidence_score_raw = float(_as_float_or_none(base_row.get("evidence_score_raw")) or 0.0)
+    evidence_confidence = float(_as_float_or_none(base_row.get("evidence_confidence")) or 0.0)
 
     stage = str(live_row.get("stage") or ("confirmed" if bars_confirmed else "candidate")).strip().lower()
     holding_back_reason_initial = str(live_row.get("holding_back_reason") or "").strip() or None
@@ -3268,12 +3406,19 @@ def _to_scanner_discover_item(
 
     reasons = live_row.get("reasons") if isinstance(live_row.get("reasons"), list) else []
     explanation_value = live_row.get("explanation")
+
+    signal_basis = _signal_basis(score_components=score_components, evidence_state=evidence_state)
+    if signal_basis == "technical_plus_evidence":
+        explanation_short = "Technical setup supported by external evidence."
+    elif signal_basis == "technical_only":
+        explanation_short = "Technical setup detected with limited external evidence."
+    elif signal_basis == "evidence_only":
+        explanation_short = "External evidence spike detected, awaiting technical confirmation."
+
     explanation_out: Any = explanation_short
     if isinstance(explanation_value, dict):
         explanation_out = dict(explanation_value)
         explanation_out["action_why"] = explanation_short
-
-    signal_basis = _signal_basis(score_components=score_components, evidence_state=evidence_state)
 
     return {
         "symbol": str(base_row.get("symbol") or live_row.get("symbol") or "").strip().upper(),
@@ -3292,6 +3437,7 @@ def _to_scanner_discover_item(
         "evidence_state": evidence_state,
         "final_action_source": final_action_source,
         "source_counts": source_counts if isinstance(source_counts, dict) else {},
+        "source_breakdown": source_breakdown,
         "entry": live_row.get("entry_zone") if isinstance(live_row.get("entry_zone"), dict) else {
             "low": live_row.get("entry_low"),
             "high": live_row.get("entry_high"),
@@ -3302,6 +3448,8 @@ def _to_scanner_discover_item(
         "source_summary": source_summary,
         "score_components": score_components,
         "evidence": evidence,
+        "evidence_score_raw": evidence_score_raw,
+        "evidence_confidence": evidence_confidence,
         "explanation_short": explanation_short,
         "explanation": explanation_out,
         "reasons": reasons[:5],

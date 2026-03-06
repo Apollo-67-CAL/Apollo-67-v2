@@ -187,6 +187,28 @@ def _resolve_change_pct(symbol: str) -> Optional[float]:
     return ((last_close - prev_close) / prev_close) * 100.0
 
 
+def _resolve_cached_last_close(symbol: str) -> Optional[float]:
+    try:
+        bars_result = get_bars_cached_first(
+            symbol=symbol,
+            interval="1day",
+            outputsize=2,
+            max_age_seconds=24 * 60 * 60,
+            allow_live=False,
+        )
+    except Exception:
+        return None
+    bars = bars_result.bars if hasattr(bars_result, "bars") else []
+    if not isinstance(bars, list) or not bars:
+        return None
+    try:
+        last = bars[-1]
+        close_val = float(last.close if hasattr(last, "close") else last.get("close"))
+    except Exception:
+        return None
+    return close_val if close_val > 0 else None
+
+
 def get_top_movers(market: str, segment: str = "small", pool_size: int = 240, force_refresh: bool = False) -> List[Dict[str, Any]]:
     del force_refresh  # loader is file-backed; no remote refresh required
     market_u = str(market or "US").strip().upper()
@@ -366,11 +388,38 @@ def discover_candidates(
                 quote_ok_by_market[mk] += 1
 
             if price is None or price <= 0:
+                cached_close = _resolve_cached_last_close(symbol)
+                if cached_close is not None and cached_close > 0:
+                    price = cached_close
+                    quote_provider = quote_provider or "bars_cache"
+                    quote_ok_by_market[mk] += 1
+
+            if price is None or price <= 0:
                 continue
 
             evidence = evidence_lookup(symbol, mk) if evidence_lookup else {}
-            source_counts = evidence.get("source_counts") if isinstance(evidence.get("source_counts"), dict) else {}
-            evidence_summary = evidence.get("evidence_summary") if isinstance(evidence.get("evidence_summary"), dict) else {}
+            source_counts = (
+                evidence.get("source_counts")
+                if isinstance(evidence.get("source_counts"), dict)
+                else {"social": 0, "news": 0, "institution": 0}
+            )
+            source_breakdown = (
+                evidence.get("source_breakdown")
+                if isinstance(evidence.get("source_breakdown"), dict)
+                else {
+                    "social": {"reddit": 0, "x": 0, "hotcopper": 0, "youtube": 0, "facebook": 0, "tiktok": 0},
+                    "news": {"articles": 0, "publishers": 0},
+                    "institution": {"filings": 0, "upgrades": 0, "downgrades": 0, "unusual_volume": 0},
+                }
+            )
+            evidence_summary = (
+                evidence.get("evidence_summary")
+                if isinstance(evidence.get("evidence_summary"), dict)
+                else (evidence.get("evidence") if isinstance(evidence.get("evidence"), dict) else {})
+            )
+            evidence_score_raw = _as_float_or_none(evidence.get("evidence_score_raw")) or 0.0
+            evidence_confidence = _as_float_or_none(evidence.get("evidence_confidence")) or 0.0
+            evidence_state = str(evidence.get("evidence_state") or "").strip().lower() or "evidence_unavailable"
             posts = int(evidence_summary.get("posts") or 0)
             net = int(evidence_summary.get("net") or 0)
 
@@ -379,7 +428,8 @@ def discover_candidates(
             activity_component = _clamp(min(abs(change_pct or 0.0), 12.0) * 1.8, 0.0, 18.0)
             if symbol in surge_set:
                 activity_component += 4.0
-            evidence_component = _clamp((net * 2.0) + (min(posts, 30) * 0.45), -24.0, 24.0)
+            evidence_component_fallback = _clamp((net * 2.0) + (min(posts, 30) * 0.45), -24.0, 24.0)
+            evidence_component = _clamp(evidence_score_raw if abs(evidence_score_raw) > 0 else evidence_component_fallback, -30.0, 30.0)
 
             score_prelim = _clamp(change_component + activity_component + evidence_component, -100.0, 100.0)
             confidence_prelim = _clamp(
@@ -390,6 +440,7 @@ def discover_candidates(
                 0.2,
                 0.9,
             )
+            confidence_prelim = _clamp(max(confidence_prelim, evidence_confidence), 0.2, 0.92)
 
             market_candidates.append(
                 {
@@ -411,6 +462,10 @@ def discover_candidates(
                         "net": net,
                     },
                     "source_counts": source_counts,
+                    "source_breakdown": source_breakdown,
+                    "evidence_score_raw": evidence_score_raw,
+                    "evidence_confidence": evidence_confidence,
+                    "evidence_state": evidence_state,
                     "stage": "candidate",
                 }
             )
