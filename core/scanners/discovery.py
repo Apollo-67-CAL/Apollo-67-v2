@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from app.providers.selector import get_bars_cached_first, get_quote_with_fallback
+from app.providers.selector import get_bars_cached_first, get_quote_cached_first
 
 _BASE_DIR = Path(__file__).resolve().parents[2]
 _DATA_DIR = _BASE_DIR / "app" / "data"
@@ -117,30 +117,39 @@ def _discover_segment(market: str, segment: str, filename: str, limit: int = 80,
         return cached
 
     symbols = _load_symbols(filename)
-    sampled = _sample_symbols(symbols, sample_size=min(len(symbols), max(60, safe_limit * 3)))
+    sampled = _sample_symbols(symbols, sample_size=min(len(symbols), max(30, safe_limit * 2)))
 
     rows: List[Dict[str, Any]] = []
     for symbol in sampled:
+        last: Optional[float] = None
+        provider_used = "seed"
         try:
-            quote_result = get_quote_with_fallback(symbol=symbol, freshness_seconds=300)
-            last = float(quote_result.quote.last)
-            if last <= 0:
-                continue
-            change_pct = _resolve_change_pct(symbol, last)
-            rows.append(
-                {
-                    "symbol": symbol,
-                    "display_symbol": symbol,
-                    "market": market,
-                    "segment": segment,
-                    "price": last,
-                    "change_pct": change_pct,
-                    "provider_used": quote_result.provider,
-                    "discovered_at": _now_iso(),
-                }
+            quote_result = get_quote_cached_first(
+                symbol=symbol,
+                max_age_seconds=6 * 60 * 60,
+                allow_live=False,
+                freshness_seconds=60,
             )
+            quote_last = float(quote_result.quote.last)
+            if quote_last > 0:
+                last = quote_last
+                provider_used = quote_result.provider
         except Exception:
-            continue
+            pass
+
+        change_pct = _resolve_change_pct(symbol, last) if (last is not None and last > 0) else None
+        rows.append(
+            {
+                "symbol": symbol,
+                "display_symbol": symbol,
+                "market": market,
+                "segment": segment,
+                "price": last,
+                "change_pct": change_pct,
+                "provider_used": provider_used,
+                "discovered_at": _now_iso(),
+            }
+        )
 
     rows.sort(key=lambda x: float(x.get("change_pct") or -999999.0), reverse=True)
     trimmed = rows[:safe_limit]

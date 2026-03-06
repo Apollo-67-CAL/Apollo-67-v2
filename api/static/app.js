@@ -188,6 +188,7 @@ const state = {
   scannerRuntimeProgress: null,
   scannerRuntimeStale: false,
   scannerRuntimeLastRunAt: null,
+  scannerRuntimeResult: null,
   scannerPollTimer: null,
   wsStatus: null,
   wsPollTimer: null,
@@ -701,13 +702,15 @@ async function fetchScannerStatus() {
     state.scannerRuntimeProgress = body.progress || null;
     state.scannerRuntimeStale = Boolean(body.stale);
     state.scannerRuntimeLastRunAt = body.last_run_at || null;
+    state.scannerRuntimeResult = body.result && typeof body.result === 'object' ? body.result : null;
     const rows = body.result?.segments?.[state.scannerSegment];
-    state.scannerRows = Array.isArray(rows)
-      ? rows.filter((row) => String(row?.action || '').toUpperCase() === 'BUY')
-      : [];
+    const buyRows = Array.isArray(rows) ? rows.filter(Boolean) : [];
+    const candidateRows = Array.isArray(body.result?.candidates_top) ? body.result.candidates_top.filter(Boolean) : [];
+    state.scannerRows = buyRows.length ? buyRows : candidateRows.slice(0, Number(params.limit) || 20);
     setSectionLoading('scanner', false);
   } else {
     state.scannerRuntimeStatus = { state: 'error', run_id: null, error: getErrorMessage(result, 'status failed') };
+    state.scannerRuntimeResult = null;
   }
   renderScannerRuntimeStatus();
   renderScanner();
@@ -744,12 +747,10 @@ function renderWsStatusIndicator() {
   const lastErr = String(status.last_error || '').trim();
   const stateLabel = connected ? 'Connected' : 'Disconnected';
   let dotClass = 'ws-dot ws-dot-red';
-  if (connected && msgs > 0) dotClass = 'ws-dot ws-dot-green';
-  else if (connected) dotClass = 'ws-dot ws-dot-amber';
+  if (connected && !lastErr && msgs > 0) dotClass = 'ws-dot ws-dot-green';
+  else if (connected && !lastErr) dotClass = 'ws-dot ws-dot-amber';
   wsStatusDot.className = dotClass;
-  const tooltip = connected
-    ? `WS: ${stateLabel} | subs: ${subs} | msgs/60s: ${msgs}`
-    : `WS: ${stateLabel}${lastErr ? ` | last error: ${lastErr}` : ''}`;
+  const tooltip = `WS: ${stateLabel} | subs: ${subs} | msgs/60s: ${msgs}${lastErr ? ` | last error: ${lastErr}` : ''}`;
   wsStatusPill.title = tooltip;
 }
 
@@ -824,7 +825,21 @@ function scheduleWsSubscriptionSync(ms = 30000) {
 function renderScannerRows(rows) {
   if (!scannerList) return;
   if (!rows.length) {
-    scannerList.innerHTML = '<div class="scanner-empty">No BUY opportunities found for this segment right now.</div>';
+    const summary = state.scannerRuntimeResult || {};
+    const quoteOk = Number(summary.quote_ok_count || 0);
+    const barsOk = Number(summary.bars_ok_count || 0);
+    const buys = Number(summary.buy_count || 0);
+    const scanned = Number(summary.scanned_count || 0);
+    const providersCooling = summary.fail_reason_counts && typeof summary.fail_reason_counts === 'object'
+      ? Number(summary.fail_reason_counts.quote_error || 0) > 0
+      : false;
+    let msg = 'No BUY opportunities found for this segment right now.';
+    if (!scanned) msg = 'Scanner is warming up and gathering symbols.';
+    else if (!quoteOk) msg = 'Scanner missing market data (quotes unavailable).';
+    else if (!barsOk) msg = 'Scanner missing bar confirmations (provider cooling down).';
+    else if (!buys) msg = 'No BUYs met threshold. Showing closest candidates when available.';
+    if (providersCooling) msg += ' Providers may be cooling down.';
+    scannerList.innerHTML = `<div class="scanner-empty">${escapeHtml(msg)}</div>`;
     return;
   }
 
@@ -1871,7 +1886,7 @@ async function fetchSymbolData(symbol, force = false) {
 
   const pending = (async () => {
     const [quoteResult, signalResult] = await Promise.all([
-      fetchJson(`/provider/twelvedata/quote?symbol=${encodeURIComponent(key)}`),
+      fetchJson(`/market/quote?symbol=${encodeURIComponent(key)}`),
       fetchJson(`/signal/basic?symbol=${encodeURIComponent(key)}`),
     ]);
 

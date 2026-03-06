@@ -1841,9 +1841,12 @@ def _scanner_discover_payload(
     markets_to_scan = ["US", "AU"] if market_value == "ALL" else [market_value]
     segments = {"large": [], "mid": [], "small": []}
     cfg = get_config()
+    live_sources_enabled = str(os.getenv("SCANNER_LIVE_SOURCES", "0")).strip().lower() in {"1", "true", "yes", "on"}
     discovered_batches: Dict[str, List[Dict[str, Any]]] = {}
     total_symbols = 0
-    for mk in markets_to_scan:
+    if progress_key:
+        _scanner_update_progress(progress_key, "universe", 0, max(1, len(markets_to_scan)), run_started)
+    for idx, mk in enumerate(markets_to_scan, start=1):
         discovered = discover_market_segment(
             market=mk,
             segment=segment_value,
@@ -1852,8 +1855,8 @@ def _scanner_discover_payload(
         )
         discovered_batches[mk] = discovered
         total_symbols += len(discovered)
-    if progress_key:
-        _scanner_update_progress(progress_key, "universe", 0, max(1, total_symbols), run_started)
+        if progress_key:
+            _scanner_update_progress(progress_key, "universe", idx, max(1, len(markets_to_scan)), run_started)
 
     scanned_done = 0
     quote_ok_count = 0
@@ -1864,6 +1867,7 @@ def _scanner_discover_payload(
     all_rows: List[Dict[str, Any]] = []
     by_market: Dict[str, Dict[str, Any]] = {}
     bars_top_n = max(5, min(int(os.getenv("SCANNER_BARS_TOP_N", "30")), 100))
+    live_quote_budget = max(0, min(int(os.getenv("SCANNER_LIVE_QUOTE_BUDGET", "8")), 50))
 
     def _mark_fail(reason: str) -> None:
         fail_reason_counts[reason] = int(fail_reason_counts.get(reason) or 0) + 1
@@ -1871,13 +1875,20 @@ def _scanner_discover_payload(
     def _source_data_for_symbol(symbol: str) -> Tuple[Dict[str, Any], Optional[Dict[str, Dict[str, Any]]]]:
         source_summary: Dict[str, Any] = {"posts": 0, "mentions": 0, "positive": 0, "negative": 0, "neutral": 0, "net": 0}
         support_summaries: Optional[Dict[str, Dict[str, Any]]] = None
+        def _get_cached_or_live(scanner_type: str) -> Dict[str, Any]:
+            if live_sources_enabled:
+                return _get_or_build_source_summary(symbol=symbol, scanner_type=scanner_type, timeframe=interval)
+            cached_payload = _get_cached_scanner_sources(symbol=symbol, scanner_type=scanner_type, timeframe=interval)
+            if isinstance(cached_payload, dict):
+                return _source_summary_from_payload(cached_payload)
+            return {"posts": 0, "mentions": 0, "positive": 0, "negative": 0, "neutral": 0, "net": 0}
         if tab_value in {"social", "news", "institution"}:
-            source_summary = _get_or_build_source_summary(symbol=symbol, scanner_type=tab_value, timeframe=interval)
+            source_summary = _get_cached_or_live(tab_value)
         elif tab_value == "overall":
             support_summaries = {
-                "social": _get_or_build_source_summary(symbol=symbol, scanner_type="social", timeframe=interval),
-                "news": _get_or_build_source_summary(symbol=symbol, scanner_type="news", timeframe=interval),
-                "institution": _get_or_build_source_summary(symbol=symbol, scanner_type="institution", timeframe=interval),
+                "social": _get_cached_or_live("social"),
+                "news": _get_cached_or_live("news"),
+                "institution": _get_cached_or_live("institution"),
             }
             source_summary = {
                 "posts": int(support_summaries["social"].get("posts") or 0)
@@ -1905,7 +1916,7 @@ def _scanner_discover_payload(
         rows: List[Dict[str, Any]] = []
         discovered = discovered_batches.get(mk, [])
         quote_stage_rows: List[Dict[str, Any]] = []
-        for base in discovered:
+        for idx, base in enumerate(discovered, start=1):
             symbol = str(base.get("symbol") or "").strip().upper()
             if not symbol:
                 _mark_fail("invalid_symbol")
@@ -1914,7 +1925,6 @@ def _scanner_discover_payload(
                     _scanner_update_progress(progress_key, "quotes", scanned_done, max(1, total_symbols), run_started)
                 continue
 
-            source_summary, support_summaries = _source_data_for_symbol(symbol)
             quote_price = _as_float_or_none(base.get("price"))
             provider_used = str(base.get("provider_used") or "")
             quote_provider = provider_used
@@ -1922,7 +1932,7 @@ def _scanner_discover_payload(
                 quote_result = get_quote_cached_first(
                     symbol=symbol,
                     max_age_seconds=int(cfg.scanner_quote_ttl_seconds),
-                    allow_live=True,
+                    allow_live=idx <= live_quote_budget,
                     freshness_seconds=60,
                 )
                 quote_last = _as_float_or_none(getattr(quote_result.quote, "last", None))
@@ -1931,13 +1941,12 @@ def _scanner_discover_payload(
                     quote_ok_count += 1
                 quote_provider = quote_result.provider
             except Exception:
-                _mark_fail("quote_error")
+                pass
 
             change_pct_value = _as_float_or_none(base.get("change_pct"))
-            evidence_boost = float(int(source_summary.get("net") or 0) * 1.25)
             pre_rank = _final_rank_score(
                 base_score=change_pct_value,
-                momentum_gain_score=_momentum_gain_score(change_pct=change_pct_value, volume_boost=evidence_boost),
+                momentum_gain_score=_momentum_gain_score(change_pct=change_pct_value, volume_boost=0.0),
             )
 
             quote_stage_rows.append(
@@ -1946,8 +1955,6 @@ def _scanner_discover_payload(
                     "symbol": symbol,
                     "price": quote_price,
                     "provider": quote_provider or provider_used,
-                    "source_summary": source_summary,
-                    "support_summaries": support_summaries,
                     "pre_rank": pre_rank,
                 }
             )
@@ -1966,8 +1973,8 @@ def _scanner_discover_payload(
         for row_ctx in ranked_quote_rows:
             symbol = str(row_ctx.get("symbol") or "").strip().upper()
             base = row_ctx.get("base") if isinstance(row_ctx.get("base"), dict) else {}
-            source_summary = row_ctx.get("source_summary") if isinstance(row_ctx.get("source_summary"), dict) else {}
-            support_summaries = row_ctx.get("support_summaries") if isinstance(row_ctx.get("support_summaries"), dict) else None
+            source_summary: Dict[str, Any] = {"posts": 0, "mentions": 0, "positive": 0, "negative": 0, "neutral": 0, "net": 0}
+            support_summaries: Optional[Dict[str, Dict[str, Any]]] = None
             live_row: Dict[str, Any] = {
                 "symbol": symbol,
                 "price": row_ctx.get("price"),
@@ -1990,6 +1997,11 @@ def _scanner_discover_payload(
                 "short_reason": "Awaiting bar validation",
             }
             if symbol in bars_eval_symbols:
+                try:
+                    source_summary, support_summaries = _source_data_for_symbol(symbol)
+                except Exception:
+                    source_summary = {"posts": 0, "mentions": 0, "positive": 0, "negative": 0, "neutral": 0, "net": 0}
+                    support_summaries = None
                 built_row: Optional[Dict[str, Any]] = None
                 try:
                     built_row = build_scanner_row(
@@ -2001,17 +2013,7 @@ def _scanner_discover_payload(
                         quote_ttl_seconds=int(cfg.scanner_quote_ttl_seconds),
                     )
                 except Exception:
-                    try:
-                        built_row = build_scanner_row(
-                            symbol=symbol,
-                            interval=interval,
-                            bars=bars_value,
-                            allow_live=True,
-                            bars_ttl_seconds=int(cfg.scanner_bars_ttl_seconds),
-                            quote_ttl_seconds=int(cfg.scanner_quote_ttl_seconds),
-                        )
-                    except Exception:
-                        _mark_fail("bars_error")
+                    _mark_fail("bars_error")
                 if built_row:
                     live_row = built_row
                     if _as_float_or_none(live_row.get("target")) is not None or _as_float_or_none(live_row.get("stop")) is not None:
@@ -2071,7 +2073,14 @@ def _scanner_discover_payload(
 
 
 async def _scanner_run_task(key: str, params: Dict[str, Any], run_id: str) -> None:
-    _scanner_set_state(key, state="running", run_id=run_id, error=None, last_run_at=None)
+    _scanner_set_state(
+        key,
+        state="running",
+        run_id=run_id,
+        error=None,
+        last_run_at=None,
+        progress={"stage": "starting", "done": 0, "total": 1, "pct": 0, "eta_s": None},
+    )
     started = time.monotonic()
     try:
         payload = await asyncio.to_thread(

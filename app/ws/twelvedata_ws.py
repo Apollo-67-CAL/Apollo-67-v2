@@ -243,7 +243,6 @@ class TwelveDataWSClient:
                 if failed_symbols:
                     self._sub_set.difference_update(failed_symbols)
                     self._sub_order = [sym for sym in self._sub_order if sym not in failed_symbols]
-                    self.last_error = f"subscription warning for {len(failed_symbols)} symbol(s)"
 
         msg_text = json.dumps(payload).lower()
         if any(k in msg_text for k in ("not authorized", "forbidden", "plan", "not permitted")):
