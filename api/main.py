@@ -2076,6 +2076,10 @@ def _scanner_discover_payload(
     confirmed_buys = [row for row in all_rows if str(row.get("action") or "").upper() == "BUY"]
     candidate_buys = [row for row in all_rows if str(row.get("action") or "").upper() == "BUY_CANDIDATE"]
     watchlist_candidates = [row for row in all_rows if str(row.get("action") or "").upper() == "WATCHLIST_CANDIDATE"]
+    near_misses = [
+        row for row in all_rows
+        if str(row.get("action") or "").upper() not in {"BUY", "BUY_CANDIDATE"}
+    ]
 
     for mk in markets_to_scan:
         market_rows = [row for row in all_rows if str(row.get("market") or "").upper() == mk]
@@ -2107,7 +2111,10 @@ def _scanner_discover_payload(
         "market": market_value,
         "segments": segments,
         "buy_opportunities": confirmed_buys[:limit_value],
+        "confirmed_buy_opportunities": confirmed_buys[:limit_value],
         "candidate_opportunities": candidate_buys[:limit_value],
+        "candidate_buy_opportunities": candidate_buys[:limit_value],
+        "near_misses": near_misses[:limit_value],
         "candidates_top": (candidate_buys + watchlist_candidates + confirmed_buys)[:limit_value],
         "by_market": by_market,
         "universe_size": total_symbols,
@@ -2253,7 +2260,10 @@ def scanner_status(
             "market": str(market or "ALL").strip().upper(),
             "segments": {"large": [], "mid": [], "small": []},
             "buy_opportunities": [],
+            "confirmed_buy_opportunities": [],
             "candidate_opportunities": [],
+            "candidate_buy_opportunities": [],
+            "near_misses": [],
             "candidates_top": [],
             "by_market": {},
             "universe_size": 0,
@@ -2758,6 +2768,9 @@ def _to_scanner_discover_item(
         holding_back_reason = holding_back_reason or "evidence_unavailable"
         explanation_short = explanation_short or "Opportunity detected, awaiting evidence confirmation."
 
+    reasons = live_row.get("reasons") if isinstance(live_row.get("reasons"), list) else []
+    explanation_value = live_row.get("explanation")
+
     return {
         "symbol": str(base_row.get("symbol") or live_row.get("symbol") or "").strip().upper(),
         "display_symbol": str(base_row.get("display_symbol") or base_row.get("symbol") or "").strip().upper(),
@@ -2783,6 +2796,8 @@ def _to_scanner_discover_item(
         "score_components": score_components,
         "evidence": evidence,
         "explanation_short": explanation_short,
+        "explanation": explanation_value if isinstance(explanation_value, dict) else explanation_short,
+        "reasons": reasons[:5],
         "momentum_gain_score": momentum_gain_score,
         "final_rank_score": final_rank_score,
         "provider_used": live_row.get("provider_used") or base_row.get("provider_used"),
