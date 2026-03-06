@@ -1,11 +1,21 @@
 from __future__ import annotations
 
-from typing import Any, Callable, Dict, List, Optional
+import csv
+import time
+from pathlib import Path
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
+from app.providers.selector import get_bars_cached_first
 from app.providers.selector import get_quote_cached_first
-from core.scanners.discovery import discover_market_segment
 
 EvidenceLookup = Callable[[str, str], Dict[str, Any]]
+_ROOT_DIR = Path(__file__).resolve().parents[2]
+_ROOT_DATA_DIR = _ROOT_DIR / "data"
+_UNIVERSE_FILE_SMALL = {
+    "US": _ROOT_DATA_DIR / "universe_us_small.csv",
+    "AU": _ROOT_DATA_DIR / "universe_au_small.csv",
+}
+_UNIVERSE_ROTATE_SECONDS = 600
 
 
 def _as_float_or_none(value: Any) -> Optional[float]:
@@ -43,15 +53,159 @@ def _market_list(market: str) -> List[str]:
     return ["US"]
 
 
+def _read_symbols_file(path: Path, market: str) -> List[str]:
+    if not path.exists():
+        return []
+    symbols: List[str] = []
+    seen: set[str] = set()
+    with path.open("r", encoding="utf-8") as handle:
+        reader = csv.reader(handle)
+        rows = list(reader)
+    if not rows:
+        return []
+
+    header = [str(col or "").strip().lower() for col in rows[0]]
+    symbol_idx = None
+    for key in ("symbol", "ticker", "code"):
+        if key in header:
+            symbol_idx = header.index(key)
+            break
+    start_idx = 1 if symbol_idx is not None else 0
+
+    for row in rows[start_idx:]:
+        if not row:
+            continue
+        raw = row[symbol_idx] if symbol_idx is not None and symbol_idx < len(row) else row[0]
+        symbol = _normalise_symbol(raw)
+        if not symbol or symbol.startswith("#"):
+            continue
+        if market == "AU" and not symbol.endswith(".AX"):
+            symbol = f"{symbol}.AX"
+        if symbol in seen:
+            continue
+        seen.add(symbol)
+        symbols.append(symbol)
+    return symbols
+
+
+def _load_universe_for_market(market: str, segment: str) -> Tuple[List[str], List[str]]:
+    market_u = str(market or "US").strip().upper()
+    segment_v = str(segment or "small").strip().lower()
+    errors: List[str] = []
+    if segment_v != "small":
+        errors.append(f"segment {segment_v} not configured for file-backed universe")
+        return [], errors
+
+    path = _UNIVERSE_FILE_SMALL.get(market_u)
+    if path is None:
+        errors.append(f"market {market_u} not supported")
+        return [], errors
+    if not path.exists():
+        errors.append(f"{path.name} missing")
+        return [], errors
+
+    symbols = _read_symbols_file(path, market_u)
+    if not symbols:
+        errors.append(f"{path.name} empty")
+    return symbols, errors
+
+
+def _load_universe_with_meta(market: str, segment: str) -> Tuple[List[str], Dict[str, int], List[str], List[str]]:
+    markets = _market_list(market)
+    merged: List[str] = []
+    seen: set[str] = set()
+    sources: Dict[str, int] = {}
+    errors: List[str] = []
+    for mk in markets:
+        symbols, load_errors = _load_universe_for_market(mk, segment)
+        sources[mk] = len(symbols)
+        errors.extend(load_errors)
+        for sym in symbols:
+            if sym in seen:
+                continue
+            seen.add(sym)
+            merged.append(sym)
+    if str(market or "ALL").strip().upper() == "ALL" and not merged:
+        errors.append("market ALL merge returned 0 symbols")
+    return merged, sources, errors, merged[:10]
+
+
+def load_universe(market: str, segment: str) -> List[str]:
+    symbols, _, _, _ = _load_universe_with_meta(market=market, segment=segment)
+    return symbols
+
+
+def universe_health(market: str, segment: str) -> Dict[str, Any]:
+    symbols, sources, errors, first_10 = _load_universe_with_meta(market=market, segment=segment)
+    return {
+        "universe_size": len(symbols),
+        "universe_sources": sources,
+        "universe_errors": errors,
+        "first_10_symbols": first_10,
+    }
+
+
+def _sample_symbols(symbols: List[str], sample_size: int) -> List[str]:
+    if not symbols:
+        return []
+    if len(symbols) <= sample_size:
+        return symbols
+    bucket = int(time.time() // _UNIVERSE_ROTATE_SECONDS)
+    start = bucket % len(symbols)
+    out: List[str] = []
+    idx = start
+    while len(out) < sample_size:
+        out.append(symbols[idx % len(symbols)])
+        idx += 1
+    return out
+
+
+def _resolve_change_pct(symbol: str) -> Optional[float]:
+    try:
+        bars_result = get_bars_cached_first(
+            symbol=symbol,
+            interval="1day",
+            outputsize=2,
+            max_age_seconds=12 * 60 * 60,
+            allow_live=False,
+        )
+    except Exception:
+        return None
+    bars = bars_result.bars if hasattr(bars_result, "bars") else []
+    if not isinstance(bars, list) or len(bars) < 2:
+        return None
+    try:
+        prev = bars[-2]
+        last = bars[-1]
+        prev_close = float(prev.close if hasattr(prev, "close") else prev.get("close"))
+        last_close = float(last.close if hasattr(last, "close") else last.get("close"))
+    except Exception:
+        return None
+    if prev_close <= 0:
+        return None
+    return ((last_close - prev_close) / prev_close) * 100.0
+
+
 def get_top_movers(market: str, segment: str = "small", pool_size: int = 240, force_refresh: bool = False) -> List[Dict[str, Any]]:
-    rows = discover_market_segment(
-        market=str(market or "US").strip().upper(),
-        segment=str(segment or "small").strip().lower(),
-        limit=max(1, min(int(pool_size), 500)),
-        force_refresh=bool(force_refresh),
-    )
+    del force_refresh  # loader is file-backed; no remote refresh required
+    market_u = str(market or "US").strip().upper()
+    symbols = load_universe(market_u, segment)
+    sampled = _sample_symbols(symbols, max(1, min(int(pool_size), 500)))
+    rows: List[Dict[str, Any]] = []
+    for symbol in sampled:
+        rows.append(
+            {
+                "symbol": symbol,
+                "display_symbol": symbol,
+                "market": market_u,
+                "segment": str(segment or "small").strip().lower(),
+                "price": None,
+                "change_pct": _resolve_change_pct(symbol),
+                "provider_used": "universe",
+            }
+        )
     return sorted(
-        list(rows or []),
+        rows,
         key=lambda row: _as_float_or_none(row.get("change_pct")) or float("-inf"),
         reverse=True,
     )
@@ -98,13 +252,23 @@ def discover_candidates(
     scanned_by_market: Dict[str, int] = {}
     quote_ok_by_market: Dict[str, int] = {}
     universe_size_by_market: Dict[str, int] = {}
+    universe_errors: List[str] = []
+    first_10_symbols: List[str] = []
+
+    _, universe_sources, load_errors, first_10 = _load_universe_with_meta(market=market, segment=segment_value)
+    if load_errors:
+        universe_errors.extend(load_errors)
+    first_10_symbols = first_10
 
     for mk in markets:
+        market_symbols, market_errors = _load_universe_for_market(mk, segment_value)
+        if market_errors:
+            universe_errors.extend(market_errors)
         movers = get_top_movers(market=mk, segment=segment_value, pool_size=pool_n, force_refresh=force_refresh)
         active = get_volume_surge(market=mk, segment=segment_value, pool_size=pool_n, force_refresh=force_refresh)
         surge_set = {_normalise_symbol(row.get("symbol")) for row in active[: max(top_n * 4, 40)]}
 
-        universe_size_by_market[mk] = len(movers)
+        universe_size_by_market[mk] = len(market_symbols)
         seen: set[str] = set()
         ordered_rows: List[Dict[str, Any]] = []
         for row in movers:
@@ -235,6 +399,9 @@ def discover_candidates(
     return {
         "markets": per_market,
         "merged": merged_candidates,
+        "universe_sources": universe_size_by_market,
+        "universe_errors": universe_errors,
+        "first_10_symbols": first_10_symbols,
         "universe_size_by_market": universe_size_by_market,
         "scanned_by_market": scanned_by_market,
         "quote_ok_by_market": quote_ok_by_market,

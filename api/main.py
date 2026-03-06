@@ -32,7 +32,7 @@ from app.ws.twelvedata_ws import get_ws_client
 from app.services.basic_signal import compute_basic_signal
 from app.services.scanner import build_scanner_row, rank_buy_opportunity
 from app.services.trade_signal import compute_trade_signal
-from app.scanner.discovery import discover_candidates
+from app.scanner.discovery import discover_candidates, universe_health
 from app.validation.market_data import ValidationError, validate_bars
 from core.config import get_config, initialise_config
 from core.repositories.curated_datasets import CuratedDatasetsRepository
@@ -1965,6 +1965,9 @@ def _scanner_discover_payload(
         _scanner_update_progress(progress_key, "universe", len(markets_to_scan), max(1, len(markets_to_scan)), run_started)
 
     total_symbols = int(discovery_payload.get("universe_size") or 0)
+    universe_sources = discovery_payload.get("universe_sources") if isinstance(discovery_payload.get("universe_sources"), dict) else {}
+    universe_errors = discovery_payload.get("universe_errors") if isinstance(discovery_payload.get("universe_errors"), list) else []
+    first_10_symbols = discovery_payload.get("first_10_symbols") if isinstance(discovery_payload.get("first_10_symbols"), list) else []
     scanned_done = int(discovery_payload.get("scanned_count") or 0)
     quote_ok_count = int(discovery_payload.get("quote_ok_count") or 0)
     stage1_rows: List[Dict[str, Any]] = list(discovery_payload.get("merged") or [])
@@ -2118,6 +2121,9 @@ def _scanner_discover_payload(
         "candidates_top": (candidate_buys + watchlist_candidates + confirmed_buys)[:limit_value],
         "by_market": by_market,
         "universe_size": total_symbols,
+        "universe_sources": universe_sources,
+        "universe_errors": universe_errors,
+        "first_10_symbols": first_10_symbols[:10],
         "scanned_count": scanned_done,
         "quote_ok_count": quote_ok_count,
         "bars_ok_count": bars_ok_count,
@@ -2198,6 +2204,38 @@ async def scanner_run(payload: Dict[str, Any]):
         bars=params["bars"],
         limit=params["limit"],
     )
+    preflight = universe_health(market=params["market"], segment=params["segment"])
+    preflight_result = {
+        "ok": True,
+        "updated_at": None,
+        "tab": params["tab"],
+        "market": params["market"],
+        "segments": {"large": [], "mid": [], "small": []},
+        "buy_opportunities": [],
+        "confirmed_buy_opportunities": [],
+        "candidate_opportunities": [],
+        "candidate_buy_opportunities": [],
+        "near_misses": [],
+        "candidates_top": [],
+        "by_market": {},
+        "universe_size": int(preflight.get("universe_size") or 0),
+        "universe_sources": preflight.get("universe_sources") if isinstance(preflight.get("universe_sources"), dict) else {},
+        "universe_errors": preflight.get("universe_errors") if isinstance(preflight.get("universe_errors"), list) else [],
+        "first_10_symbols": preflight.get("first_10_symbols") if isinstance(preflight.get("first_10_symbols"), list) else [],
+        "scanned_count": 0,
+        "quote_ok_count": 0,
+        "bars_ok_count": 0,
+        "trade_ok_count": 0,
+        "buy_count": 0,
+        "confirmed_buy_count": 0,
+        "candidate_buy_count": 0,
+        "candidate_count": 0,
+        "valid_data_rate": 0.0,
+        "quote_first_mode": False,
+        "fail_reason_counts": {},
+        "holding_back_breakdown": {},
+        "filtered_breakdown": {"confirmed_buy": 0, "buy_candidate": 0, "watchlist_candidate": 0},
+    }
     with _SCANNER_RUN_LOCK:
         current = dict(_SCANNER_RUN_STATE.get(key) or _scanner_state_defaults())
         task = _SCANNER_RUN_TASKS.get(key)
@@ -2211,6 +2249,7 @@ async def scanner_run(payload: Dict[str, Any]):
             "last_run_at": current.get("last_run_at"),
             "progress": {"stage": "queued", "done": 0, "total": 1, "pct": 0, "eta_s": None},
         }
+        _SCANNER_RUN_RESULTS[key] = preflight_result
         _SCANNER_RUN_TASKS[key] = asyncio.create_task(_scanner_run_task(key=key, params=params, run_id=run_id))
     return {"ok": True, "queued": True, "run_id": run_id}
 
@@ -2267,6 +2306,9 @@ def scanner_status(
             "candidates_top": [],
             "by_market": {},
             "universe_size": 0,
+            "universe_sources": {},
+            "universe_errors": [],
+            "first_10_symbols": [],
             "scanned_count": 0,
             "quote_ok_count": 0,
             "bars_ok_count": 0,
@@ -2317,6 +2359,9 @@ def scanner_debug(
         "market": payload.get("market"),
         "segment": segment_key,
         "universe_size": int(payload.get("universe_size") or 0),
+        "universe_sources": payload.get("universe_sources") if isinstance(payload.get("universe_sources"), dict) else {},
+        "universe_errors": payload.get("universe_errors") if isinstance(payload.get("universe_errors"), list) else [],
+        "first_10_symbols": (payload.get("first_10_symbols") if isinstance(payload.get("first_10_symbols"), list) else [])[:10],
         "scanned_count": int(payload.get("scanned_count") or 0),
         "quote_ok_count": int(payload.get("quote_ok_count") or 0),
         "bars_ok_count": int(payload.get("bars_ok_count") or 0),
