@@ -2992,13 +2992,11 @@ function renderWatchlistIndicatorGroup(row, loading) {
     : momentumLower.includes('negative') || momentumLower.includes('bear')
       ? 'red-text'
       : 'grey-text';
-  const trendValue = trendRaw ? trendRaw.charAt(0).toUpperCase() + trendRaw.slice(1) : 'Neutral';
-  const momentumValue = momentumRaw ? momentumRaw.charAt(0).toUpperCase() + momentumRaw.slice(1) : 'Neutral';
   return `
     <span class="watchlist-indicator-pack">
       <span class="watchlist-indicator-head">
-        <span class="watchlist-indicator-label ${trendTone}">${trendValue}</span>
-        <span class="watchlist-indicator-label ${momentumTone}">${momentumValue}</span>
+        <span class="watchlist-indicator-label trend-label ${trendTone}">Trend</span>
+        <span class="watchlist-indicator-label momentum-label ${momentumTone}">Momentum</span>
       </span>
     </span>
   `;
