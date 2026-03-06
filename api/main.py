@@ -33,7 +33,11 @@ from app.services.basic_signal import compute_basic_signal
 from app.services.scanner import build_scanner_row, rank_buy_opportunity
 from app.services.trade_signal import compute_trade_signal
 from app.scanner.discovery import discover_candidates, universe_health
-from app.scanner.evidence import get_symbol_evidence
+from app.scanner.evidence import (
+    build_normalized_evidence,
+    compute_evidence_score,
+    get_symbol_evidence,
+)
 from app.validation.market_data import ValidationError, validate_bars
 from core.config import get_config, initialise_config
 from core.repositories.curated_datasets import CuratedDatasetsRepository
@@ -2180,38 +2184,65 @@ def _scanner_discover_payload(
             )
         except Exception:
             evidence_payload = {}
-        summary = evidence_payload.get("evidence") if isinstance(evidence_payload.get("evidence"), dict) else {}
-        if not summary:
-            summary, support = _source_data_for_symbol(symbol, allow_live_sources=False)
-            source_counts: Dict[str, Any] = {}
+        summary_seed = evidence_payload.get("evidence") if isinstance(evidence_payload.get("evidence"), dict) else {}
+        source_counts = (
+            evidence_payload.get("source_counts")
+            if isinstance(evidence_payload.get("source_counts"), dict)
+            else {"social": 0, "news": 0, "institution": 0}
+        )
+        source_breakdown = (
+            evidence_payload.get("source_breakdown")
+            if isinstance(evidence_payload.get("source_breakdown"), dict)
+            else _empty_source_breakdown()
+        )
+
+        raw_social_hits: Optional[Dict[str, Any]] = None
+        raw_news_hits: Optional[Dict[str, Any]] = None
+        raw_institution_hits: Optional[Dict[str, Any]] = None
+
+        if not summary_seed:
+            cached_summary, support = _source_data_for_symbol(symbol, allow_live_sources=False)
+            summary_seed = cached_summary if isinstance(cached_summary, dict) else {}
             if isinstance(support, dict):
-                for key, payload in support.items():
-                    if isinstance(payload, dict):
-                        source_counts[key] = int(payload.get("posts") or payload.get("mentions") or 0)
+                raw_social_hits = support.get("social") if isinstance(support.get("social"), dict) else None
+                raw_news_hits = support.get("news") if isinstance(support.get("news"), dict) else None
+                raw_institution_hits = (
+                    support.get("institution") if isinstance(support.get("institution"), dict) else None
+                )
+                source_counts = {
+                    "social": int((raw_social_hits or {}).get("posts") or (raw_social_hits or {}).get("mentions") or source_counts.get("social") or 0),
+                    "news": int((raw_news_hits or {}).get("posts") or (raw_news_hits or {}).get("mentions") or source_counts.get("news") or 0),
+                    "institution": int((raw_institution_hits or {}).get("posts") or (raw_institution_hits or {}).get("mentions") or source_counts.get("institution") or 0),
+                }
             elif tab_value in {"social", "news", "institution"}:
-                source_counts[tab_value] = int(summary.get("posts") or summary.get("mentions") or 0)
-            source_breakdown = _empty_source_breakdown()
-            evidence_score_raw = 0.0
-            evidence_confidence = 0.0
-            evidence_state = "evidence_unavailable"
-        else:
-            source_counts = (
-                evidence_payload.get("source_counts")
-                if isinstance(evidence_payload.get("source_counts"), dict)
-                else {"social": 0, "news": 0, "institution": 0}
-            )
-            source_breakdown = (
-                evidence_payload.get("source_breakdown")
-                if isinstance(evidence_payload.get("source_breakdown"), dict)
-                else _empty_source_breakdown()
-            )
-            evidence_score_raw = float(_as_float_or_none(evidence_payload.get("evidence_score_raw")) or 0.0)
-            evidence_confidence = float(_as_float_or_none(evidence_payload.get("evidence_confidence")) or 0.0)
-            evidence_state = str(evidence_payload.get("evidence_state") or "").strip().lower() or "evidence_unavailable"
+                source_counts = dict(source_counts or {})
+                source_counts[tab_value] = int(summary_seed.get("posts") or summary_seed.get("mentions") or 0)
+
+        normalized_summary = build_normalized_evidence(
+            source_counts=source_counts if isinstance(source_counts, dict) else {},
+            source_breakdown=source_breakdown if isinstance(source_breakdown, dict) else _empty_source_breakdown(),
+            raw_social_hits=raw_social_hits,
+            raw_news_hits=raw_news_hits,
+            raw_institution_hits=raw_institution_hits,
+        )
+        summary = _merge_source_summaries(
+            summary_seed if isinstance(summary_seed, dict) else {},
+            normalized_summary,
+        )
+        score_meta = compute_evidence_score(
+            evidence=summary,
+            source_counts=source_counts if isinstance(source_counts, dict) else {},
+            source_breakdown=source_breakdown if isinstance(source_breakdown, dict) else _empty_source_breakdown(),
+        )
+        evidence_score_raw = float(_as_float_or_none(score_meta.get("evidence_score_raw")) or 0.0)
+        evidence_confidence = float(_as_float_or_none(score_meta.get("evidence_confidence")) or 0.0)
+        evidence_state = str(score_meta.get("evidence_state") or "").strip().lower() or "evidence_unavailable"
+
         if int(summary.get("posts") or 0) > 0 or int(summary.get("mentions") or 0) > 0:
             evidence_hit_count += 1
         return {
             "evidence_summary": summary,
+            "evidence": summary,
             "source_counts": source_counts,
             "source_breakdown": source_breakdown,
             "evidence_score_raw": evidence_score_raw,
@@ -2330,9 +2361,13 @@ def _scanner_discover_payload(
 
         if idx <= bars_eval_count:
             try:
-                source_summary, support_summaries = _source_data_for_symbol(symbol, allow_live_sources=False)
+                runtime_summary, support_summaries = _source_data_for_symbol(symbol, allow_live_sources=False)
+                source_summary = _merge_source_summaries(source_summary, runtime_summary)
             except Exception:
-                source_summary = {"posts": 0, "mentions": 0, "positive": 0, "negative": 0, "neutral": 0, "net": 0}
+                source_summary = _merge_source_summaries(
+                    source_summary,
+                    {"posts": 0, "mentions": 0, "positive": 0, "negative": 0, "neutral": 0, "net": 0},
+                )
                 support_summaries = None
 
             built_row: Optional[Dict[str, Any]] = None
@@ -2993,6 +3028,29 @@ def _source_summary_from_payload(payload: Optional[Dict[str, Any]]) -> Dict[str,
     }
 
 
+def _merge_source_summaries(preferred: Dict[str, Any], fallback: Dict[str, Any]) -> Dict[str, Any]:
+    base = preferred if isinstance(preferred, dict) else {}
+    alt = fallback if isinstance(fallback, dict) else {}
+    base_presence = int(base.get("posts") or base.get("mentions") or 0)
+    alt_presence = int(alt.get("posts") or alt.get("mentions") or 0)
+    src = base if base_presence >= alt_presence else alt
+    backup = alt if src is base else base
+    merged = {
+        "posts": int(src.get("posts") or backup.get("posts") or 0),
+        "mentions": int(src.get("mentions") or backup.get("mentions") or 0),
+        "positive": int(src.get("positive") or 0),
+        "negative": int(src.get("negative") or 0),
+        "neutral": int(src.get("neutral") or 0),
+        "net": int(src.get("net") or (int(src.get("positive") or 0) - int(src.get("negative") or 0))),
+    }
+    if merged["mentions"] <= 0 and merged["posts"] > 0:
+        merged["mentions"] = merged["posts"]
+    if merged["positive"] + merged["negative"] + merged["neutral"] <= 0 and merged["posts"] > 0:
+        merged["neutral"] = merged["posts"]
+    merged["net"] = int(merged["positive"] - merged["negative"])
+    return merged
+
+
 def _empty_source_breakdown() -> Dict[str, Dict[str, int]]:
     return {
         "social": {
@@ -3119,15 +3177,16 @@ def _confidence_fallback_from_trade(technical_action: str, trend_value: str, mom
     return max(0.25, min(0.85, 0.25 + (votes * 0.12)))
 
 
-def _signal_basis(score_components: Optional[Dict[str, Any]], evidence_state: str) -> str:
-    technical_weight = 0.0
-    if isinstance(score_components, dict):
-        technical_weight = float(_as_float_or_none(score_components.get("technical")) or 0.0)
-    if evidence_state == "evidence_unavailable":
-        return "technical_only" if technical_weight > 0 else "evidence_only"
-    if technical_weight > 0:
+def _signal_basis(technical_score: Optional[float], evidence_score_raw: float) -> str:
+    has_technical = technical_score is not None
+    has_evidence = float(evidence_score_raw or 0.0) > 0.0
+    if has_technical and has_evidence:
         return "technical_plus_evidence"
-    return "evidence_only"
+    if has_technical and not has_evidence:
+        return "technical_only"
+    if (not has_technical) and has_evidence:
+        return "evidence_only"
+    return "technical_only"
 
 
 def resolve_final_action(candidate: Dict[str, Any], trade_result: Dict[str, Any], evidence_state: str) -> Dict[str, Any]:
@@ -3324,41 +3383,50 @@ def _to_scanner_discover_item(
         action = "BUY_CANDIDATE"
         explanation_short = explanation_short or "Opportunity detected, awaiting bar confirmation."
 
-    change_pct_value = _as_float_or_none(base_row.get("change_pct"))
-    momentum_gain_score = _momentum_gain_score(change_pct=change_pct_value, volume_boost=0.0)
-    base_for_rank = score_val if score_val is not None else prelim_score
-    final_rank_score = _final_rank_score(base_score=base_for_rank, momentum_gain_score=momentum_gain_score)
-    score_components = _components_for_scanner_tab(
-        tab=tab,
-        source_summary=source_summary,
-        support_summaries=support_summaries,
+    source_counts_final = (
+        source_counts if isinstance(source_counts, dict)
+        else (base_row.get("source_counts") if isinstance(base_row.get("source_counts"), dict) else {})
     )
-    evidence = {
-        "posts": int(source_summary.get("posts") or 0),
-        "positive": int(source_summary.get("positive") or 0),
-        "negative": int(source_summary.get("negative") or 0),
-        "net": int(source_summary.get("net") or 0),
-        "mentions": int(source_summary.get("mentions") or source_summary.get("posts") or 0),
-        "neutral": int(source_summary.get("neutral") or 0),
-    }
     source_breakdown = (
         base_row.get("source_breakdown")
         if isinstance(base_row.get("source_breakdown"), dict)
         else _empty_source_breakdown()
     )
-    evidence_score_raw = float(_as_float_or_none(base_row.get("evidence_score_raw")) or 0.0)
-    evidence_confidence = float(_as_float_or_none(base_row.get("evidence_confidence")) or 0.0)
+    raw_social_hits = support_summaries.get("social") if isinstance((support_summaries or {}).get("social"), dict) else None
+    raw_news_hits = support_summaries.get("news") if isinstance((support_summaries or {}).get("news"), dict) else None
+    raw_institution_hits = (
+        support_summaries.get("institution") if isinstance((support_summaries or {}).get("institution"), dict) else None
+    )
+
+    evidence = build_normalized_evidence(
+        source_counts=source_counts_final,
+        source_breakdown=source_breakdown,
+        raw_social_hits=raw_social_hits,
+        raw_news_hits=raw_news_hits,
+        raw_institution_hits=raw_institution_hits,
+    )
+    evidence = _merge_source_summaries(source_summary if isinstance(source_summary, dict) else {}, evidence)
+    score_meta = compute_evidence_score(
+        evidence=evidence,
+        source_counts=source_counts_final,
+        source_breakdown=source_breakdown,
+    )
+    evidence_score_raw = float(_as_float_or_none(score_meta.get("evidence_score_raw")) or 0.0)
+    evidence_confidence = float(_as_float_or_none(score_meta.get("evidence_confidence")) or 0.0)
+    seed_score_raw = float(_as_float_or_none(base_row.get("evidence_score_raw")) or 0.0)
+    seed_conf = float(_as_float_or_none(base_row.get("evidence_confidence")) or 0.0)
+    if seed_score_raw > evidence_score_raw:
+        evidence_score_raw = seed_score_raw
+    if seed_conf > evidence_confidence:
+        evidence_confidence = seed_conf
+    evidence_state = str(score_meta.get("evidence_state") or "").strip().lower() or "evidence_unavailable"
+    if evidence_state == "evidence_unavailable":
+        if int(evidence.get("posts") or 0) > 0 or int(evidence.get("mentions") or 0) > 0:
+            evidence_state = "evidence_present_unclassified"
 
     stage = str(live_row.get("stage") or ("confirmed" if bars_confirmed else "candidate")).strip().lower()
     holding_back_reason_initial = str(live_row.get("holding_back_reason") or "").strip() or None
     data_quality = str(live_row.get("data_quality") or ("full" if bars_confirmed else "partial")).strip().lower()
-
-    has_evidence = _has_source_data(source_summary) or any(
-        _has_source_data(summary)
-        for summary in ((support_summaries or {}).values() if isinstance(support_summaries, dict) else [])
-        if isinstance(summary, dict)
-    )
-    evidence_state = "available" if has_evidence else "evidence_unavailable"
 
     if score_val is None and bars_confirmed:
         score_val = _score_fallback_from_trade(
@@ -3404,12 +3472,25 @@ def _to_scanner_discover_item(
             if (score_val is not None) and score_val < buy_score_threshold:
                 holding_back_reason = "score_below_threshold"
 
+    change_pct_value = _as_float_or_none(base_row.get("change_pct"))
+    momentum_gain_score = _momentum_gain_score(change_pct=change_pct_value, volume_boost=0.0)
+    base_for_rank = score_val if score_val is not None else prelim_score
+    final_rank_score = _final_rank_score(base_score=base_for_rank, momentum_gain_score=momentum_gain_score) + evidence_score_raw
+    score_components = _components_for_scanner_tab(
+        tab=tab,
+        source_summary=evidence,
+        support_summaries=support_summaries,
+    )
+
     reasons = live_row.get("reasons") if isinstance(live_row.get("reasons"), list) else []
     explanation_value = live_row.get("explanation")
 
-    signal_basis = _signal_basis(score_components=score_components, evidence_state=evidence_state)
+    signal_basis = _signal_basis(technical_score=score_val, evidence_score_raw=evidence_score_raw)
     if signal_basis == "technical_plus_evidence":
-        explanation_short = "Technical setup supported by external evidence."
+        if evidence_state == "evidence_present_unclassified":
+            explanation_short = "Technical setup detected with external mentions, but sentiment classification is limited."
+        else:
+            explanation_short = "Technical setup supported by external evidence."
     elif signal_basis == "technical_only":
         explanation_short = "Technical setup detected with limited external evidence."
     elif signal_basis == "evidence_only":
@@ -3436,7 +3517,7 @@ def _to_scanner_discover_item(
         "signal_basis": signal_basis,
         "evidence_state": evidence_state,
         "final_action_source": final_action_source,
-        "source_counts": source_counts if isinstance(source_counts, dict) else {},
+        "source_counts": source_counts_final,
         "source_breakdown": source_breakdown,
         "entry": live_row.get("entry_zone") if isinstance(live_row.get("entry_zone"), dict) else {
             "low": live_row.get("entry_low"),
@@ -3445,7 +3526,7 @@ def _to_scanner_discover_item(
         "target": live_row.get("target"),
         "stop": live_row.get("stop"),
         "trail": live_row.get("trail"),
-        "source_summary": source_summary,
+        "source_summary": evidence,
         "score_components": score_components,
         "evidence": evidence,
         "evidence_score_raw": evidence_score_raw,

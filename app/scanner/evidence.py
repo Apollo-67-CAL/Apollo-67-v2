@@ -73,6 +73,38 @@ def _empty_source_breakdown() -> Dict[str, Dict[str, int]]:
     }
 
 
+def _safe_int(value: Any) -> int:
+    try:
+        return int(float(value or 0))
+    except Exception:
+        return 0
+
+
+def _safe_float(value: Any) -> float:
+    try:
+        out = float(value or 0.0)
+    except Exception:
+        return 0.0
+    return out if out == out else 0.0
+
+
+def _count_non_zero(values: List[int]) -> int:
+    return sum(1 for value in values if int(value or 0) > 0)
+
+
+def _breakdown_totals_from_source_breakdown(source_breakdown: Dict[str, Any]) -> Dict[str, int]:
+    social = source_breakdown.get("social") if isinstance(source_breakdown.get("social"), dict) else {}
+    news = source_breakdown.get("news") if isinstance(source_breakdown.get("news"), dict) else {}
+    institution = (
+        source_breakdown.get("institution") if isinstance(source_breakdown.get("institution"), dict) else {}
+    )
+    return {
+        "social": sum(_safe_int(v) for v in social.values()),
+        "news": _safe_int(news.get("articles")) or sum(_safe_int(v) for v in news.values()),
+        "institution": sum(_safe_int(v) for v in institution.values()),
+    }
+
+
 def normalize_symbol_for_evidence(symbol: str, market: str) -> Dict[str, Any]:
     symbol_u = str(symbol or "").strip().upper()
     market_u = str(market or ("AU" if symbol_u.endswith(".AX") else "US")).strip().upper()
@@ -261,29 +293,179 @@ def _evidence_score(group_totals: Dict[str, Dict[str, Any]]) -> Tuple[float, flo
     return (max(-30.0, min(30.0, score)), max(0.0, min(1.0, conf)))
 
 
-def aggregate_evidence(social: Dict[str, Any], news: Dict[str, Any], institution: Dict[str, Any]) -> Dict[str, Any]:
+def build_normalized_evidence(
+    source_counts: Dict[str, Any],
+    source_breakdown: Dict[str, Any],
+    raw_social_hits: Optional[Dict[str, Any]] = None,
+    raw_news_hits: Optional[Dict[str, Any]] = None,
+    raw_institution_hits: Optional[Dict[str, Any]] = None,
+) -> Dict[str, int]:
     evidence = _empty_evidence()
+    counts = _empty_source_counts()
+    if isinstance(source_counts, dict):
+        counts["social"] = _safe_int(source_counts.get("social"))
+        counts["news"] = _safe_int(source_counts.get("news"))
+        counts["institution"] = _safe_int(source_counts.get("institution"))
+
+    breakdown_totals = _breakdown_totals_from_source_breakdown(
+        source_breakdown if isinstance(source_breakdown, dict) else _empty_source_breakdown()
+    )
+    counts["social"] = max(counts["social"], breakdown_totals["social"])
+    counts["news"] = max(counts["news"], breakdown_totals["news"])
+    counts["institution"] = max(counts["institution"], breakdown_totals["institution"])
+
+    group_hits = {
+        "social": raw_social_hits if isinstance(raw_social_hits, dict) else {},
+        "news": raw_news_hits if isinstance(raw_news_hits, dict) else {},
+        "institution": raw_institution_hits if isinstance(raw_institution_hits, dict) else {},
+    }
+
+    sentiment_known = False
+    for group_name, payload in group_hits.items():
+        group_count = counts[group_name]
+        posts = _safe_int(payload.get("posts") or payload.get("mentions"))
+        mentions = _safe_int(payload.get("mentions") or payload.get("posts"))
+        positive = _safe_int(payload.get("positive"))
+        negative = _safe_int(payload.get("negative"))
+        neutral = _safe_int(payload.get("neutral"))
+        if posts <= 0 and group_count > 0:
+            posts = group_count
+        if mentions <= 0 and posts > 0:
+            mentions = posts
+        if posts > 0 and positive + negative + neutral <= 0:
+            neutral = posts
+        if positive > 0 or negative > 0:
+            sentiment_known = True
+        evidence["posts"] += posts
+        evidence["mentions"] += mentions
+        evidence["positive"] += positive
+        evidence["negative"] += negative
+        evidence["neutral"] += neutral
+
+    if evidence["posts"] <= 0:
+        # Fallback when only source counts/breakdowns are available.
+        fallback_posts = counts["social"] + counts["news"] + counts["institution"]
+        if fallback_posts > 0:
+            evidence["posts"] = fallback_posts
+            evidence["mentions"] = fallback_posts
+            evidence["neutral"] = fallback_posts
+
+    if evidence["mentions"] <= 0 and evidence["posts"] > 0:
+        evidence["mentions"] = evidence["posts"]
+
+    if evidence["positive"] + evidence["negative"] + evidence["neutral"] <= 0 and evidence["posts"] > 0:
+        evidence["neutral"] = evidence["posts"]
+
+    evidence["net"] = evidence["positive"] - evidence["negative"]
+    if not sentiment_known and evidence["posts"] > 0 and evidence["positive"] == 0 and evidence["negative"] == 0:
+        evidence["neutral"] = max(evidence["neutral"], evidence["posts"])
+    return evidence
+
+
+def compute_evidence_score(
+    evidence: Dict[str, Any],
+    source_counts: Dict[str, Any],
+    source_breakdown: Dict[str, Any],
+) -> Dict[str, Any]:
+    counts = _empty_source_counts()
+    if isinstance(source_counts, dict):
+        counts["social"] = _safe_int(source_counts.get("social"))
+        counts["news"] = _safe_int(source_counts.get("news"))
+        counts["institution"] = _safe_int(source_counts.get("institution"))
+
+    breakdown = source_breakdown if isinstance(source_breakdown, dict) else _empty_source_breakdown()
+    breakdown_totals = _breakdown_totals_from_source_breakdown(breakdown)
+    counts["social"] = max(counts["social"], breakdown_totals["social"])
+    counts["news"] = max(counts["news"], breakdown_totals["news"])
+    counts["institution"] = max(counts["institution"], breakdown_totals["institution"])
+
+    total_presence = counts["social"] + counts["news"] + counts["institution"]
+    if total_presence <= 0:
+        return {"evidence_score_raw": 0.0, "evidence_confidence": 0.0, "evidence_state": "evidence_unavailable"}
+
+    ev_posts = _safe_int(evidence.get("posts"))
+    ev_positive = _safe_int(evidence.get("positive"))
+    ev_negative = _safe_int(evidence.get("negative"))
+    sentiment_known = (ev_positive + ev_negative) > 0
+    polarity_score = (
+        max(-1.0, min(1.0, float(ev_positive - ev_negative) / float(max(ev_posts, 1)))) if sentiment_known else 0.0
+    )
+
+    social_breakdown = breakdown.get("social") if isinstance(breakdown.get("social"), dict) else {}
+    news_breakdown = breakdown.get("news") if isinstance(breakdown.get("news"), dict) else {}
+    institution_breakdown = (
+        breakdown.get("institution") if isinstance(breakdown.get("institution"), dict) else {}
+    )
+    social_div = _count_non_zero([_safe_int(v) for v in social_breakdown.values()]) / 6.0
+    news_div = _count_non_zero([_safe_int(v) for v in news_breakdown.values()]) / 2.0
+    institution_div = _count_non_zero([_safe_int(v) for v in institution_breakdown.values()]) / 4.0
+
+    social_vol = min(1.0, counts["social"] / 20.0)
+    news_vol = min(1.0, counts["news"] / 20.0)
+    institution_vol = min(1.0, counts["institution"] / 20.0)
+
+    social_component = 0.6 * social_vol + 0.4 * social_div + (0.5 * polarity_score if sentiment_known else 0.0)
+    news_component = 0.6 * news_vol + 0.4 * news_div + (0.5 * polarity_score if sentiment_known else 0.0)
+    institution_component = (
+        0.6 * institution_vol + 0.4 * institution_div + (0.5 * polarity_score if sentiment_known else 0.0)
+    )
+
+    weighted = (0.25 * social_component) + (0.35 * news_component) + (0.40 * institution_component)
+    evidence_score_raw = max(0.0, min(20.0, 10.0 * weighted))
+
+    diversity_global = (
+        _count_non_zero([counts["social"], counts["news"], counts["institution"]]) / 3.0
+    )
+    volume_conf = min(1.0, total_presence / 40.0)
+    sentiment_conf = 0.20 if sentiment_known else 0.0
+    evidence_confidence = max(0.05, min(0.95, (0.45 * volume_conf) + (0.35 * diversity_global) + sentiment_conf))
+
+    evidence_state = "available" if sentiment_known else "evidence_present_unclassified"
+    return {
+        "evidence_score_raw": float(evidence_score_raw),
+        "evidence_confidence": float(evidence_confidence),
+        "evidence_state": evidence_state,
+    }
+
+
+def aggregate_evidence(social: Dict[str, Any], news: Dict[str, Any], institution: Dict[str, Any]) -> Dict[str, Any]:
     source_counts = _empty_source_counts()
     source_breakdown = _empty_source_breakdown()
-    per_group_totals: Dict[str, Dict[str, Any]] = {}
+    per_group_totals: Dict[str, Dict[str, Any]] = {
+        "social": {},
+        "news": {},
+        "institution": {},
+    }
 
     for group_name, group_payload in (("social", social), ("news", news), ("institution", institution)):
         totals = group_payload.get("totals") if isinstance(group_payload.get("totals"), dict) else _empty_evidence()
         per_source = group_payload.get("per_source") if isinstance(group_payload.get("per_source"), dict) else {}
         per_group_totals[group_name] = totals
-        evidence["posts"] += int(totals.get("posts") or 0)
-        evidence["mentions"] += int(totals.get("mentions") or totals.get("posts") or 0)
-        evidence["positive"] += int(totals.get("positive") or 0)
-        evidence["negative"] += int(totals.get("negative") or 0)
-        evidence["neutral"] += int(totals.get("neutral") or 0)
-        evidence["net"] += int(totals.get("net") or 0)
-        source_counts[group_name] = int(totals.get("posts") or totals.get("mentions") or 0)
+        per_source_posts = sum(int(row.get("posts") or 0) for row in per_source.values())
+        source_counts[group_name] = max(
+            int(totals.get("posts") or totals.get("mentions") or 0),
+            int(per_source_posts),
+        )
 
         if group_name == "social":
             for source_key, row in per_source.items():
                 posts = int(row.get("posts") or 0)
-                if source_key in source_breakdown["social"]:
-                    source_breakdown["social"][source_key] += posts
+                mapped = source_key
+                if "twitter" in source_key:
+                    mapped = "x"
+                elif "youtube" in source_key:
+                    mapped = "youtube"
+                elif "hotcopper" in source_key:
+                    mapped = "hotcopper"
+                elif "facebook" in source_key:
+                    mapped = "facebook"
+                elif "tiktok" in source_key:
+                    mapped = "tiktok"
+                elif "reddit" in source_key:
+                    mapped = "reddit"
+                else:
+                    mapped = "x"
+                source_breakdown["social"][mapped] += posts
         elif group_name == "news":
             article_count = 0
             publishers = 0
@@ -307,16 +489,27 @@ def aggregate_evidence(social: Dict[str, Any], news: Dict[str, Any], institution
                 if any(token in source_key for token in ("broker", "flow", "options", "short_interest", "etf")):
                     source_breakdown["institution"]["unusual_volume"] += posts
 
-    evidence_score_raw, evidence_confidence = _evidence_score(per_group_totals)
-    evidence_state = "available" if evidence["posts"] > 0 or evidence["mentions"] > 0 else "evidence_unavailable"
+    evidence = build_normalized_evidence(
+        source_counts=source_counts,
+        source_breakdown=source_breakdown,
+        raw_social_hits=per_group_totals.get("social"),
+        raw_news_hits=per_group_totals.get("news"),
+        raw_institution_hits=per_group_totals.get("institution"),
+    )
+    score_meta = compute_evidence_score(
+        evidence=evidence,
+        source_counts=source_counts,
+        source_breakdown=source_breakdown,
+    )
 
     return {
         "evidence": evidence,
+        "evidence_summary": evidence,
         "source_counts": source_counts,
         "source_breakdown": source_breakdown,
-        "evidence_score_raw": evidence_score_raw,
-        "evidence_confidence": evidence_confidence,
-        "evidence_state": evidence_state,
+        "evidence_score_raw": float(score_meta.get("evidence_score_raw") or 0.0),
+        "evidence_confidence": float(score_meta.get("evidence_confidence") or 0.0),
+        "evidence_state": str(score_meta.get("evidence_state") or "evidence_unavailable"),
     }
 
 
