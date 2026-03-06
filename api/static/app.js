@@ -823,6 +823,18 @@ function renderScannerRows(rows) {
     const rrText = row.rr != null ? `RR ${Number(row.rr).toFixed(2)}` : null;
     const confValue = Number(row.confidence);
     const confPct = Number.isFinite(confValue) ? Math.max(0, Math.min(100, Math.round(confValue * 100))) : 0;
+    const trendRaw = String(row.trend || row.signal_trend || '').toLowerCase();
+    const momentumRaw = String(row.momentum || row.signal_momentum || '').toLowerCase();
+    const trendToneClass = trendRaw.includes('bull')
+      ? 'green-text'
+      : trendRaw.includes('bear')
+        ? 'red-text'
+        : 'grey-text';
+    const momentumToneClass = (momentumRaw.includes('positive') || momentumRaw.includes('bull'))
+      ? 'green-text'
+      : (momentumRaw.includes('negative') || momentumRaw.includes('bear'))
+        ? 'red-text'
+        : 'grey-text';
     const scoreValue = resolveScannerScore(row);
     const entryLow = resolveScannerLevelValue(row.entry_low, row.entryLow, row?.entry_zone?.low, row?.trade?.entry_zone?.low);
     const entryHigh = resolveScannerLevelValue(row.entry_high, row.entryHigh, row?.entry_zone?.high, row?.trade?.entry_zone?.high);
@@ -869,6 +881,10 @@ function renderScannerRows(rows) {
           ${!isNoData ? `<span class="scan-inline-confidence" role="img" aria-label="Confidence: ${confPct}%" title="Confidence: ${confPct}%"><span class="scan-confidence-bar"><span class="scan-confidence-fill" style="width:${confPct}%;"></span></span></span>` : ''}
           ${rrText ? `<span class="pill">${rrText}</span>` : ''}
           ${nearEntry ? '<span class="pill pill-muted">Near Entry</span>' : ''}
+        </div>
+        <div class="scan-signal-labels">
+          <span class="scan-signal-label ${trendToneClass}">Trend</span>
+          <span class="scan-signal-label ${momentumToneClass}">Momentum</span>
         </div>
         <div class="scan-levels">
           <div class="kv"><span>Entry</span><strong>${entryText}</strong></div>
