@@ -528,17 +528,17 @@ def get_quote_cached_first(
     allow_live: bool = False,
     freshness_seconds: int = 60,
 ) -> QuoteResult:
-    cached = _db_latest_quote(symbol=symbol, max_age_seconds=max_age_seconds)
-    if cached:
-        return cached
-    if not allow_live:
-        raise ProviderError("No recent cached quote")
-
     symbol_u = (symbol or "").strip().upper()
+    # Prefer live WS ticks when available.
     ws_hit = _ws_quote(symbol_u, max_age_seconds=15)
     if ws_hit:
         _set_cached_quote(symbol_u, ws_hit)
         return ws_hit
+    cached = _db_latest_quote(symbol=symbol_u, max_age_seconds=max_age_seconds)
+    if cached:
+        return cached
+    if not allow_live:
+        raise ProviderError("No recent cached quote")
     errors: List[str] = []
     try:
         if not _provider_call_allowed("yahoo", "quote", per_minute_limit=_provider_minute_limit(40)):
@@ -590,14 +590,14 @@ def get_quote_with_fallback(symbol: str, freshness_seconds: int = 60) -> QuoteRe
     if not symbol_u:
         raise ProviderError("Missing symbol")
 
-    cached = _get_cached_quote(symbol_u)
-    if cached:
-        return cached
-
+    # WS first so consumers (scanner/paper engine/quote endpoint) prefer live price.
     ws_hit = _ws_quote(symbol_u, max_age_seconds=15)
     if ws_hit:
         _set_cached_quote(symbol_u, ws_hit)
         return ws_hit
+    cached = _get_cached_quote(symbol_u)
+    if cached:
+        return cached
 
     errors: List[str] = []
 

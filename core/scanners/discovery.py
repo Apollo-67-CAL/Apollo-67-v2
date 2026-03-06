@@ -88,7 +88,7 @@ def _resolve_change_pct(symbol: str, last: float) -> Optional[float]:
             interval="1day",
             outputsize=2,
             max_age_seconds=12 * 60 * 60,
-            allow_live=True,
+            allow_live=False,
         )
     except Exception:
         return None

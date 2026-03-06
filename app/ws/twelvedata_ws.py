@@ -234,12 +234,29 @@ class TwelveDataWSClient:
             "payload": payload,
         })
 
+        event_name = str(payload.get("event") or "").strip().lower()
+        if event_name == "subscribe-status":
+            fails = payload.get("fails")
+            if isinstance(fails, list):
+                failed_symbols = {_norm_symbol(item.get("symbol")) for item in fails if isinstance(item, dict)}
+                failed_symbols.discard("")
+                if failed_symbols:
+                    self._sub_set.difference_update(failed_symbols)
+                    self._sub_order = [sym for sym in self._sub_order if sym not in failed_symbols]
+                    self.last_error = f"subscription warning for {len(failed_symbols)} symbol(s)"
+
         msg_text = json.dumps(payload).lower()
         if any(k in msg_text for k in ("not authorized", "forbidden", "plan", "not permitted")):
             self.ws_entitlement = "restricted"
             self.last_error = "WS not permitted on current plan"
             return
 
+        data_rows = payload.get("data")
+        if isinstance(data_rows, list):
+            for row in data_rows:
+                if isinstance(row, dict):
+                    self._upsert_price_from_row(row)
+            return
         symbol = _norm_symbol(payload.get("symbol"))
         price_raw = payload.get("price")
         if not symbol:
@@ -247,6 +264,14 @@ class TwelveDataWSClient:
             if isinstance(data, dict):
                 symbol = _norm_symbol(data.get("symbol"))
                 price_raw = data.get("price", price_raw)
+        self._upsert_price(symbol=symbol, price_raw=price_raw, payload=payload)
+
+    def _upsert_price_from_row(self, row: Dict[str, Any]) -> None:
+        symbol = _norm_symbol(row.get("symbol"))
+        price_raw = row.get("price")
+        self._upsert_price(symbol=symbol, price_raw=price_raw, payload=row)
+
+    def _upsert_price(self, symbol: str, price_raw: Any, payload: Dict[str, Any]) -> None:
         try:
             price = float(price_raw) if price_raw not in (None, "") else None
         except Exception:
@@ -281,6 +306,10 @@ class TwelveDataWSClient:
                             continue
                         if isinstance(payload, dict):
                             self._handle_payload(payload)
+                        elif isinstance(payload, list):
+                            for item in payload:
+                                if isinstance(item, dict):
+                                    self._handle_payload(item)
             except asyncio.CancelledError:
                 break
             except Exception as exc:
@@ -309,4 +338,3 @@ def get_ws_client() -> TwelveDataWSClient:
     if _ws_singleton is None:
         _ws_singleton = TwelveDataWSClient()
     return _ws_singleton
-

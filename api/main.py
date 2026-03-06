@@ -22,7 +22,11 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from api.admin_routes import router as admin_router
-from app.providers.selector import get_bars_with_fallback, get_quote_with_fallback
+from app.providers.selector import (
+    get_bars_with_fallback,
+    get_quote_cached_first,
+    get_quote_with_fallback,
+)
 from app.providers.twelvedata import ProviderError, TwelveDataClient
 from app.ws.twelvedata_ws import get_ws_client
 from app.services.basic_signal import compute_basic_signal
@@ -1859,81 +1863,174 @@ def _scanner_discover_payload(
     fail_reason_counts: Dict[str, int] = {}
     all_rows: List[Dict[str, Any]] = []
     by_market: Dict[str, Dict[str, Any]] = {}
+    bars_top_n = max(5, min(int(os.getenv("SCANNER_BARS_TOP_N", "30")), 100))
 
     def _mark_fail(reason: str) -> None:
         fail_reason_counts[reason] = int(fail_reason_counts.get(reason) or 0) + 1
 
+    def _source_data_for_symbol(symbol: str) -> Tuple[Dict[str, Any], Optional[Dict[str, Dict[str, Any]]]]:
+        source_summary: Dict[str, Any] = {"posts": 0, "mentions": 0, "positive": 0, "negative": 0, "neutral": 0, "net": 0}
+        support_summaries: Optional[Dict[str, Dict[str, Any]]] = None
+        if tab_value in {"social", "news", "institution"}:
+            source_summary = _get_or_build_source_summary(symbol=symbol, scanner_type=tab_value, timeframe=interval)
+        elif tab_value == "overall":
+            support_summaries = {
+                "social": _get_or_build_source_summary(symbol=symbol, scanner_type="social", timeframe=interval),
+                "news": _get_or_build_source_summary(symbol=symbol, scanner_type="news", timeframe=interval),
+                "institution": _get_or_build_source_summary(symbol=symbol, scanner_type="institution", timeframe=interval),
+            }
+            source_summary = {
+                "posts": int(support_summaries["social"].get("posts") or 0)
+                + int(support_summaries["news"].get("posts") or 0)
+                + int(support_summaries["institution"].get("posts") or 0),
+                "mentions": int(support_summaries["social"].get("mentions") or 0)
+                + int(support_summaries["news"].get("mentions") or 0)
+                + int(support_summaries["institution"].get("mentions") or 0),
+                "positive": int(support_summaries["social"].get("positive") or 0)
+                + int(support_summaries["news"].get("positive") or 0)
+                + int(support_summaries["institution"].get("positive") or 0),
+                "negative": int(support_summaries["social"].get("negative") or 0)
+                + int(support_summaries["news"].get("negative") or 0)
+                + int(support_summaries["institution"].get("negative") or 0),
+                "neutral": int(support_summaries["social"].get("neutral") or 0)
+                + int(support_summaries["news"].get("neutral") or 0)
+                + int(support_summaries["institution"].get("neutral") or 0),
+                "net": int(support_summaries["social"].get("net") or 0)
+                + int(support_summaries["news"].get("net") or 0)
+                + int(support_summaries["institution"].get("net") or 0),
+            }
+        return source_summary, support_summaries
+
     for mk in markets_to_scan:
         rows: List[Dict[str, Any]] = []
         discovered = discovered_batches.get(mk, [])
+        quote_stage_rows: List[Dict[str, Any]] = []
         for base in discovered:
             symbol = str(base.get("symbol") or "").strip().upper()
             if not symbol:
                 _mark_fail("invalid_symbol")
                 scanned_done += 1
-                continue
-            try:
-                live_row = build_scanner_row(
-                    symbol=symbol,
-                    interval=interval,
-                    bars=bars_value,
-                    allow_live=True,
-                    bars_ttl_seconds=int(cfg.scanner_bars_ttl_seconds),
-                    quote_ttl_seconds=int(cfg.scanner_quote_ttl_seconds),
-                )
-                if _as_float_or_none(live_row.get("price")) is not None:
-                    quote_ok_count += 1
-                if _as_float_or_none(live_row.get("target")) is not None or _as_float_or_none(live_row.get("stop")) is not None:
-                    bars_ok_count += 1
-                    trade_ok_count += 1
-                if _as_float_or_none(live_row.get("confidence")) is not None:
-                    valid_data_count += 1
-
-                source_summary = {"posts": 0, "mentions": 0, "positive": 0, "negative": 0, "neutral": 0, "net": 0}
-                support_summaries: Optional[Dict[str, Dict[str, Any]]] = None
-                if tab_value in {"social", "news", "institution"}:
-                    source_summary = _get_or_build_source_summary(symbol=symbol, scanner_type=tab_value, timeframe=interval)
-                elif tab_value == "overall":
-                    support_summaries = {
-                        "social": _get_or_build_source_summary(symbol=symbol, scanner_type="social", timeframe=interval),
-                        "news": _get_or_build_source_summary(symbol=symbol, scanner_type="news", timeframe=interval),
-                        "institution": _get_or_build_source_summary(symbol=symbol, scanner_type="institution", timeframe=interval),
-                    }
-                    source_summary = {
-                        "posts": int(support_summaries["social"].get("posts") or 0)
-                        + int(support_summaries["news"].get("posts") or 0)
-                        + int(support_summaries["institution"].get("posts") or 0),
-                        "mentions": int(support_summaries["social"].get("mentions") or 0)
-                        + int(support_summaries["news"].get("mentions") or 0)
-                        + int(support_summaries["institution"].get("mentions") or 0),
-                        "positive": int(support_summaries["social"].get("positive") or 0)
-                        + int(support_summaries["news"].get("positive") or 0)
-                        + int(support_summaries["institution"].get("positive") or 0),
-                        "negative": int(support_summaries["social"].get("negative") or 0)
-                        + int(support_summaries["news"].get("negative") or 0)
-                        + int(support_summaries["institution"].get("negative") or 0),
-                        "neutral": int(support_summaries["social"].get("neutral") or 0)
-                        + int(support_summaries["news"].get("neutral") or 0)
-                        + int(support_summaries["institution"].get("neutral") or 0),
-                        "net": int(support_summaries["social"].get("net") or 0)
-                        + int(support_summaries["news"].get("net") or 0)
-                        + int(support_summaries["institution"].get("net") or 0),
-                    }
-
-                item = _to_scanner_discover_item(
-                    tab=tab_value,
-                    base_row=base,
-                    live_row=live_row,
-                    source_summary=source_summary,
-                    support_summaries=support_summaries,
-                )
-                rows.append(item)
-            except Exception:
-                _mark_fail("scan_error")
-            finally:
-                scanned_done += 1
                 if progress_key:
-                    _scanner_update_progress(progress_key, "trade", scanned_done, max(1, total_symbols), run_started)
+                    _scanner_update_progress(progress_key, "quotes", scanned_done, max(1, total_symbols), run_started)
+                continue
+
+            source_summary, support_summaries = _source_data_for_symbol(symbol)
+            quote_price = _as_float_or_none(base.get("price"))
+            provider_used = str(base.get("provider_used") or "")
+            quote_provider = provider_used
+            try:
+                quote_result = get_quote_cached_first(
+                    symbol=symbol,
+                    max_age_seconds=int(cfg.scanner_quote_ttl_seconds),
+                    allow_live=True,
+                    freshness_seconds=60,
+                )
+                quote_last = _as_float_or_none(getattr(quote_result.quote, "last", None))
+                if quote_last is not None and quote_last > 0:
+                    quote_price = quote_last
+                    quote_ok_count += 1
+                quote_provider = quote_result.provider
+            except Exception:
+                _mark_fail("quote_error")
+
+            change_pct_value = _as_float_or_none(base.get("change_pct"))
+            evidence_boost = float(int(source_summary.get("net") or 0) * 1.25)
+            pre_rank = _final_rank_score(
+                base_score=change_pct_value,
+                momentum_gain_score=_momentum_gain_score(change_pct=change_pct_value, volume_boost=evidence_boost),
+            )
+
+            quote_stage_rows.append(
+                {
+                    "base": base,
+                    "symbol": symbol,
+                    "price": quote_price,
+                    "provider": quote_provider or provider_used,
+                    "source_summary": source_summary,
+                    "support_summaries": support_summaries,
+                    "pre_rank": pre_rank,
+                }
+            )
+            scanned_done += 1
+            if progress_key:
+                _scanner_update_progress(progress_key, "quotes", scanned_done, max(1, total_symbols), run_started)
+
+        ranked_quote_rows = sorted(
+            quote_stage_rows,
+            key=lambda x: _as_float_or_none(x.get("pre_rank")) or float("-inf"),
+            reverse=True,
+        )
+        bars_eval_count = min(len(ranked_quote_rows), max(limit_value * 2, bars_top_n))
+        bars_eval_symbols = {str(row.get("symbol") or "").strip().upper() for row in ranked_quote_rows[:bars_eval_count]}
+        bars_done = 0
+        for row_ctx in ranked_quote_rows:
+            symbol = str(row_ctx.get("symbol") or "").strip().upper()
+            base = row_ctx.get("base") if isinstance(row_ctx.get("base"), dict) else {}
+            source_summary = row_ctx.get("source_summary") if isinstance(row_ctx.get("source_summary"), dict) else {}
+            support_summaries = row_ctx.get("support_summaries") if isinstance(row_ctx.get("support_summaries"), dict) else None
+            live_row: Dict[str, Any] = {
+                "symbol": symbol,
+                "price": row_ctx.get("price"),
+                "provider": row_ctx.get("provider"),
+                "provider_used": row_ctx.get("provider"),
+                "timeframe": interval,
+                "action": "HOLD",
+                "recommendation": "HOLD",
+                "confidence": 0.3,
+                "entry_zone": {"low": None, "high": None},
+                "entry_low": None,
+                "entry_high": None,
+                "target": None,
+                "stop": None,
+                "trail": None,
+                "rr": None,
+                "score": _as_float_or_none(base.get("change_pct")),
+                "trend": "neutral",
+                "momentum": "neutral",
+                "short_reason": "Awaiting bar validation",
+            }
+            if symbol in bars_eval_symbols:
+                built_row: Optional[Dict[str, Any]] = None
+                try:
+                    built_row = build_scanner_row(
+                        symbol=symbol,
+                        interval=interval,
+                        bars=bars_value,
+                        allow_live=False,
+                        bars_ttl_seconds=int(cfg.scanner_bars_ttl_seconds),
+                        quote_ttl_seconds=int(cfg.scanner_quote_ttl_seconds),
+                    )
+                except Exception:
+                    try:
+                        built_row = build_scanner_row(
+                            symbol=symbol,
+                            interval=interval,
+                            bars=bars_value,
+                            allow_live=True,
+                            bars_ttl_seconds=int(cfg.scanner_bars_ttl_seconds),
+                            quote_ttl_seconds=int(cfg.scanner_quote_ttl_seconds),
+                        )
+                    except Exception:
+                        _mark_fail("bars_error")
+                if built_row:
+                    live_row = built_row
+                    if _as_float_or_none(live_row.get("target")) is not None or _as_float_or_none(live_row.get("stop")) is not None:
+                        bars_ok_count += 1
+                        trade_ok_count += 1
+                bars_done += 1
+                if progress_key:
+                    _scanner_update_progress(progress_key, "bars", bars_done, max(1, bars_eval_count), run_started)
+
+            if _as_float_or_none(live_row.get("confidence")) is not None:
+                valid_data_count += 1
+            item = _to_scanner_discover_item(
+                tab=tab_value,
+                base_row=base,
+                live_row=live_row,
+                source_summary=source_summary,
+                support_summaries=support_summaries,
+            )
+            rows.append(item)
 
         all_rows.extend(rows)
         market_buys = [item for item in rows if str(item.get("action") or "").upper() == "BUY"]
