@@ -335,6 +335,26 @@ html, body {
   overflow-wrap: anywhere;
 }
 
+.scanner-meta-text {
+  font-size: 11px !important;
+  line-height: 1.25 !important;
+  font-weight: 400 !important;
+  color: rgba(15, 23, 42, 0.62) !important;
+  letter-spacing: 0 !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  text-align: left;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.scanner-meta-text,
+.scanner-meta-text * {
+  font-size: 11px !important;
+  line-height: 1.25 !important;
+  font-weight: 400 !important;
+}
+
 .scanner-panel .scanner-list {
   flex: 1 1 auto;
   min-height: 0;
