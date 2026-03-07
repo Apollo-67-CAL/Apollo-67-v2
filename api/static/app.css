@@ -1752,6 +1752,13 @@ button:active {
   letter-spacing: -0.01em;
 }
 
+.quote-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+
 .signal-score-wrap {
   display: flex;
   justify-content: center;

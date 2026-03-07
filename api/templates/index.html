@@ -165,6 +165,13 @@
               <div class="row"><span class="label">Timestamp</span><span id="quoteTs">-</span></div>
               <div class="row"><span class="label">Provider</span><span id="quoteProvider">-</span></div>
 
+              <div class="quote-actions">
+                <button id="quoteBuyNowBtn" type="button" class="button-ghost scanner-monitor-btn" data-action="buy-now">BUY NOW</button>
+                <button id="quoteWatchBtn" type="button" class="button-ghost scanner-monitor-btn" data-action="quote-watch">WATCH</button>
+                <button id="quoteMonitorBtn" type="button" class="button-ghost scanner-monitor-btn" data-action="scanner-monitor">MONITOR</button>
+                <button id="quoteSourcesBtn" type="button" class="button-ghost scanner-monitor-btn" data-action="scanner-sources">SOURCES</button>
+              </div>
+
               <details class="details">
                 <summary>Raw</summary>
                 <pre id="quoteRaw">{}</pre>
@@ -197,6 +204,16 @@
                   <div id="signalConfidenceBar" class="progress-fill"></div>
                 </div>
               </div>
+
+              <details class="details">
+                <summary>What these mean</summary>
+                <div class="trade-help">
+                  <p><strong>Score:</strong> Overall signal strength from current indicators.</p>
+                  <p><strong>Trend:</strong> Broader directional bias from the signal stack.</p>
+                  <p><strong>Momentum:</strong> Short-term strength or weakness in the move.</p>
+                  <p><strong>Confidence:</strong> How strongly the indicators agree right now.</p>
+                </div>
+              </details>
 
               <details class="details">
                 <summary>Debug</summary>

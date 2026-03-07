@@ -72,6 +72,10 @@ const quoteTs = document.getElementById('quoteTs');
 const quoteProvider = document.getElementById('quoteProvider');
 const quoteRaw = document.getElementById('quoteRaw');
 const quoteError = document.getElementById('quoteError');
+const quoteBuyNowBtn = document.getElementById('quoteBuyNowBtn');
+const quoteWatchBtn = document.getElementById('quoteWatchBtn');
+const quoteMonitorBtn = document.getElementById('quoteMonitorBtn');
+const quoteSourcesBtn = document.getElementById('quoteSourcesBtn');
 
 const signalScore = document.getElementById('signalScore');
 const signalTrend = document.getElementById('signalTrend');
@@ -2250,11 +2254,23 @@ function renderQuote(result, requestedSymbol) {
   const body = result.body || {};
   const quote = body.quote || {};
   const errorMessage = getErrorMessage(result, 'Quote request failed');
+  const resolvedSymbol = normalizeSymbol(body.symbol || requestedSymbol || quote.instrument_id || getSymbol());
+  const quoteLastNum = Number(quote.last);
+  const hasQuotePrice = Number.isFinite(quoteLastNum);
 
   displayError(quoteError, errorMessage);
 
+  if (quoteBuyNowBtn) quoteBuyNowBtn.dataset.symbol = resolvedSymbol;
+  if (quoteWatchBtn) quoteWatchBtn.dataset.symbol = resolvedSymbol;
+  if (quoteMonitorBtn) {
+    quoteMonitorBtn.dataset.symbol = resolvedSymbol;
+    if (hasQuotePrice) quoteMonitorBtn.dataset.price = String(quoteLastNum);
+    else delete quoteMonitorBtn.dataset.price;
+  }
+  if (quoteSourcesBtn) quoteSourcesBtn.dataset.symbol = resolvedSymbol;
+
   if (!result.ok) {
-    quoteSymbol.textContent = requestedSymbol;
+    quoteSymbol.textContent = resolvedSymbol || requestedSymbol;
     quoteLast.textContent = '-';
     quoteTs.textContent = '-';
     quoteProvider.textContent = body.provider || 'twelvedata';
@@ -2262,7 +2278,7 @@ function renderQuote(result, requestedSymbol) {
     return;
   }
 
-  quoteSymbol.textContent = body.symbol || requestedSymbol || quote.instrument_id || '-';
+  quoteSymbol.textContent = resolvedSymbol || '-';
   quoteLast.textContent = quote.last != null ? String(quote.last) : '-';
   quoteTs.textContent = quote.ts_event || quote.ts_ingest || '-';
   quoteProvider.textContent = quote.source_provider || body.provider || 'twelvedata';
@@ -3843,6 +3859,22 @@ document.addEventListener('click', (event) => {
       button: watchlistBuy,
       defaultAmount: state.paperLastAmountUsd || PAPER_DEFAULT_AMOUNT,
     });
+    return;
+  }
+
+  const quoteWatch = event.target.closest('[data-action="quote-watch"]');
+  if (quoteWatch) {
+    const symbol = normalizeSymbol(quoteWatch.dataset.symbol || getSymbol());
+    if (symbol) {
+      if (!state.watchlist.includes(symbol)) {
+        state.watchlist.push(symbol);
+        saveWatchlist();
+        renderWatchlist();
+        setInlineButtonFeedback(quoteWatch, `Added ${symbol} to Watchlist`, false);
+      } else {
+        setInlineButtonFeedback(quoteWatch, `${symbol} already in Watchlist`, false);
+      }
+    }
     return;
   }
 
