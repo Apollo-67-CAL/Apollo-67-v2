@@ -55,12 +55,14 @@
               </div>
             </summary>
             <div id="scannerStatusRow" class="scanner-status-row">
-              <span id="scannerStatusPill" class="pill">Idle</span>
-              <div id="scannerProgressTrack" class="scanner-progress-track" aria-label="Scanner progress">
-                <div id="scannerProgressFill" class="scanner-progress-fill" style="width:0%;"></div>
+              <div class="scanner-status-main">
+                <span id="scannerStatusPill" class="pill">Idle</span>
+                <div id="scannerProgressTrack" class="scanner-progress-track" aria-label="Scanner progress">
+                  <div id="scannerProgressFill" class="scanner-progress-fill" style="width:0%;"></div>
+                </div>
+                <button id="scannerStatusRefreshBtn" type="button" class="button-ghost scanner-status-refresh">Refresh</button>
               </div>
-              <span id="scannerStatusMeta" class="muted">Waiting</span>
-              <button id="scannerStatusRefreshBtn" type="button" class="button-ghost scanner-status-refresh">Refresh</button>
+              <div id="scannerStatusMeta" class="scanner-meta-row muted">Waiting</div>
             </div>
             <div id="scannerList" class="symbol-list scanner-list"></div>
           </details>
