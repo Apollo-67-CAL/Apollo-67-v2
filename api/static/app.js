@@ -61,6 +61,14 @@ const paperSummary = document.getElementById('paperSummary');
 const paperPositionsBody = document.getElementById('paperPositionsBody');
 const paperClosedBody = document.getElementById('paperClosedBody');
 const paperRunsBody = document.getElementById('paperRunsBody');
+const portfolioManagerRefreshBtn = document.getElementById('portfolioManagerRefreshBtn');
+const portfolioManagerError = document.getElementById('portfolioManagerError');
+const portfolioManagerSummary = document.getElementById('portfolioManagerSummary');
+const portfolioManagerHoldingsBody = document.getElementById('portfolioManagerHoldingsBody');
+const portfolioManagerOppsBody = document.getElementById('portfolioManagerOppsBody');
+const portfolioManagerRecsBody = document.getElementById('portfolioManagerRecsBody');
+const portfolioManagerReviewBtn = document.getElementById('portfolioManagerReviewBtn');
+const portfolioManagerExecuteBtn = document.getElementById('portfolioManagerExecuteBtn');
 const scannerLoading = document.getElementById('scannerLoading');
 const watchlistLoading = document.getElementById('watchlistLoading');
 const monitorLoading = document.getElementById('monitorLoading');
@@ -223,6 +231,8 @@ const state = {
   paperRecentOrders: [],
   paperStrategies: [],
   paperLastAmountUsd: PAPER_DEFAULT_AMOUNT,
+  portfolioManager: null,
+  portfolioManagerError: '',
 };
 
 const chartOverlayPlugin = {
@@ -1575,6 +1585,23 @@ async function refreshPaperTrading() {
     ? ordersResult.body.rows
     : [];
   renderPaperTrading();
+  await refreshPortfolioManager();
+}
+
+async function refreshPortfolioManager() {
+  if (!portfolioManagerSummary || !portfolioManagerHoldingsBody || !portfolioManagerOppsBody || !portfolioManagerRecsBody) {
+    return;
+  }
+  const result = await fetchJsonWithTimeout('/portfolio/analysis?limit=20', undefined, 7000);
+  if (!result.ok || !result.body?.ok) {
+    state.portfolioManager = null;
+    state.portfolioManagerError = getErrorMessage(result, 'Portfolio manager unavailable');
+    renderPortfolioManager();
+    return;
+  }
+  state.portfolioManager = result.body;
+  state.portfolioManagerError = '';
+  renderPortfolioManager();
 }
 
 function addMonitorFromCurrentTrade() {
@@ -3783,12 +3810,71 @@ function renderPaperTrading() {
     : '<tr><td colspan="5" class="empty">No runs yet.</td></tr>';
 }
 
+function renderPortfolioManager() {
+  if (!portfolioManagerSummary || !portfolioManagerHoldingsBody || !portfolioManagerOppsBody || !portfolioManagerRecsBody) return;
+  const payload = state.portfolioManager && typeof state.portfolioManager === 'object' ? state.portfolioManager : {};
+  const portfolioState = payload.portfolio_state && typeof payload.portfolio_state === 'object' ? payload.portfolio_state : {};
+  const holdings = Array.isArray(payload.open_positions_rankings) ? payload.open_positions_rankings : [];
+  const opps = Array.isArray(payload.new_opportunity_rankings) ? payload.new_opportunity_rankings : [];
+  const recs = Array.isArray(payload.recommendations) ? payload.recommendations : [];
+  const errorText = String(state.portfolioManagerError || '').trim();
+
+  if (portfolioManagerError) {
+    portfolioManagerError.hidden = !errorText;
+    portfolioManagerError.textContent = errorText || '';
+  }
+
+  portfolioManagerSummary.innerHTML = `
+    <div class="monitor-total-item"><span>Cash</span><strong>$${formatPrice(Number(portfolioState.cash_available || 0))}</strong></div>
+    <div class="monitor-total-item"><span>Equity</span><strong>$${formatPrice(Number(portfolioState.equity || 0))}</strong></div>
+    <div class="monitor-total-item"><span>Open</span><strong>${Number(portfolioState.open_positions_count || 0)}</strong></div>
+    <div class="monitor-total-item"><span>Scanner Rows</span><strong>${Number(payload.scanner_rows_used || 0)}</strong></div>
+  `;
+
+  portfolioManagerHoldingsBody.innerHTML = holdings.length
+    ? holdings.slice(0, 20).map((row) => `
+      <tr>
+        <td>${escapeHtml(String(row.symbol || '-'))}</td>
+        <td>${formatPrice(Number(row.holding_quality_score || 0))}</td>
+        <td>${escapeHtml(String(row.action_bias || '-'))}</td>
+        <td>${escapeHtml(String((Array.isArray(row.reasons) ? row.reasons[0] : row.reason) || '-'))}</td>
+      </tr>
+    `).join('')
+    : '<tr><td colspan="4" class="empty">No open positions ranked.</td></tr>';
+
+  portfolioManagerOppsBody.innerHTML = opps.length
+    ? opps.slice(0, 20).map((row) => `
+      <tr>
+        <td>${escapeHtml(String(row.symbol || '-'))}</td>
+        <td>${formatPrice(Number(row.opportunity_score || 0))}</td>
+        <td>${escapeHtml(String(row.quality_tier || '-'))}</td>
+        <td>${escapeHtml(String(row.action_bias || '-'))}</td>
+        <td>${escapeHtml(String((Array.isArray(row.reasons) ? row.reasons[0] : row.reason) || '-'))}</td>
+      </tr>
+    `).join('')
+    : '<tr><td colspan="5" class="empty">No opportunity rankings available.</td></tr>';
+
+  portfolioManagerRecsBody.innerHTML = recs.length
+    ? recs.slice(0, 25).map((row) => `
+      <tr>
+        <td>${escapeHtml(String(row.action || '-'))}</td>
+        <td>${escapeHtml(String(row.symbol || '-'))}</td>
+        <td>${escapeHtml(String(row.other_symbol || '—'))}</td>
+        <td>${row.amount_usd != null ? `$${formatPrice(Number(row.amount_usd || 0))}` : '—'}</td>
+        <td>${formatPct((Number(row.confidence || 0) * 100))}</td>
+        <td>${escapeHtml(String(row.reason || '-'))}</td>
+      </tr>
+    `).join('')
+    : '<tr><td colspan="6" class="empty">No recommendations yet.</td></tr>';
+}
+
 function renderPanels() {
   renderScanner();
   renderWatchlist();
   renderMonitor();
   renderPortfolio();
   renderPaperTrading();
+  renderPortfolioManager();
 }
 
 async function selectSymbol(symbol, { force = false } = {}) {
@@ -3905,6 +3991,50 @@ if (monitorRefreshBtn) {
 if (paperRefreshBtn) {
   paperRefreshBtn.addEventListener('click', () => {
     refreshPaperTrading();
+  });
+}
+
+if (portfolioManagerRefreshBtn) {
+  portfolioManagerRefreshBtn.addEventListener('click', () => {
+    refreshPortfolioManager();
+  });
+}
+
+if (portfolioManagerReviewBtn) {
+  portfolioManagerReviewBtn.addEventListener('click', async () => {
+    portfolioManagerReviewBtn.disabled = true;
+    const prev = portfolioManagerReviewBtn.textContent || 'Review';
+    portfolioManagerReviewBtn.textContent = 'Refreshing...';
+    try {
+      await refreshPortfolioManager();
+      setInlineButtonFeedback(portfolioManagerReviewBtn, 'Recommendations refreshed', false);
+    } finally {
+      portfolioManagerReviewBtn.disabled = false;
+      portfolioManagerReviewBtn.textContent = prev;
+    }
+  });
+}
+
+if (portfolioManagerExecuteBtn) {
+  portfolioManagerExecuteBtn.addEventListener('click', async () => {
+    portfolioManagerExecuteBtn.disabled = true;
+    const prev = portfolioManagerExecuteBtn.textContent || 'Execute in Paper';
+    portfolioManagerExecuteBtn.textContent = 'Checking...';
+    try {
+      const result = await fetchJsonWithTimeout('/portfolio/recommendations/execute', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mode: 'manual_review' }),
+      }, 5000);
+      if (!result.ok || !result.body?.ok) {
+        setInlineButtonFeedback(portfolioManagerExecuteBtn, getErrorMessage(result, 'Execution disabled'), true);
+      } else {
+        setInlineButtonFeedback(portfolioManagerExecuteBtn, 'Execution request accepted', false);
+      }
+    } finally {
+      portfolioManagerExecuteBtn.disabled = false;
+      portfolioManagerExecuteBtn.textContent = prev;
+    }
   });
 }
 

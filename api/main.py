@@ -38,6 +38,7 @@ from app.scanner.evidence import (
     compute_evidence_score,
     get_symbol_evidence,
 )
+from app.portfolio.manager import build_portfolio_recommendations
 from app.validation.market_data import ValidationError, validate_bars
 from core.config import get_config, initialise_config
 from core.repositories.curated_datasets import CuratedDatasetsRepository
@@ -4575,6 +4576,125 @@ def _paper_symbol_from_position_id(position_id: str) -> str:
     return str(position_id or "").strip().upper()
 
 
+def _portfolio_config_defaults() -> Dict[str, Any]:
+    paper_cfg = _paper_config()
+    return {
+        "max_positions": max(1, int(os.getenv("PORTFOLIO_MAX_POSITIONS", str(paper_cfg.get("max_positions") or 8)))),
+        "max_position_pct": max(0.05, min(1.0, float(os.getenv("PORTFOLIO_MAX_POSITION_PCT", "0.20")))),
+        "min_trade_amount": max(50.0, float(os.getenv("PORTFOLIO_MIN_TRADE_AMOUNT", "500"))),
+        "default_trade_amount": max(100.0, float(os.getenv("PORTFOLIO_DEFAULT_TRADE_AMOUNT", "1000"))),
+        "add_to_winner_amount": max(100.0, float(os.getenv("PORTFOLIO_ADD_TO_WINNER_AMOUNT", "750"))),
+        "rotate_margin": max(1.0, float(os.getenv("PORTFOLIO_ROTATE_MARGIN", "10"))),
+    }
+
+
+def _safe_iso_ts(value: Any) -> datetime:
+    raw = str(value or "").strip()
+    if not raw:
+        return datetime.fromtimestamp(0, tz=timezone.utc)
+    try:
+        return datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except Exception:
+        return datetime.fromtimestamp(0, tz=timezone.utc)
+
+
+def _latest_scanner_rows(limit: int = 120) -> List[Dict[str, Any]]:
+    with _SCANNER_RUN_LOCK:
+        all_payloads = [dict(v or {}) for v in _SCANNER_RUN_RESULTS.values()]
+    if not all_payloads:
+        return []
+    preferred = None
+    for payload in all_payloads:
+        if str(payload.get("tab") or "").lower() == "overall" and str(payload.get("market") or "").upper() == "ALL":
+            preferred = payload
+            break
+    if preferred is None:
+        preferred = max(all_payloads, key=lambda p: _safe_iso_ts(p.get("updated_at")))
+    payload = preferred or {}
+
+    rows: List[Dict[str, Any]] = []
+    for key in (
+        "confirmed_buy_opportunities",
+        "candidate_buy_opportunities",
+        "watch_candidates",
+        "candidates_top",
+        "buy_opportunities",
+    ):
+        value = payload.get(key)
+        if isinstance(value, list):
+            rows.extend([row for row in value if isinstance(row, dict)])
+    segments = payload.get("segments") if isinstance(payload.get("segments"), dict) else {}
+    segment_small = segments.get("small")
+    if isinstance(segment_small, list):
+        rows.extend([row for row in segment_small if isinstance(row, dict)])
+
+    deduped: List[Dict[str, Any]] = []
+    seen: set[str] = set()
+    for row in rows:
+        sym = str(row.get("symbol") or "").strip().upper()
+        if not sym or sym in seen:
+            continue
+        seen.add(sym)
+        deduped.append(row)
+        if len(deduped) >= max(20, int(limit)):
+            break
+    return deduped
+
+
+def _paper_portfolio_state_snapshot(positions_rows: List[Dict[str, Any]]) -> Dict[str, Any]:
+    all_orders = _paper_repo.list_orders(limit=5000)
+    starting_cash = float(os.getenv("PAPER_STARTING_CASH") or 100000.0)
+    cash_delta = 0.0
+    for row in all_orders:
+        try:
+            notional = float(row.get("notional") or 0.0)
+            side = str(row.get("side") or "").upper()
+            if side == "BUY":
+                cash_delta -= notional
+            elif side == "SELL":
+                cash_delta += notional
+        except Exception:
+            continue
+    cash_available = starting_cash + cash_delta
+    equity = cash_available + sum(float(r.get("last_price") or 0.0) * float(r.get("qty") or 0.0) for r in positions_rows)
+    return {
+        "starting_cash": starting_cash,
+        "cash_available": cash_available,
+        "equity": equity,
+        "open_positions_count": len(positions_rows),
+    }
+
+
+def _portfolio_analysis_payload(limit: int = 20) -> Dict[str, Any]:
+    safe_limit = max(5, min(int(limit), 100))
+    positions_rows = _paper_repo.list_positions(limit=2000)
+    positions_view = [_paper_position_view(row) for row in positions_rows]
+    scanner_rows = _latest_scanner_rows(limit=max(40, safe_limit * 4))
+    portfolio_state = _paper_portfolio_state_snapshot(positions_rows)
+    config = _portfolio_config_defaults()
+    analysis = build_portfolio_recommendations(
+        open_positions=positions_view,
+        scanner_results=scanner_rows,
+        portfolio_state=portfolio_state,
+        config=config,
+    )
+    return {
+        "ok": True,
+        "generated_at": _utc_iso_now(),
+        "portfolio_state": {
+            **portfolio_state,
+            "max_positions": config.get("max_positions"),
+            "max_position_pct": config.get("max_position_pct"),
+        },
+        "scanner_rows_used": len(scanner_rows),
+        "open_positions_rankings": list(analysis.get("open_position_rankings") or [])[:safe_limit],
+        "new_opportunity_rankings": list(analysis.get("new_opportunity_rankings") or [])[:safe_limit],
+        "rotation_candidates": list(analysis.get("rotation_candidates") or [])[:safe_limit],
+        "recommendations": list(analysis.get("recommendations") or [])[:safe_limit],
+        "config_used": analysis.get("config_used") if isinstance(analysis.get("config_used"), dict) else config,
+    }
+
+
 def _paper_submit_order(payload: Dict[str, Any]) -> Tuple[Optional[Dict[str, Any]], Optional[str], int]:
     side = str(payload.get("side") or "BUY").strip().upper()
     symbol = str(payload.get("symbol") or "").strip().upper()
@@ -4840,6 +4960,53 @@ def paper_status():
         )
     except Exception as exc:
         return JSONResponse(status_code=500, content={"ok": False, "error": str(exc)})
+
+
+@app.get("/portfolio/analysis")
+def portfolio_analysis(limit: int = 20):
+    try:
+        payload = _portfolio_analysis_payload(limit=limit)
+        return JSONResponse(status_code=200, content=payload)
+    except Exception as exc:
+        return JSONResponse(status_code=500, content={"ok": False, "error": str(exc)})
+
+
+@app.get("/portfolio/recommendations")
+def portfolio_recommendations(limit: int = 20):
+    try:
+        payload = _portfolio_analysis_payload(limit=limit)
+        return JSONResponse(
+            status_code=200,
+            content={
+                "ok": True,
+                "generated_at": payload.get("generated_at"),
+                "portfolio_state": payload.get("portfolio_state"),
+                "recommendations": payload.get("recommendations") if isinstance(payload.get("recommendations"), list) else [],
+            },
+        )
+    except Exception as exc:
+        return JSONResponse(status_code=500, content={"ok": False, "error": str(exc)})
+
+
+@app.post("/portfolio/recommendations/execute")
+def portfolio_recommendations_execute(payload: Optional[Dict[str, Any]] = None):
+    enabled = str(os.getenv("PORTFOLIO_EXECUTE_ENABLED", "0")).strip().lower() in {"1", "true", "yes", "on"}
+    if not enabled:
+        return JSONResponse(
+            status_code=400,
+            content={
+                "ok": False,
+                "error": "Portfolio execution is disabled. Recommendations are review-only by default.",
+            },
+        )
+    return JSONResponse(
+        status_code=501,
+        content={
+            "ok": False,
+            "error": "Execution pipeline is not enabled in this build.",
+            "payload": payload if isinstance(payload, dict) else {},
+        },
+    )
 
 
 @app.get("/paper/positions")

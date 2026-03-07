@@ -1088,6 +1088,13 @@ h2 {
   flex-wrap: wrap;
 }
 
+.portfolio-manager-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 10px;
+}
+
 .field-group-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));

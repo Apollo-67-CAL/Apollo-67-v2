@@ -360,6 +360,72 @@
             </div>
           </details>
         </section>
+
+        <section class="card">
+          <div class="panel-head">
+            <h2>Portfolio Manager</h2>
+            <div class="scanner-controls">
+              <button id="portfolioManagerRefreshBtn" type="button" class="button-ghost">Refresh</button>
+            </div>
+          </div>
+          <div id="portfolioManagerError" class="panel-error" hidden></div>
+          <div id="portfolioManagerSummary" class="monitor-totals"></div>
+          <details class="details" open>
+            <summary>Held Positions Ranking</summary>
+            <div class="scanner-sources-list">
+              <table class="source-table">
+                <thead>
+                  <tr>
+                    <th>Symbol</th>
+                    <th>Quality</th>
+                    <th>Bias</th>
+                    <th>Reason</th>
+                  </tr>
+                </thead>
+                <tbody id="portfolioManagerHoldingsBody"></tbody>
+              </table>
+            </div>
+          </details>
+          <details class="details" open>
+            <summary>New Opportunities Ranking</summary>
+            <div class="scanner-sources-list">
+              <table class="source-table">
+                <thead>
+                  <tr>
+                    <th>Symbol</th>
+                    <th>Score</th>
+                    <th>Tier</th>
+                    <th>Bias</th>
+                    <th>Reason</th>
+                  </tr>
+                </thead>
+                <tbody id="portfolioManagerOppsBody"></tbody>
+              </table>
+            </div>
+          </details>
+          <details class="details" open>
+            <summary>Recommendations</summary>
+            <div class="scanner-sources-list">
+              <table class="source-table">
+                <thead>
+                  <tr>
+                    <th>Action</th>
+                    <th>Symbol</th>
+                    <th>Other</th>
+                    <th>Amount</th>
+                    <th>Confidence</th>
+                    <th>Reason</th>
+                  </tr>
+                </thead>
+                <tbody id="portfolioManagerRecsBody"></tbody>
+              </table>
+            </div>
+            <div class="portfolio-manager-actions">
+              <button id="portfolioManagerReviewBtn" type="button" class="button-ghost">Review</button>
+              <button id="portfolioManagerExecuteBtn" type="button" class="button-ghost">Execute in Paper</button>
+            </div>
+          </details>
+        </section>
       </section>
     </section>
   </main>
