@@ -1914,6 +1914,7 @@ def _scanner_discover_payload(
     markets_to_scan = ["US", "AU"] if market_value == "ALL" else [market_value]
     segments = {"large": [], "mid": [], "small": []}
     cfg = get_config()
+    thresholds_used = _scanner_threshold_defaults()
     live_sources_enabled = str(os.getenv("SCANNER_LIVE_SOURCES", "0")).strip().lower() in {"1", "true", "yes", "on"}
     scan_universe_per_market = max(80, min(int(os.getenv("SCANNER_DISCOVERY_UNIVERSE_PER_MARKET", "240")), 500))
     stage1_top_per_market = max(limit_value, min(int(os.getenv("SCANNER_STAGE1_TOP_PER_MARKET", "30")), 60))
@@ -2037,6 +2038,7 @@ def _scanner_discover_payload(
                 "evidence_enabled": bool(evidence_enabled),
                 "evidence_lookup_count": int(evidence_lookup_count),
                 "evidence_hit_count": int(evidence_hit_count),
+                "thresholds_used": thresholds_used,
                 "valid_data_rate": valid_data_rate_partial,
                 "quote_first_mode": quote_first_mode_partial,
                 "fail_reason_counts": fail_reason_counts,
@@ -2511,6 +2513,7 @@ def _scanner_discover_payload(
         "evidence_enabled": bool(evidence_enabled),
         "evidence_lookup_count": int(evidence_lookup_count),
         "evidence_hit_count": int(evidence_hit_count),
+        "thresholds_used": thresholds_used,
         "valid_data_rate": valid_data_rate,
         "quote_first_mode": quote_first_mode,
         "fail_reason_counts": fail_reason_counts,
@@ -2619,6 +2622,7 @@ async def scanner_run(payload: Dict[str, Any]):
         "evidence_enabled": True,
         "evidence_lookup_count": 0,
         "evidence_hit_count": 0,
+        "thresholds_used": _scanner_threshold_defaults(),
         "valid_data_rate": 0.0,
         "quote_first_mode": False,
         "fail_reason_counts": {},
@@ -2718,6 +2722,7 @@ def scanner_status(
             "evidence_enabled": True,
             "evidence_lookup_count": 0,
             "evidence_hit_count": 0,
+            "thresholds_used": _scanner_threshold_defaults(),
             "valid_data_rate": 0.0,
             "quote_first_mode": False,
             "fail_reason_counts": {},
@@ -2778,6 +2783,7 @@ def scanner_debug(
         "evidence_enabled": bool(payload.get("evidence_enabled", True)),
         "evidence_lookup_count": int(payload.get("evidence_lookup_count") or 0),
         "evidence_hit_count": int(payload.get("evidence_hit_count") or 0),
+        "thresholds_used": payload.get("thresholds_used") if isinstance(payload.get("thresholds_used"), dict) else _scanner_threshold_defaults(),
         "valid_data_rate": float(payload.get("valid_data_rate") or 0.0),
         "quote_first_mode": bool(payload.get("quote_first_mode")),
         "holding_back_breakdown": payload.get("holding_back_breakdown") if isinstance(payload.get("holding_back_breakdown"), dict) else {},
@@ -3189,82 +3195,267 @@ def _signal_basis(technical_score: Optional[float], evidence_score_raw: float) -
     return "technical_only"
 
 
-def resolve_final_action(candidate: Dict[str, Any], trade_result: Dict[str, Any], evidence_state: str) -> Dict[str, Any]:
+def _scanner_threshold_defaults() -> Dict[str, float]:
+    return {
+        "buy_score_threshold": float(os.getenv("SCANNER_BUY_SCORE_THRESHOLD", "55")),
+        "buy_conf_threshold": float(os.getenv("SCANNER_BUY_CONF_THRESHOLD", "0.55")),
+        "watch_score_threshold": float(os.getenv("SCANNER_WATCH_SCORE_THRESHOLD", "35")),
+        "watch_conf_threshold": float(os.getenv("SCANNER_WATCH_CONF_THRESHOLD", "0.40")),
+        "candidate_score_threshold": float(os.getenv("SCANNER_CANDIDATE_SCORE_THRESHOLD", "4")),
+        "candidate_conf_threshold": float(os.getenv("SCANNER_CANDIDATE_CONF_THRESHOLD", "0.25")),
+        "evidence_promotion_weight": float(os.getenv("SCANNER_EVIDENCE_PROMOTION_WEIGHT", "0.75")),
+        "buy_score_threshold_with_evidence": float(os.getenv("SCANNER_BUY_SCORE_THRESHOLD_EVIDENCE", "52")),
+        "buy_conf_threshold_with_evidence": float(os.getenv("SCANNER_BUY_CONF_THRESHOLD_EVIDENCE", "0.52")),
+        "strong_buy_score_floor": float(os.getenv("SCANNER_STRONG_BUY_SCORE_FLOOR", "60")),
+        "strong_buy_conf_floor": float(os.getenv("SCANNER_STRONG_BUY_CONF_FLOOR", "0.60")),
+    }
+
+
+def _effective_thresholds(signal_basis: str, thresholds: Dict[str, float]) -> Dict[str, float]:
+    effective = dict(thresholds or {})
+    if str(signal_basis or "").strip().lower() == "technical_plus_evidence":
+        effective["buy_score_threshold"] = float(effective.get("buy_score_threshold_with_evidence") or effective.get("buy_score_threshold") or 55.0)
+        effective["buy_conf_threshold"] = float(effective.get("buy_conf_threshold_with_evidence") or effective.get("buy_conf_threshold") or 0.55)
+    return effective
+
+
+def promote_scanner_result(
+    candidate: Dict[str, Any],
+    trade_result: Dict[str, Any],
+    evidence_state: str,
+    signal_basis: str,
+    thresholds: Dict[str, float],
+    evidence_score_raw: float,
+) -> Dict[str, Any]:
     bars_confirmed = bool(candidate.get("bars_confirmed"))
     technical_action = str(candidate.get("technical_action") or trade_result.get("action") or "HOLD").strip().upper()
     score_val = _as_float_or_none(candidate.get("score"))
     confidence_val = _as_float_or_none(candidate.get("confidence")) or 0.0
-    buy_conf_threshold = float(os.getenv("SCANNER_CONFIRM_BUY_MIN_CONFIDENCE", "0.55"))
-    buy_score_threshold = float(os.getenv("SCANNER_CONFIRM_BUY_MIN_SCORE", "55"))
+    effective = _effective_thresholds(signal_basis=signal_basis, thresholds=thresholds)
+
+    buy_score_threshold = float(effective.get("buy_score_threshold") or 55.0)
+    buy_conf_threshold = float(effective.get("buy_conf_threshold") or 0.55)
+    watch_score_threshold = float(effective.get("watch_score_threshold") or 35.0)
+    watch_conf_threshold = float(effective.get("watch_conf_threshold") or 0.40)
+    candidate_score_threshold = float(effective.get("candidate_score_threshold") or 4.0)
+    candidate_conf_threshold = float(effective.get("candidate_conf_threshold") or 0.25)
+    strong_buy_score_floor = float(effective.get("strong_buy_score_floor") or 60.0)
+    strong_buy_conf_floor = float(effective.get("strong_buy_conf_floor") or 0.60)
+    evidence_promotion_weight = float(effective.get("evidence_promotion_weight") or 0.75)
+
+    effective_score = (float(score_val) if score_val is not None else 0.0) + (float(evidence_score_raw or 0.0) * evidence_promotion_weight)
 
     if not bars_confirmed:
-        return {
-            "action": "BUY_CANDIDATE",
-            "stage": "candidate",
-            "holding_back_reason": "bars_unavailable",
-            "explanation": "Opportunity detected, awaiting bar confirmation.",
-            "final_action_source": "bars_missing",
-        }
-
-    if technical_action == "BUY":
-        if confidence_val >= buy_conf_threshold or (score_val is not None and score_val >= buy_score_threshold):
+        if effective_score >= candidate_score_threshold or confidence_val >= candidate_conf_threshold:
             return {
-                "action": "BUY",
-                "stage": "confirmed",
-                "holding_back_reason": None,
-                "explanation": "Bar-confirmed BUY setup from trade signal.",
-                "final_action_source": "trade_signal",
+                "action": "BUY_CANDIDATE",
+                "stage": "candidate",
+                "holding_back_reason": "bars_unavailable",
+                "explanation": "Opportunity detected, awaiting bar confirmation.",
+                "final_action_source": "bars_missing",
+                "promotion_reason": "quote_first_candidate",
+                "demotion_reason": None,
+                "thresholds_used": {
+                    "buy_score_threshold": buy_score_threshold,
+                    "buy_conf_threshold": buy_conf_threshold,
+                    "watch_score_threshold": watch_score_threshold,
+                    "watch_conf_threshold": watch_conf_threshold,
+                    "candidate_score_threshold": candidate_score_threshold,
+                    "candidate_conf_threshold": candidate_conf_threshold,
+                    "effective_score": effective_score,
+                },
             }
-        reason = (
-            "evidence_unavailable"
-            if evidence_state == "evidence_unavailable"
-            else ("confidence_below_threshold" if confidence_val < buy_conf_threshold else "score_below_threshold")
-        )
         return {
-            "action": "BUY_CANDIDATE",
-            "stage": "candidate",
-            "holding_back_reason": reason,
-            "explanation": "Trade setup is BUY but confirmation thresholds are not fully met yet.",
-            "final_action_source": "trade_signal_thresholds",
-        }
-
-    if technical_action == "HOLD":
-        reason = (
-            "evidence_unavailable"
-            if evidence_state == "evidence_unavailable"
-            else ("confidence_below_threshold" if confidence_val < buy_conf_threshold else "score_below_threshold")
-        )
-        return {
-            "action": "WATCHLIST_CANDIDATE",
-            "stage": "confirmed_watch",
-            "holding_back_reason": reason,
-            "explanation": "Trade signal is HOLD; keep on watchlist, not a BUY candidate.",
-            "final_action_source": "trade_signal_hold",
+            "action": "REJECTED",
+            "stage": "rejected",
+            "holding_back_reason": "insufficient_preconfirm_strength",
+            "explanation": "Pre-confirmation signal is too weak to surface as candidate.",
+            "final_action_source": "bars_missing_weak",
+            "promotion_reason": None,
+            "demotion_reason": "insufficient_preconfirm_strength",
+            "thresholds_used": {
+                "buy_score_threshold": buy_score_threshold,
+                "buy_conf_threshold": buy_conf_threshold,
+                "watch_score_threshold": watch_score_threshold,
+                "watch_conf_threshold": watch_conf_threshold,
+                "candidate_score_threshold": candidate_score_threshold,
+                "candidate_conf_threshold": candidate_conf_threshold,
+                "effective_score": effective_score,
+            },
         }
 
     if technical_action == "SELL":
-        if score_val is not None and score_val >= buy_score_threshold:
-            return {
-                "action": "WATCHLIST_CANDIDATE",
-                "stage": "confirmed_watch",
-                "holding_back_reason": "technical_sell_signal",
-                "explanation": "Trade signal is SELL despite elevated score; watch only.",
-                "final_action_source": "trade_signal_sell_watch",
-            }
         return {
             "action": "REJECTED",
             "stage": "rejected",
             "holding_back_reason": "technical_sell_signal",
             "explanation": "Trade signal is SELL; excluded from buy opportunities.",
             "final_action_source": "trade_signal_sell_rejected",
+            "promotion_reason": None,
+            "demotion_reason": "technical_sell_signal",
+            "thresholds_used": {
+                "buy_score_threshold": buy_score_threshold,
+                "buy_conf_threshold": buy_conf_threshold,
+                "watch_score_threshold": watch_score_threshold,
+                "watch_conf_threshold": watch_conf_threshold,
+                "candidate_score_threshold": candidate_score_threshold,
+                "candidate_conf_threshold": candidate_conf_threshold,
+                "effective_score": effective_score,
+            },
+        }
+
+    if technical_action == "BUY":
+        if (score_val is not None and score_val >= strong_buy_score_floor and confidence_val >= strong_buy_conf_floor):
+            return {
+                "action": "BUY",
+                "stage": "confirmed",
+                "holding_back_reason": None,
+                "explanation": "Bar-confirmed BUY setup with strong technical alignment.",
+                "final_action_source": "strong_technical_buy_override",
+                "promotion_reason": "strong_technical_buy_override",
+                "demotion_reason": None,
+                "thresholds_used": {
+                    "buy_score_threshold": buy_score_threshold,
+                    "buy_conf_threshold": buy_conf_threshold,
+                    "watch_score_threshold": watch_score_threshold,
+                    "watch_conf_threshold": watch_conf_threshold,
+                    "candidate_score_threshold": candidate_score_threshold,
+                    "candidate_conf_threshold": candidate_conf_threshold,
+                    "effective_score": effective_score,
+                },
+            }
+        if (score_val is not None and effective_score >= buy_score_threshold and confidence_val >= buy_conf_threshold):
+            return {
+                "action": "BUY",
+                "stage": "confirmed",
+                "holding_back_reason": None,
+                "explanation": "Bar-confirmed BUY setup from trade signal.",
+                "final_action_source": "trade_signal_buy",
+                "promotion_reason": "thresholds_met_buy",
+                "demotion_reason": None,
+                "thresholds_used": {
+                    "buy_score_threshold": buy_score_threshold,
+                    "buy_conf_threshold": buy_conf_threshold,
+                    "watch_score_threshold": watch_score_threshold,
+                    "watch_conf_threshold": watch_conf_threshold,
+                    "candidate_score_threshold": candidate_score_threshold,
+                    "candidate_conf_threshold": candidate_conf_threshold,
+                    "effective_score": effective_score,
+                },
+            }
+        if effective_score >= watch_score_threshold or confidence_val >= watch_conf_threshold:
+            return {
+                "action": "WATCHLIST_CANDIDATE",
+                "stage": "confirmed_watch",
+                "holding_back_reason": "below_buy_threshold",
+                "explanation": "Trade setup is BUY but below final BUY thresholds; keep on watch.",
+                "final_action_source": "trade_signal_buy_watch",
+                "promotion_reason": None,
+                "demotion_reason": "below_buy_threshold",
+                "thresholds_used": {
+                    "buy_score_threshold": buy_score_threshold,
+                    "buy_conf_threshold": buy_conf_threshold,
+                    "watch_score_threshold": watch_score_threshold,
+                    "watch_conf_threshold": watch_conf_threshold,
+                    "candidate_score_threshold": candidate_score_threshold,
+                    "candidate_conf_threshold": candidate_conf_threshold,
+                    "effective_score": effective_score,
+                },
+            }
+        return {
+            "action": "BUY_CANDIDATE",
+            "stage": "candidate",
+            "holding_back_reason": "confirmation_incomplete",
+            "explanation": "Trade setup is BUY but confirmation remains incomplete.",
+            "final_action_source": "trade_signal_buy_candidate",
+            "promotion_reason": None,
+            "demotion_reason": "confirmation_incomplete",
+            "thresholds_used": {
+                "buy_score_threshold": buy_score_threshold,
+                "buy_conf_threshold": buy_conf_threshold,
+                "watch_score_threshold": watch_score_threshold,
+                "watch_conf_threshold": watch_conf_threshold,
+                "candidate_score_threshold": candidate_score_threshold,
+                "candidate_conf_threshold": candidate_conf_threshold,
+                "effective_score": effective_score,
+            },
+        }
+
+    if technical_action == "HOLD":
+        if effective_score >= watch_score_threshold or confidence_val >= watch_conf_threshold:
+            return {
+                "action": "WATCHLIST_CANDIDATE",
+                "stage": "confirmed_watch",
+                "holding_back_reason": "technical_hold_signal",
+                "explanation": "Trade signal is HOLD; watch for stronger confirmation.",
+                "final_action_source": "trade_signal_hold_watch",
+                "promotion_reason": None,
+                "demotion_reason": "technical_hold_signal",
+                "thresholds_used": {
+                    "buy_score_threshold": buy_score_threshold,
+                    "buy_conf_threshold": buy_conf_threshold,
+                    "watch_score_threshold": watch_score_threshold,
+                    "watch_conf_threshold": watch_conf_threshold,
+                    "candidate_score_threshold": candidate_score_threshold,
+                    "candidate_conf_threshold": candidate_conf_threshold,
+                    "effective_score": effective_score,
+                },
+            }
+        if effective_score >= candidate_score_threshold or confidence_val >= candidate_conf_threshold:
+            return {
+                "action": "BUY_CANDIDATE",
+                "stage": "candidate",
+                "holding_back_reason": "technical_hold_signal",
+                "explanation": "Signal is mixed; surfaced as candidate pending stronger alignment.",
+                "final_action_source": "trade_signal_hold_candidate",
+                "promotion_reason": None,
+                "demotion_reason": "technical_hold_signal",
+                "thresholds_used": {
+                    "buy_score_threshold": buy_score_threshold,
+                    "buy_conf_threshold": buy_conf_threshold,
+                    "watch_score_threshold": watch_score_threshold,
+                    "watch_conf_threshold": watch_conf_threshold,
+                    "candidate_score_threshold": candidate_score_threshold,
+                    "candidate_conf_threshold": candidate_conf_threshold,
+                    "effective_score": effective_score,
+                },
+            }
+        return {
+            "action": "REJECTED",
+            "stage": "rejected",
+            "holding_back_reason": "weak_hold_signal",
+            "explanation": "Trade setup is weak and below watch thresholds.",
+            "final_action_source": "trade_signal_hold_rejected",
+            "promotion_reason": None,
+            "demotion_reason": "weak_hold_signal",
+            "thresholds_used": {
+                "buy_score_threshold": buy_score_threshold,
+                "buy_conf_threshold": buy_conf_threshold,
+                "watch_score_threshold": watch_score_threshold,
+                "watch_conf_threshold": watch_conf_threshold,
+                "candidate_score_threshold": candidate_score_threshold,
+                "candidate_conf_threshold": candidate_conf_threshold,
+                "effective_score": effective_score,
+            },
         }
 
     return {
         "action": "WATCHLIST_CANDIDATE",
         "stage": "confirmed_watch",
-        "holding_back_reason": "confidence_below_threshold",
+        "holding_back_reason": "mixed_signal",
         "explanation": "Setup is mixed; watching for stronger confirmation.",
         "final_action_source": "mixed_signal",
+        "promotion_reason": None,
+        "demotion_reason": "mixed_signal",
+        "thresholds_used": {
+            "buy_score_threshold": buy_score_threshold,
+            "buy_conf_threshold": buy_conf_threshold,
+            "watch_score_threshold": watch_score_threshold,
+            "watch_conf_threshold": watch_conf_threshold,
+            "candidate_score_threshold": candidate_score_threshold,
+            "candidate_conf_threshold": candidate_conf_threshold,
+            "effective_score": effective_score,
+        },
     }
 
 
@@ -3442,7 +3633,9 @@ def _to_scanner_discover_item(
             momentum_value=str(live_row.get("momentum") or ""),
         )
 
-    resolved = resolve_final_action(
+    signal_basis = _signal_basis(technical_score=score_val, evidence_score_raw=evidence_score_raw)
+    thresholds = _scanner_threshold_defaults()
+    resolved = promote_scanner_result(
         candidate={
             "bars_confirmed": bars_confirmed,
             "technical_action": technical_action,
@@ -3451,26 +3644,21 @@ def _to_scanner_discover_item(
         },
         trade_result=live_row,
         evidence_state=evidence_state,
+        signal_basis=signal_basis,
+        thresholds=thresholds,
+        evidence_score_raw=evidence_score_raw,
     )
+    resolver_explanation_present = bool(str(resolved.get("explanation") or "").strip())
     action = str(resolved.get("action") or action).upper()
     stage = str(resolved.get("stage") or stage).strip().lower()
     holding_back_reason = str(resolved.get("holding_back_reason") or "").strip() or holding_back_reason_initial
     explanation_short = str(resolved.get("explanation") or explanation_short or "")
     final_action_source = str(resolved.get("final_action_source") or "resolver").strip().lower()
+    promotion_reason = str(resolved.get("promotion_reason") or "").strip() or None
+    demotion_reason = str(resolved.get("demotion_reason") or "").strip() or None
+    thresholds_used = resolved.get("thresholds_used") if isinstance(resolved.get("thresholds_used"), dict) else thresholds
     if action == "BUY":
         holding_back_reason = None
-
-    if holding_back_reason is None and action != "BUY":
-        if not bars_confirmed:
-            holding_back_reason = "bars_unavailable"
-        elif evidence_state == "evidence_unavailable":
-            holding_back_reason = "evidence_unavailable"
-        elif confidence_val < float(os.getenv("SCANNER_CONFIRM_BUY_MIN_CONFIDENCE", "0.55")):
-            holding_back_reason = "confidence_below_threshold"
-        else:
-            buy_score_threshold = float(os.getenv("SCANNER_CONFIRM_BUY_MIN_SCORE", "55"))
-            if (score_val is not None) and score_val < buy_score_threshold:
-                holding_back_reason = "score_below_threshold"
 
     change_pct_value = _as_float_or_none(base_row.get("change_pct"))
     momentum_gain_score = _momentum_gain_score(change_pct=change_pct_value, volume_boost=0.0)
@@ -3485,15 +3673,14 @@ def _to_scanner_discover_item(
     reasons = live_row.get("reasons") if isinstance(live_row.get("reasons"), list) else []
     explanation_value = live_row.get("explanation")
 
-    signal_basis = _signal_basis(technical_score=score_val, evidence_score_raw=evidence_score_raw)
-    if signal_basis == "technical_plus_evidence":
+    if action != "BUY" and signal_basis == "technical_plus_evidence" and not resolver_explanation_present:
         if evidence_state == "evidence_present_unclassified":
             explanation_short = "Technical setup detected with external mentions, but sentiment classification is limited."
-        else:
+        elif not explanation_short:
             explanation_short = "Technical setup supported by external evidence."
-    elif signal_basis == "technical_only":
+    elif action != "BUY" and signal_basis == "technical_only" and not explanation_short and not resolver_explanation_present:
         explanation_short = "Technical setup detected with limited external evidence."
-    elif signal_basis == "evidence_only":
+    elif action != "BUY" and signal_basis == "evidence_only" and not explanation_short and not resolver_explanation_present:
         explanation_short = "External evidence spike detected, awaiting technical confirmation."
 
     explanation_out: Any = explanation_short
@@ -3517,6 +3704,9 @@ def _to_scanner_discover_item(
         "signal_basis": signal_basis,
         "evidence_state": evidence_state,
         "final_action_source": final_action_source,
+        "promotion_reason": promotion_reason,
+        "demotion_reason": demotion_reason,
+        "thresholds_used": thresholds_used,
         "source_counts": source_counts_final,
         "source_breakdown": source_breakdown,
         "entry": live_row.get("entry_zone") if isinstance(live_row.get("entry_zone"), dict) else {
