@@ -214,7 +214,7 @@ def load_config() -> AppConfig:
         scanner_refresh_batch_limit=_env_int("SCANNER_REFRESH_BATCH_LIMIT", 10),
         provider_calls_per_minute_limit=_env_int("PROVIDER_CALLS_PER_MINUTE_LIMIT", 20),
         provider_twelvedata_cooldown_enabled=_env_bool("PROVIDER_TWELVEDATA_COOLDOWN_ENABLED", True),
-        massive_enabled=_env_bool("MASSIVE_ENABLED", True),
+        massive_enabled=_env_bool("MASSIVE_ENABLED", False),
         massive_api_key=_env_str("MASSIVE_API_KEY", ""),
         massive_base_url=_env_str("MASSIVE_BASE_URL", "https://api.massive.com"),
     )

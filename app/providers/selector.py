@@ -224,7 +224,7 @@ def _has_massive_key() -> bool:
 
 
 def _massive_enabled() -> bool:
-    raw = os.getenv("MASSIVE_ENABLED", "1")
+    raw = os.getenv("MASSIVE_ENABLED", "0")
     return str(raw).strip().lower() in {"1", "true", "yes", "on"}
 
 
@@ -572,47 +572,48 @@ def get_quote_cached_first(
         except Exception as exc:
             errors.append(f"massive:{exc}")
 
-    try:
-        if not _provider_call_allowed("yahoo", "quote", per_minute_limit=_provider_minute_limit(40)):
-            raise ProviderError("[RATE_LIMIT] Yahoo quote local rate limit reached")
-        _record_provider_call("yahoo", "quote")
-        payload = _fetch_yahoo_quote(symbol_u)
-        _set_cached_quote(symbol_u, payload)
-        return payload
-    except Exception as exc:
-        errors.append(f"yahoo:{exc}")
+    provider_order = ["yahoo", "twelvedata", "finnhub"] if is_us else ["yahoo", "finnhub", "twelvedata"]
+    for provider_name in provider_order:
+        try:
+            if provider_name == "yahoo":
+                if not _provider_call_allowed("yahoo", "quote", per_minute_limit=_provider_minute_limit(40)):
+                    raise ProviderError("[RATE_LIMIT] Yahoo quote local rate limit reached")
+                _record_provider_call("yahoo", "quote")
+                payload = _fetch_yahoo_quote(symbol_u)
+                _set_cached_quote(symbol_u, payload)
+                return payload
 
-    try:
-        if _has_twelvedata_key() and not _provider_in_cooldown("twelvedata", "quote"):
-            if not _provider_call_allowed("twelvedata", "quote", per_minute_limit=_provider_minute_limit(20)):
-                raise ProviderError("[RATE_LIMIT] Twelvedata quote local rate limit reached")
-            _record_provider_call("twelvedata", "quote")
-            td = TwelveDataClient()
-            res = td.fetch_quote(symbol_u)
-            quote = _quote_payload(res)
-            _validate_quote_or_raise(quote, symbol_u, "TwelveData")
-            payload = QuoteResult(provider="twelvedata", quote=quote)
-            _set_cached_quote(symbol_u, payload)
-            return payload
-    except Exception as exc:
-        if _is_rate_limit_error(exc):
-            _set_provider_cooldown("twelvedata", "quote", _seconds_until_next_utc_day(), str(exc))
-        errors.append(f"twelvedata:{exc}")
+            if provider_name == "finnhub":
+                if _has_finnhub_key():
+                    if not _provider_call_allowed("finnhub", "quote", per_minute_limit=_provider_minute_limit(20)):
+                        raise ProviderError("[RATE_LIMIT] Finnhub quote local rate limit reached")
+                    _record_provider_call("finnhub", "quote")
+                    fh = FinnhubClient()
+                    res = fh.fetch_quote(symbol_u)
+                    quote = _quote_payload(res)
+                    _validate_quote_or_raise(quote, symbol_u, "Finnhub")
+                    payload = QuoteResult(provider="finnhub", quote=quote)
+                    _set_cached_quote(symbol_u, payload)
+                    return payload
+                raise ProviderError("FINNHUB_API_KEY is not set")
 
-    try:
-        if _has_finnhub_key():
-            if not _provider_call_allowed("finnhub", "quote", per_minute_limit=_provider_minute_limit(20)):
-                raise ProviderError("[RATE_LIMIT] Finnhub quote local rate limit reached")
-            _record_provider_call("finnhub", "quote")
-            fh = FinnhubClient()
-            res = fh.fetch_quote(symbol_u)
-            quote = _quote_payload(res)
-            _validate_quote_or_raise(quote, symbol_u, "Finnhub")
-            payload = QuoteResult(provider="finnhub", quote=quote)
-            _set_cached_quote(symbol_u, payload)
-            return payload
-    except Exception as exc:
-        errors.append(f"finnhub:{exc}")
+            if provider_name == "twelvedata":
+                if _has_twelvedata_key() and not _provider_in_cooldown("twelvedata", "quote"):
+                    if not _provider_call_allowed("twelvedata", "quote", per_minute_limit=_provider_minute_limit(20)):
+                        raise ProviderError("[RATE_LIMIT] Twelvedata quote local rate limit reached")
+                    _record_provider_call("twelvedata", "quote")
+                    td = TwelveDataClient()
+                    res = td.fetch_quote(symbol_u)
+                    quote = _quote_payload(res)
+                    _validate_quote_or_raise(quote, symbol_u, "TwelveData")
+                    payload = QuoteResult(provider="twelvedata", quote=quote)
+                    _set_cached_quote(symbol_u, payload)
+                    return payload
+                raise ProviderError("TWELVEDATA_API_KEY is not set")
+        except Exception as exc:
+            if provider_name == "twelvedata" and _is_rate_limit_error(exc):
+                _set_provider_cooldown("twelvedata", "quote", _seconds_until_next_utc_day(), str(exc))
+            errors.append(f"{provider_name}:{exc}")
 
     raise ProviderError("All providers failed for symbol %s: %s" % (symbol_u, "; ".join(errors)))
 
@@ -651,60 +652,56 @@ def get_quote_with_fallback(symbol: str, freshness_seconds: int = 60) -> QuoteRe
             errors.append(msg)
             logger.warning(msg)
 
-    try:
-        if not _provider_call_allowed("yahoo", "quote", per_minute_limit=_provider_minute_limit(40)):
-            raise ProviderError("[RATE_LIMIT] Yahoo quote local rate limit reached")
-        _record_provider_call("yahoo", "quote")
-        res = _fetch_yahoo_quote(symbol_u)
-        quote = _quote_payload(res)
-        _validate_quote_or_raise(quote, symbol_u, "Yahoo")
-        payload = QuoteResult(provider="yahoo", quote=quote)
-        _set_cached_quote(symbol_u, payload)
-        return payload
-    except Exception as exc:
-        msg = f"Yahoo quote failed for {symbol_u}: {exc}"
-        errors.append(msg)
-        logger.warning(msg)
+    provider_order = ["yahoo", "twelvedata", "finnhub"] if is_us else ["twelvedata", "finnhub", "yahoo"]
+    for provider_name in provider_order:
+        try:
+            if provider_name == "yahoo":
+                if not _provider_call_allowed("yahoo", "quote", per_minute_limit=_provider_minute_limit(40)):
+                    raise ProviderError("[RATE_LIMIT] Yahoo quote local rate limit reached")
+                _record_provider_call("yahoo", "quote")
+                res = _fetch_yahoo_quote(symbol_u)
+                quote = _quote_payload(res)
+                _validate_quote_or_raise(quote, symbol_u, "Yahoo")
+                payload = QuoteResult(provider="yahoo", quote=quote)
+                _set_cached_quote(symbol_u, payload)
+                return payload
 
-    try:
-        if _has_twelvedata_key() and not _provider_in_cooldown("twelvedata", "quote"):
-            if not _provider_call_allowed("twelvedata", "quote", per_minute_limit=_provider_minute_limit(20)):
-                raise ProviderError("[RATE_LIMIT] Twelvedata quote local rate limit reached")
-            _record_provider_call("twelvedata", "quote")
-            td = TwelveDataClient()
-            res = td.fetch_quote(symbol_u)
-            quote = _quote_payload(res)
-            _validate_quote_or_raise(quote, symbol_u, "TwelveData")
-            payload = QuoteResult(provider="twelvedata", quote=quote)
-            _set_cached_quote(symbol_u, payload)
-            return payload
-        raise ProviderError("TWELVEDATA_API_KEY is not set")
-    except Exception as exc:
-        if _is_rate_limit_error(exc):
-            _set_provider_cooldown("twelvedata", "quote", _seconds_until_next_utc_day(), str(exc))
-        msg = f"TwelveData quote failed for {symbol_u}: {exc}"
-        errors.append(msg)
-        logger.warning(msg)
+            if provider_name == "twelvedata":
+                if _has_twelvedata_key() and not _provider_in_cooldown("twelvedata", "quote"):
+                    if not _provider_call_allowed("twelvedata", "quote", per_minute_limit=_provider_minute_limit(20)):
+                        raise ProviderError("[RATE_LIMIT] Twelvedata quote local rate limit reached")
+                    _record_provider_call("twelvedata", "quote")
+                    td = TwelveDataClient()
+                    res = td.fetch_quote(symbol_u)
+                    quote = _quote_payload(res)
+                    _validate_quote_or_raise(quote, symbol_u, "TwelveData")
+                    payload = QuoteResult(provider="twelvedata", quote=quote)
+                    _set_cached_quote(symbol_u, payload)
+                    return payload
+                raise ProviderError("TWELVEDATA_API_KEY is not set")
 
-    try:
-        if _has_finnhub_key() and not _provider_in_cooldown("finnhub", "quote"):
-            if not _provider_call_allowed("finnhub", "quote", per_minute_limit=_provider_minute_limit(20)):
-                raise ProviderError("[RATE_LIMIT] Finnhub quote local rate limit reached")
-            _record_provider_call("finnhub", "quote")
-            fh = FinnhubClient()
-            res = fh.fetch_quote(symbol_u)
-            quote = _quote_payload(res)
-            _validate_quote_or_raise(quote, symbol_u, "Finnhub")
-            payload = QuoteResult(provider="finnhub", quote=quote)
-            _set_cached_quote(symbol_u, payload)
-            return payload
-        raise ProviderError("FINNHUB_API_KEY is not set")
-    except Exception as exc:
-        if _is_auth_error(exc):
-            _set_provider_cooldown("finnhub", "quote", _PROVIDER_COOLDOWN_SECONDS_AUTH, str(exc))
-        msg = f"Finnhub quote failed for {symbol_u}: {exc}"
-        errors.append(msg)
-        logger.warning(msg)
+            if provider_name == "finnhub":
+                if _has_finnhub_key() and not _provider_in_cooldown("finnhub", "quote"):
+                    if not _provider_call_allowed("finnhub", "quote", per_minute_limit=_provider_minute_limit(20)):
+                        raise ProviderError("[RATE_LIMIT] Finnhub quote local rate limit reached")
+                    _record_provider_call("finnhub", "quote")
+                    fh = FinnhubClient()
+                    res = fh.fetch_quote(symbol_u)
+                    quote = _quote_payload(res)
+                    _validate_quote_or_raise(quote, symbol_u, "Finnhub")
+                    payload = QuoteResult(provider="finnhub", quote=quote)
+                    _set_cached_quote(symbol_u, payload)
+                    return payload
+                raise ProviderError("FINNHUB_API_KEY is not set")
+        except Exception as exc:
+            if provider_name == "twelvedata" and _is_rate_limit_error(exc):
+                _set_provider_cooldown("twelvedata", "quote", _seconds_until_next_utc_day(), str(exc))
+            if provider_name == "finnhub" and _is_auth_error(exc):
+                _set_provider_cooldown("finnhub", "quote", _PROVIDER_COOLDOWN_SECONDS_AUTH, str(exc))
+            label = "Yahoo" if provider_name == "yahoo" else "TwelveData" if provider_name == "twelvedata" else "Finnhub"
+            msg = f"{label} quote failed for {symbol_u}: {exc}"
+            errors.append(msg)
+            logger.warning(msg)
 
     stale = _get_cached_quote_allow_stale(symbol_u)
     if stale:

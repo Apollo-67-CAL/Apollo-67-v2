@@ -59,7 +59,7 @@ def _market_list(market: str) -> List[str]:
 
 
 def _massive_enabled() -> bool:
-    raw = os.getenv("MASSIVE_ENABLED", "1")
+    raw = os.getenv("MASSIVE_ENABLED", "0")
     enabled = str(raw).strip().lower() in {"1", "true", "yes", "on"}
     return enabled and bool(os.getenv("MASSIVE_API_KEY", "").strip())
 
@@ -97,6 +97,7 @@ def _massive_get_grouped_daily(date: Optional[str] = None, refresh: bool = False
                 "volume": _as_float_or_none(row.get("volume")),
                 "provider_used": "massive_grouped_daily",
                 "grouped_daily_provider_used": "massive",
+                "discovery_provider_used": "massive",
             }
         )
     _MASSIVE_GROUPED_CACHE[cache_key] = (now + _MASSIVE_GROUPED_TTL_SECONDS, normalized)
@@ -562,6 +563,7 @@ def discover_candidates(
                     "confidence_prelim": confidence_prelim,
                     "provider_used": quote_provider or base.get("provider_used") or "cache",
                     "grouped_daily_provider_used": base.get("grouped_daily_provider_used"),
+                    "discovery_provider_used": base.get("discovery_provider_used") or base.get("grouped_daily_provider_used"),
                     "evidence_summary": {
                         "posts": posts,
                         "mentions": int(evidence_summary.get("mentions") or posts),

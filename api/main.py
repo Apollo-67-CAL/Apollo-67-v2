@@ -1991,6 +1991,7 @@ def _scanner_discover_payload(
                 "scanned_count": int((discovery_payload.get("scanned_by_market") or {}).get(mk) or 0),
                 "quote_ok_count": int((discovery_payload.get("quote_ok_by_market") or {}).get(mk) or 0),
                 "grouped_daily_provider_used": (discovery_payload.get("grouped_daily_provider_by_market") or {}).get(mk),
+                "discovery_provider_used": (discovery_payload.get("grouped_daily_provider_by_market") or {}).get(mk),
                 "buy_count": len(market_confirmed),
                 "candidate_count": len(market_candidates),
                 "top": market_confirmed[:limit_value],
@@ -2087,6 +2088,7 @@ def _scanner_discover_payload(
                 "evidence_confidence": _as_float_or_none(prelim.get("evidence_confidence")) or 0.0,
                 "evidence_state": str(prelim.get("evidence_state") or "").strip().lower() or "evidence_unavailable",
                 "grouped_daily_provider_used": prelim.get("grouped_daily_provider_used"),
+                "discovery_provider_used": prelim.get("discovery_provider_used") or prelim.get("grouped_daily_provider_used"),
             }
             source_summary = base_row["evidence_summary"] if isinstance(base_row.get("evidence_summary"), dict) else {
                 "posts": 0,
@@ -2102,6 +2104,7 @@ def _scanner_discover_payload(
                 "provider": base_row.get("provider_used"),
                 "provider_used": base_row.get("provider_used"),
                 "bars_provider_used": None,
+                "discovery_provider_used": base_row.get("discovery_provider_used"),
                 "timeframe": interval,
                 "action": "BUY_CANDIDATE",
                 "recommendation": "BUY_CANDIDATE",
@@ -2347,6 +2350,7 @@ def _scanner_discover_payload(
             "evidence_confidence": _as_float_or_none(prelim.get("evidence_confidence")) or 0.0,
             "evidence_state": str(prelim.get("evidence_state") or "").strip().lower() or "evidence_unavailable",
             "grouped_daily_provider_used": prelim.get("grouped_daily_provider_used"),
+            "discovery_provider_used": prelim.get("discovery_provider_used") or prelim.get("grouped_daily_provider_used"),
         }
         source_summary = base_row["evidence_summary"] if isinstance(base_row.get("evidence_summary"), dict) else {
             "posts": 0, "mentions": 0, "positive": 0, "negative": 0, "neutral": 0, "net": 0
@@ -2359,6 +2363,7 @@ def _scanner_discover_payload(
             "provider": base_row.get("provider_used"),
             "provider_used": base_row.get("provider_used"),
             "bars_provider_used": None,
+            "discovery_provider_used": base_row.get("discovery_provider_used"),
             "timeframe": interval,
             "action": "BUY_CANDIDATE",
             "recommendation": "BUY_CANDIDATE",
@@ -2476,6 +2481,7 @@ def _scanner_discover_payload(
             "scanned_count": int((discovery_payload.get("scanned_by_market") or {}).get(mk) or 0),
             "quote_ok_count": int((discovery_payload.get("quote_ok_by_market") or {}).get(mk) or 0),
             "grouped_daily_provider_used": grouped_daily_provider_by_market.get(mk),
+            "discovery_provider_used": grouped_daily_provider_by_market.get(mk),
             "buy_count": len(market_confirmed),
             "candidate_count": len(market_candidates),
             "top": market_confirmed[:limit_value],
@@ -3758,6 +3764,7 @@ def _to_scanner_discover_item(
         "provider_used": live_row.get("provider_used") or base_row.get("provider_used"),
         "bars_provider_used": live_row.get("bars_provider_used") or live_row.get("provider") or live_row.get("trade_provider_used"),
         "grouped_daily_provider_used": base_row.get("grouped_daily_provider_used"),
+        "discovery_provider_used": base_row.get("discovery_provider_used") or base_row.get("grouped_daily_provider_used"),
         "timeframe": live_row.get("timeframe") or "1day",
     }
 

@@ -267,3 +267,18 @@ class MassiveClient:
             "date": day.strftime("%Y-%m-%d"),
             "results": normalized,
         }
+
+
+def get_quote(symbol: str, market: Optional[str] = "US") -> QuoteResult:
+    client = MassiveClient()
+    return client.get_quote(symbol=symbol, market=market)
+
+
+def get_bars(symbol: str, interval: str = "1day", outputsize: int = 500, market: Optional[str] = "US") -> BarsResult:
+    client = MassiveClient()
+    return client.get_bars(symbol=symbol, interval=interval, outputsize=outputsize, market=market)
+
+
+def get_grouped_daily(date: Optional[str] = None, market: str = "US") -> Dict[str, Any]:
+    client = MassiveClient()
+    return client.get_grouped_daily(date=date, market=market)
