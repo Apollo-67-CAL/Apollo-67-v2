@@ -78,11 +78,15 @@ class AppConfig:
     scanner_refresh_batch_limit: int
     provider_calls_per_minute_limit: int
     provider_twelvedata_cooldown_enabled: bool
+    massive_enabled: bool
+    massive_api_key: str
+    massive_base_url: str
 
     def to_public_dict(self) -> Dict[str, Any]:
         payload = asdict(self)
         payload["database_url"] = _redact_url(self.database_url)
         payload["alphavantage_api_key"] = "***" if self.alphavantage_api_key else ""
+        payload["massive_api_key"] = "***" if self.massive_api_key else ""
         return payload
 
 
@@ -210,6 +214,9 @@ def load_config() -> AppConfig:
         scanner_refresh_batch_limit=_env_int("SCANNER_REFRESH_BATCH_LIMIT", 10),
         provider_calls_per_minute_limit=_env_int("PROVIDER_CALLS_PER_MINUTE_LIMIT", 20),
         provider_twelvedata_cooldown_enabled=_env_bool("PROVIDER_TWELVEDATA_COOLDOWN_ENABLED", True),
+        massive_enabled=_env_bool("MASSIVE_ENABLED", True),
+        massive_api_key=_env_str("MASSIVE_API_KEY", ""),
+        massive_base_url=_env_str("MASSIVE_BASE_URL", "https://api.massive.com"),
     )
     _validate_config(cfg)
     return cfg

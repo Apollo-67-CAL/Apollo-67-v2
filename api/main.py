@@ -1941,10 +1941,12 @@ def _scanner_discover_payload(
     universe_sources: Dict[str, Any] = {}
     universe_errors: List[str] = []
     first_10_symbols: List[str] = []
+    grouped_daily_provider_by_market: Dict[str, Any] = {}
     discovery_payload: Dict[str, Any] = {
         "universe_size_by_market": {},
         "scanned_by_market": {},
         "quote_ok_by_market": {},
+        "grouped_daily_provider_by_market": {},
     }
 
     if progress_key:
@@ -1988,6 +1990,7 @@ def _scanner_discover_payload(
                 "universe_size": int((discovery_payload.get("universe_size_by_market") or {}).get(mk) or 0),
                 "scanned_count": int((discovery_payload.get("scanned_by_market") or {}).get(mk) or 0),
                 "quote_ok_count": int((discovery_payload.get("quote_ok_by_market") or {}).get(mk) or 0),
+                "grouped_daily_provider_used": (discovery_payload.get("grouped_daily_provider_by_market") or {}).get(mk),
                 "buy_count": len(market_confirmed),
                 "candidate_count": len(market_candidates),
                 "top": market_confirmed[:limit_value],
@@ -2022,6 +2025,7 @@ def _scanner_discover_payload(
                 "universe_size": total_symbols,
                 "universe_sources": universe_sources,
                 "universe_errors": universe_errors,
+                "grouped_daily_provider_by_market": grouped_daily_provider_by_market,
                 "first_10_symbols": first_10_symbols[:10],
                 "scanned_count": scanned_done,
                 "quote_ok_count": quote_ok_count,
@@ -2082,6 +2086,7 @@ def _scanner_discover_payload(
                 "evidence_score_raw": _as_float_or_none(prelim.get("evidence_score_raw")) or 0.0,
                 "evidence_confidence": _as_float_or_none(prelim.get("evidence_confidence")) or 0.0,
                 "evidence_state": str(prelim.get("evidence_state") or "").strip().lower() or "evidence_unavailable",
+                "grouped_daily_provider_used": prelim.get("grouped_daily_provider_used"),
             }
             source_summary = base_row["evidence_summary"] if isinstance(base_row.get("evidence_summary"), dict) else {
                 "posts": 0,
@@ -2096,6 +2101,7 @@ def _scanner_discover_payload(
                 "price": base_row.get("price"),
                 "provider": base_row.get("provider_used"),
                 "provider_used": base_row.get("provider_used"),
+                "bars_provider_used": None,
                 "timeframe": interval,
                 "action": "BUY_CANDIDATE",
                 "recommendation": "BUY_CANDIDATE",
@@ -2254,7 +2260,7 @@ def _scanner_discover_payload(
         }
 
     def _on_discovery_progress(partial: Dict[str, Any]) -> None:
-        nonlocal total_symbols, scanned_done, quote_ok_count, universe_sources, universe_errors, first_10_symbols, discovery_payload
+        nonlocal total_symbols, scanned_done, quote_ok_count, universe_sources, universe_errors, first_10_symbols, grouped_daily_provider_by_market, discovery_payload
         if not isinstance(partial, dict):
             return
         discovery_payload = dict(partial)
@@ -2264,6 +2270,11 @@ def _scanner_discover_payload(
         universe_sources = partial.get("universe_sources") if isinstance(partial.get("universe_sources"), dict) else {}
         universe_errors = partial.get("universe_errors") if isinstance(partial.get("universe_errors"), list) else []
         first_10_symbols = partial.get("first_10_symbols") if isinstance(partial.get("first_10_symbols"), list) else []
+        grouped_daily_provider_by_market = (
+            partial.get("grouped_daily_provider_by_market")
+            if isinstance(partial.get("grouped_daily_provider_by_market"), dict)
+            else {}
+        )
         preview_limit_local = max(limit_value, min(len(partial.get("merged") or []), limit_value * 2))
         preview_rows_local = _build_preview_rows(
             stage1_candidates=list(partial.get("merged") or []),
@@ -2293,6 +2304,11 @@ def _scanner_discover_payload(
     universe_sources = discovery_payload.get("universe_sources") if isinstance(discovery_payload.get("universe_sources"), dict) else {}
     universe_errors = discovery_payload.get("universe_errors") if isinstance(discovery_payload.get("universe_errors"), list) else []
     first_10_symbols = discovery_payload.get("first_10_symbols") if isinstance(discovery_payload.get("first_10_symbols"), list) else []
+    grouped_daily_provider_by_market = (
+        discovery_payload.get("grouped_daily_provider_by_market")
+        if isinstance(discovery_payload.get("grouped_daily_provider_by_market"), dict)
+        else {}
+    )
     scanned_done = int(discovery_payload.get("scanned_count") or 0)
     quote_ok_count = int(discovery_payload.get("quote_ok_count") or 0)
     stage1_rows: List[Dict[str, Any]] = list(discovery_payload.get("merged") or [])
@@ -2330,6 +2346,7 @@ def _scanner_discover_payload(
             "evidence_score_raw": _as_float_or_none(prelim.get("evidence_score_raw")) or 0.0,
             "evidence_confidence": _as_float_or_none(prelim.get("evidence_confidence")) or 0.0,
             "evidence_state": str(prelim.get("evidence_state") or "").strip().lower() or "evidence_unavailable",
+            "grouped_daily_provider_used": prelim.get("grouped_daily_provider_used"),
         }
         source_summary = base_row["evidence_summary"] if isinstance(base_row.get("evidence_summary"), dict) else {
             "posts": 0, "mentions": 0, "positive": 0, "negative": 0, "neutral": 0, "net": 0
@@ -2341,6 +2358,7 @@ def _scanner_discover_payload(
             "price": base_row.get("price"),
             "provider": base_row.get("provider_used"),
             "provider_used": base_row.get("provider_used"),
+            "bars_provider_used": None,
             "timeframe": interval,
             "action": "BUY_CANDIDATE",
             "recommendation": "BUY_CANDIDATE",
@@ -2405,6 +2423,7 @@ def _scanner_discover_payload(
                 live_row["stage"] = "confirmed"
                 live_row["data_quality"] = "full"
                 live_row["holding_back_reason"] = None
+                live_row["bars_provider_used"] = live_row.get("provider") or live_row.get("trade_provider_used")
                 if _as_float_or_none(live_row.get("target")) is not None or _as_float_or_none(live_row.get("stop")) is not None:
                     bars_ok_count += 1
                     trade_ok_count += 1
@@ -2456,6 +2475,7 @@ def _scanner_discover_payload(
             "universe_size": int((discovery_payload.get("universe_size_by_market") or {}).get(mk) or 0),
             "scanned_count": int((discovery_payload.get("scanned_by_market") or {}).get(mk) or 0),
             "quote_ok_count": int((discovery_payload.get("quote_ok_by_market") or {}).get(mk) or 0),
+            "grouped_daily_provider_used": grouped_daily_provider_by_market.get(mk),
             "buy_count": len(market_confirmed),
             "candidate_count": len(market_candidates),
             "top": market_confirmed[:limit_value],
@@ -2497,6 +2517,7 @@ def _scanner_discover_payload(
         "universe_size": total_symbols,
         "universe_sources": universe_sources,
         "universe_errors": universe_errors,
+        "grouped_daily_provider_by_market": grouped_daily_provider_by_market,
         "first_10_symbols": first_10_symbols[:10],
         "scanned_count": scanned_done,
         "quote_ok_count": quote_ok_count,
@@ -2606,6 +2627,7 @@ async def scanner_run(payload: Dict[str, Any]):
         "universe_size": int(preflight.get("universe_size") or 0),
         "universe_sources": preflight.get("universe_sources") if isinstance(preflight.get("universe_sources"), dict) else {},
         "universe_errors": preflight.get("universe_errors") if isinstance(preflight.get("universe_errors"), list) else [],
+        "grouped_daily_provider_by_market": {},
         "first_10_symbols": preflight.get("first_10_symbols") if isinstance(preflight.get("first_10_symbols"), list) else [],
         "scanned_count": 0,
         "quote_ok_count": 0,
@@ -2706,6 +2728,7 @@ def scanner_status(
             "universe_size": 0,
             "universe_sources": {},
             "universe_errors": [],
+            "grouped_daily_provider_by_market": {},
             "first_10_symbols": [],
             "scanned_count": 0,
             "quote_ok_count": 0,
@@ -2768,6 +2791,11 @@ def scanner_debug(
         "universe_size": int(payload.get("universe_size") or 0),
         "universe_sources": payload.get("universe_sources") if isinstance(payload.get("universe_sources"), dict) else {},
         "universe_errors": payload.get("universe_errors") if isinstance(payload.get("universe_errors"), list) else [],
+        "grouped_daily_provider_by_market": (
+            payload.get("grouped_daily_provider_by_market")
+            if isinstance(payload.get("grouped_daily_provider_by_market"), dict)
+            else {}
+        ),
         "first_10_symbols": (payload.get("first_10_symbols") if isinstance(payload.get("first_10_symbols"), list) else [])[:10],
         "scanned_count": int(payload.get("scanned_count") or 0),
         "quote_ok_count": int(payload.get("quote_ok_count") or 0),
@@ -3728,6 +3756,8 @@ def _to_scanner_discover_item(
         "momentum_gain_score": momentum_gain_score,
         "final_rank_score": final_rank_score,
         "provider_used": live_row.get("provider_used") or base_row.get("provider_used"),
+        "bars_provider_used": live_row.get("bars_provider_used") or live_row.get("provider") or live_row.get("trade_provider_used"),
+        "grouped_daily_provider_used": base_row.get("grouped_daily_provider_used"),
         "timeframe": live_row.get("timeframe") or "1day",
     }
 

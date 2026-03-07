@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import csv
+import os
 import time
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+from app.providers.massive import MassiveClient
 from app.providers.selector import get_bars_cached_first
 from app.providers.selector import get_quote_cached_first
 
@@ -17,6 +19,8 @@ _UNIVERSE_FILE_SMALL = {
     "AU": _ROOT_DATA_DIR / "universe_au_small.csv",
 }
 _UNIVERSE_ROTATE_SECONDS = 600
+_MASSIVE_GROUPED_TTL_SECONDS = 5 * 60
+_MASSIVE_GROUPED_CACHE: Dict[str, Tuple[float, List[Dict[str, Any]]]] = {}
 
 
 def _as_float_or_none(value: Any) -> Optional[float]:
@@ -52,6 +56,51 @@ def _market_list(market: str) -> List[str]:
     if market_u in {"US", "AU"}:
         return [market_u]
     return ["US"]
+
+
+def _massive_enabled() -> bool:
+    raw = os.getenv("MASSIVE_ENABLED", "1")
+    enabled = str(raw).strip().lower() in {"1", "true", "yes", "on"}
+    return enabled and bool(os.getenv("MASSIVE_API_KEY", "").strip())
+
+
+def _massive_get_grouped_daily(date: Optional[str] = None, refresh: bool = False) -> List[Dict[str, Any]]:
+    cache_key = str(date or "latest").strip() or "latest"
+    now = time.monotonic()
+    if not refresh:
+        cached = _MASSIVE_GROUPED_CACHE.get(cache_key)
+        if cached and cached[0] >= now:
+            return list(cached[1])
+    if not _massive_enabled():
+        return []
+    try:
+        client = MassiveClient()
+        payload = client.get_grouped_daily(date=date, market="US")
+    except Exception:
+        return []
+    rows = payload.get("results") if isinstance(payload.get("results"), list) else []
+    normalized: List[Dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        symbol = _normalise_symbol(row.get("symbol"))
+        if not symbol or symbol.endswith(".AX"):
+            continue
+        normalized.append(
+            {
+                "symbol": symbol,
+                "display_symbol": symbol,
+                "market": "US",
+                "segment": "small",
+                "price": _as_float_or_none(row.get("close")),
+                "change_pct": _as_float_or_none(row.get("change_pct")),
+                "volume": _as_float_or_none(row.get("volume")),
+                "provider_used": "massive_grouped_daily",
+                "grouped_daily_provider_used": "massive",
+            }
+        )
+    _MASSIVE_GROUPED_CACHE[cache_key] = (now + _MASSIVE_GROUPED_TTL_SECONDS, normalized)
+    return list(normalized)
 
 
 def _read_symbols_file(path: Path, market: str) -> List[str]:
@@ -209,9 +258,34 @@ def _resolve_cached_last_close(symbol: str) -> Optional[float]:
     return close_val if close_val > 0 else None
 
 
+def get_massive_us_daily_movers(limit: int = 120, force_refresh: bool = False) -> List[Dict[str, Any]]:
+    rows = _massive_get_grouped_daily(refresh=force_refresh)
+    out = sorted(
+        rows,
+        key=lambda row: _as_float_or_none(row.get("change_pct")) or float("-inf"),
+        reverse=True,
+    )
+    return out[: max(1, min(int(limit), 500))]
+
+
+def get_massive_us_active_names(limit: int = 120, force_refresh: bool = False) -> List[Dict[str, Any]]:
+    rows = _massive_get_grouped_daily(refresh=force_refresh)
+    out = sorted(
+        rows,
+        key=lambda row: _as_float_or_none(row.get("volume")) or float("-inf"),
+        reverse=True,
+    )
+    return out[: max(1, min(int(limit), 500))]
+
+
 def get_top_movers(market: str, segment: str = "small", pool_size: int = 240, force_refresh: bool = False) -> List[Dict[str, Any]]:
-    del force_refresh  # loader is file-backed; no remote refresh required
     market_u = str(market or "US").strip().upper()
+    if market_u == "US":
+        massive_rows = get_massive_us_daily_movers(limit=max(40, min(int(pool_size), 500)), force_refresh=force_refresh)
+        if massive_rows:
+            return massive_rows
+
+    del force_refresh  # file-backed fallback path
     symbols = load_universe(market_u, segment)
     sampled = _sample_symbols(symbols, max(1, min(int(pool_size), 500)))
     rows: List[Dict[str, Any]] = []
@@ -235,6 +309,12 @@ def get_top_movers(market: str, segment: str = "small", pool_size: int = 240, fo
 
 
 def get_volume_surge(market: str, segment: str = "small", pool_size: int = 240, force_refresh: bool = False) -> List[Dict[str, Any]]:
+    market_u = str(market or "US").strip().upper()
+    if market_u == "US":
+        active_rows = get_massive_us_active_names(limit=max(40, min(int(pool_size), 500)), force_refresh=force_refresh)
+        if active_rows:
+            return active_rows
+
     # Stage-1 deliberately avoids bar fetches. Use change magnitude as lightweight activity proxy.
     rows = get_top_movers(market=market, segment=segment, pool_size=pool_size, force_refresh=force_refresh)
     return sorted(
@@ -276,6 +356,7 @@ def discover_candidates(
     scanned_by_market: Dict[str, int] = {}
     quote_ok_by_market: Dict[str, int] = {}
     universe_size_by_market: Dict[str, int] = {}
+    grouped_daily_provider_by_market: Dict[str, Optional[str]] = {}
     universe_errors: List[str] = []
     first_10_symbols: List[str] = []
 
@@ -312,6 +393,7 @@ def discover_candidates(
                     "universe_size_by_market": universe_size_by_market,
                     "scanned_by_market": scanned_by_market,
                     "quote_ok_by_market": quote_ok_by_market,
+                    "grouped_daily_provider_by_market": grouped_daily_provider_by_market,
                     "universe_size": sum(int(v or 0) for v in universe_size_by_market.values()),
                     "scanned_count": sum(int(v or 0) for v in scanned_by_market.values()),
                     "quote_ok_count": sum(int(v or 0) for v in quote_ok_by_market.values()),
@@ -324,11 +406,16 @@ def discover_candidates(
         market_symbols, market_errors = _load_universe_for_market(mk, segment_value)
         if market_errors:
             universe_errors.extend(market_errors)
+        market_symbol_set = {_normalise_symbol(sym) for sym in market_symbols}
         movers = get_top_movers(market=mk, segment=segment_value, pool_size=pool_n, force_refresh=force_refresh)
         active = get_volume_surge(market=mk, segment=segment_value, pool_size=pool_n, force_refresh=force_refresh)
+        if mk == "US" and segment_value == "small" and market_symbol_set:
+            movers = [row for row in movers if _normalise_symbol(row.get("symbol")) in market_symbol_set]
+            active = [row for row in active if _normalise_symbol(row.get("symbol")) in market_symbol_set]
         surge_set = {_normalise_symbol(row.get("symbol")) for row in active[: max(top_n * 4, 40)]}
 
         universe_size_by_market[mk] = len(market_symbols)
+        grouped_daily_provider_by_market[mk] = None
         seen: set[str] = set()
         ordered_rows: List[Dict[str, Any]] = []
         for row in movers:
@@ -336,7 +423,28 @@ def discover_candidates(
             if not sym or sym in seen:
                 continue
             seen.add(sym)
-            ordered_rows.append(dict(row))
+            row_payload = dict(row)
+            grouped_provider = str(row_payload.get("grouped_daily_provider_used") or "").strip().lower() or None
+            if grouped_provider:
+                grouped_daily_provider_by_market[mk] = grouped_provider
+            ordered_rows.append(row_payload)
+
+        for sym in _sample_symbols(market_symbols, pool_n):
+            sym_u = _normalise_symbol(sym)
+            if not sym_u or sym_u in seen:
+                continue
+            seen.add(sym_u)
+            ordered_rows.append(
+                {
+                    "symbol": sym_u,
+                    "display_symbol": sym_u,
+                    "market": mk,
+                    "segment": segment_value,
+                    "price": None,
+                    "change_pct": None,
+                    "provider_used": "universe",
+                }
+            )
 
         for sym in include_by_market.get(mk, []):
             if sym in seen:
@@ -453,6 +561,7 @@ def discover_candidates(
                     "score_prelim": score_prelim,
                     "confidence_prelim": confidence_prelim,
                     "provider_used": quote_provider or base.get("provider_used") or "cache",
+                    "grouped_daily_provider_used": base.get("grouped_daily_provider_used"),
                     "evidence_summary": {
                         "posts": posts,
                         "mentions": int(evidence_summary.get("mentions") or posts),
@@ -510,6 +619,7 @@ def discover_candidates(
         "universe_size_by_market": universe_size_by_market,
         "scanned_by_market": scanned_by_market,
         "quote_ok_by_market": quote_ok_by_market,
+        "grouped_daily_provider_by_market": grouped_daily_provider_by_market,
         "universe_size": sum(int(v or 0) for v in universe_size_by_market.values()),
         "scanned_count": sum(int(v or 0) for v in scanned_by_market.values()),
         "quote_ok_count": sum(int(v or 0) for v in quote_ok_by_market.values()),

@@ -13,6 +13,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import requests
 
 from app.providers.finnhub import FinnhubClient
+from app.providers.massive import MassiveClient
 from app.providers.twelvedata import BarModel, ProviderError, QuoteOutModel, TwelveDataClient
 from app.providers.yahoo import fetch_bars as fetch_yahoo_bars
 from app.ws.twelvedata_ws import get_ws_client
@@ -216,6 +217,20 @@ def _has_twelvedata_key() -> bool:
 
 def _has_finnhub_key() -> bool:
     return bool(os.getenv("FINNHUB_API_KEY", "").strip())
+
+
+def _has_massive_key() -> bool:
+    return bool(os.getenv("MASSIVE_API_KEY", "").strip())
+
+
+def _massive_enabled() -> bool:
+    raw = os.getenv("MASSIVE_ENABLED", "1")
+    return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _is_us_symbol(symbol: str) -> bool:
+    symbol_u = (symbol or "").strip().upper()
+    return bool(symbol_u) and not symbol_u.endswith(".AX")
 
 
 def _utc_now() -> datetime:
@@ -529,6 +544,7 @@ def get_quote_cached_first(
     freshness_seconds: int = 60,
 ) -> QuoteResult:
     symbol_u = (symbol or "").strip().upper()
+    is_us = _is_us_symbol(symbol_u)
     # Prefer live WS ticks when available.
     ws_hit = _ws_quote(symbol_u, max_age_seconds=15)
     if ws_hit:
@@ -540,6 +556,22 @@ def get_quote_cached_first(
     if not allow_live:
         raise ProviderError("No recent cached quote")
     errors: List[str] = []
+
+    if is_us:
+        try:
+            if _massive_enabled() and _has_massive_key():
+                if not _provider_call_allowed("massive", "quote", per_minute_limit=_provider_minute_limit(30)):
+                    raise ProviderError("[RATE_LIMIT] Massive quote local rate limit reached")
+                _record_provider_call("massive", "quote")
+                massive = MassiveClient()
+                payload = massive.get_quote(symbol=symbol_u, market="US")
+                _set_cached_quote(symbol_u, payload)
+                return payload
+            if _massive_enabled() and not _has_massive_key():
+                errors.append("massive:MASSIVE_API_KEY is not set")
+        except Exception as exc:
+            errors.append(f"massive:{exc}")
+
     try:
         if not _provider_call_allowed("yahoo", "quote", per_minute_limit=_provider_minute_limit(40)):
             raise ProviderError("[RATE_LIMIT] Yahoo quote local rate limit reached")
@@ -549,21 +581,6 @@ def get_quote_cached_first(
         return payload
     except Exception as exc:
         errors.append(f"yahoo:{exc}")
-
-    try:
-        if _has_finnhub_key():
-            if not _provider_call_allowed("finnhub", "quote", per_minute_limit=_provider_minute_limit(20)):
-                raise ProviderError("[RATE_LIMIT] Finnhub quote local rate limit reached")
-            _record_provider_call("finnhub", "quote")
-            fh = FinnhubClient()
-            res = fh.fetch_quote(symbol_u)
-            quote = _quote_payload(res)
-            _validate_quote_or_raise(quote, symbol_u, "Finnhub")
-            payload = QuoteResult(provider="finnhub", quote=quote)
-            _set_cached_quote(symbol_u, payload)
-            return payload
-    except Exception as exc:
-        errors.append(f"finnhub:{exc}")
 
     try:
         if _has_twelvedata_key() and not _provider_in_cooldown("twelvedata", "quote"):
@@ -582,43 +599,6 @@ def get_quote_cached_first(
             _set_provider_cooldown("twelvedata", "quote", _seconds_until_next_utc_day(), str(exc))
         errors.append(f"twelvedata:{exc}")
 
-    raise ProviderError("All providers failed for symbol %s: %s" % (symbol_u, "; ".join(errors)))
-
-
-def get_quote_with_fallback(symbol: str, freshness_seconds: int = 60) -> QuoteResult:
-    symbol_u = (symbol or "").strip().upper()
-    if not symbol_u:
-        raise ProviderError("Missing symbol")
-
-    # WS first so consumers (scanner/paper engine/quote endpoint) prefer live price.
-    ws_hit = _ws_quote(symbol_u, max_age_seconds=15)
-    if ws_hit:
-        _set_cached_quote(symbol_u, ws_hit)
-        return ws_hit
-    cached = _get_cached_quote(symbol_u)
-    if cached:
-        return cached
-
-    errors: List[str] = []
-
-    try:
-        if _has_twelvedata_key():
-            if not _provider_call_allowed("twelvedata", "quote", per_minute_limit=_provider_minute_limit(20)):
-                raise ProviderError("[RATE_LIMIT] Twelvedata quote local rate limit reached")
-            _record_provider_call("twelvedata", "quote")
-            td = TwelveDataClient()
-            res = td.fetch_quote(symbol_u)
-            quote = _quote_payload(res)
-            _validate_quote_or_raise(quote, symbol_u, "TwelveData")
-            payload = QuoteResult(provider="twelvedata", quote=quote)
-            _set_cached_quote(symbol_u, payload)
-            return payload
-        raise ProviderError("TWELVEDATA_API_KEY is not set")
-    except Exception as exc:
-        msg = f"TwelveData quote failed for {symbol_u}: {exc}"
-        errors.append(msg)
-        logger.warning(msg)
-
     try:
         if _has_finnhub_key():
             if not _provider_call_allowed("finnhub", "quote", per_minute_limit=_provider_minute_limit(20)):
@@ -631,11 +611,45 @@ def get_quote_with_fallback(symbol: str, freshness_seconds: int = 60) -> QuoteRe
             payload = QuoteResult(provider="finnhub", quote=quote)
             _set_cached_quote(symbol_u, payload)
             return payload
-        raise ProviderError("FINNHUB_API_KEY is not set")
     except Exception as exc:
-        msg = f"Finnhub quote failed for {symbol_u}: {exc}"
-        errors.append(msg)
-        logger.warning(msg)
+        errors.append(f"finnhub:{exc}")
+
+    raise ProviderError("All providers failed for symbol %s: %s" % (symbol_u, "; ".join(errors)))
+
+
+def get_quote_with_fallback(symbol: str, freshness_seconds: int = 60) -> QuoteResult:
+    symbol_u = (symbol or "").strip().upper()
+    if not symbol_u:
+        raise ProviderError("Missing symbol")
+    is_us = _is_us_symbol(symbol_u)
+
+    # WS first so consumers (scanner/paper engine/quote endpoint) prefer live price.
+    ws_hit = _ws_quote(symbol_u, max_age_seconds=15)
+    if ws_hit:
+        _set_cached_quote(symbol_u, ws_hit)
+        return ws_hit
+    cached = _get_cached_quote(symbol_u)
+    if cached:
+        return cached
+
+    errors: List[str] = []
+
+    if is_us:
+        try:
+            if _massive_enabled() and _has_massive_key():
+                if not _provider_call_allowed("massive", "quote", per_minute_limit=_provider_minute_limit(30)):
+                    raise ProviderError("[RATE_LIMIT] Massive quote local rate limit reached")
+                _record_provider_call("massive", "quote")
+                massive = MassiveClient()
+                payload = massive.get_quote(symbol=symbol_u, market="US")
+                _set_cached_quote(symbol_u, payload)
+                return payload
+            if _massive_enabled() and not _has_massive_key():
+                raise ProviderError("MASSIVE_API_KEY is not set")
+        except Exception as exc:
+            msg = f"Massive quote failed for {symbol_u}: {exc}"
+            errors.append(msg)
+            logger.warning(msg)
 
     try:
         if not _provider_call_allowed("yahoo", "quote", per_minute_limit=_provider_minute_limit(40)):
@@ -652,6 +666,46 @@ def get_quote_with_fallback(symbol: str, freshness_seconds: int = 60) -> QuoteRe
         errors.append(msg)
         logger.warning(msg)
 
+    try:
+        if _has_twelvedata_key() and not _provider_in_cooldown("twelvedata", "quote"):
+            if not _provider_call_allowed("twelvedata", "quote", per_minute_limit=_provider_minute_limit(20)):
+                raise ProviderError("[RATE_LIMIT] Twelvedata quote local rate limit reached")
+            _record_provider_call("twelvedata", "quote")
+            td = TwelveDataClient()
+            res = td.fetch_quote(symbol_u)
+            quote = _quote_payload(res)
+            _validate_quote_or_raise(quote, symbol_u, "TwelveData")
+            payload = QuoteResult(provider="twelvedata", quote=quote)
+            _set_cached_quote(symbol_u, payload)
+            return payload
+        raise ProviderError("TWELVEDATA_API_KEY is not set")
+    except Exception as exc:
+        if _is_rate_limit_error(exc):
+            _set_provider_cooldown("twelvedata", "quote", _seconds_until_next_utc_day(), str(exc))
+        msg = f"TwelveData quote failed for {symbol_u}: {exc}"
+        errors.append(msg)
+        logger.warning(msg)
+
+    try:
+        if _has_finnhub_key() and not _provider_in_cooldown("finnhub", "quote"):
+            if not _provider_call_allowed("finnhub", "quote", per_minute_limit=_provider_minute_limit(20)):
+                raise ProviderError("[RATE_LIMIT] Finnhub quote local rate limit reached")
+            _record_provider_call("finnhub", "quote")
+            fh = FinnhubClient()
+            res = fh.fetch_quote(symbol_u)
+            quote = _quote_payload(res)
+            _validate_quote_or_raise(quote, symbol_u, "Finnhub")
+            payload = QuoteResult(provider="finnhub", quote=quote)
+            _set_cached_quote(symbol_u, payload)
+            return payload
+        raise ProviderError("FINNHUB_API_KEY is not set")
+    except Exception as exc:
+        if _is_auth_error(exc):
+            _set_provider_cooldown("finnhub", "quote", _PROVIDER_COOLDOWN_SECONDS_AUTH, str(exc))
+        msg = f"Finnhub quote failed for {symbol_u}: {exc}"
+        errors.append(msg)
+        logger.warning(msg)
+
     stale = _get_cached_quote_allow_stale(symbol_u)
     if stale:
         return stale
@@ -661,6 +715,7 @@ def get_quote_with_fallback(symbol: str, freshness_seconds: int = 60) -> QuoteRe
 
 def get_bars_with_fallback(symbol: str, interval: str = "1day", outputsize: int = 500) -> BarsResult:
     symbol_u = (symbol or "").strip().upper()
+    is_us = _is_us_symbol(symbol_u)
     interval_v = (interval or "1day").strip()
     size_v = int(outputsize)
 
@@ -675,6 +730,28 @@ def get_bars_with_fallback(symbol: str, interval: str = "1day", outputsize: int 
         return cached
 
     errors: List[str] = []
+
+    if is_us:
+        try:
+            if _massive_enabled() and _has_massive_key() and not _provider_in_cooldown("massive", "bars"):
+                if not _provider_call_allowed("massive", "bars", per_minute_limit=_provider_minute_limit(30)):
+                    raise ProviderError("[RATE_LIMIT] Massive bars local rate limit reached")
+                _record_provider_call("massive", "bars")
+                massive = MassiveClient()
+                res = massive.get_bars(symbol=symbol_u, interval=interval_v, outputsize=size_v, market="US")
+                bars = _bars_payload(res)
+                _validate_bars_or_raise(bars, symbol_u, "Massive")
+                payload = BarsResult(provider="massive", bars=bars)
+                _set_cached_bars(key, payload)
+                return payload
+            if _massive_enabled() and not _has_massive_key():
+                errors.append("Massive bars skipped: MASSIVE_API_KEY is not set")
+        except Exception as exc:
+            if _is_rate_limit_error(exc):
+                _set_provider_cooldown("massive", "bars", _PROVIDER_COOLDOWN_SECONDS_RATE_LIMIT, str(exc))
+            msg = f"Massive bars failed for {symbol_u}: {exc}"
+            errors.append(msg)
+            logger.warning(msg)
 
     try:
         if not _provider_call_allowed("yahoo", "bars", per_minute_limit=_provider_minute_limit(40)):
