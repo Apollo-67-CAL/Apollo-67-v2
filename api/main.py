@@ -4540,20 +4540,39 @@ def _paper_order_view(row: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _paper_position_view(row: Dict[str, Any]) -> Dict[str, Any]:
-    tactic = str(row.get("tactic_id") or "manual")
-    strategy_key = _paper_strategy_key(tactic)
+    symbol = str(row.get("symbol") or "").upper()
+    tactic = str(row.get("tactic_id") or row.get("strategy_id") or "manual")
+    strategy_key = _paper_strategy_key(row.get("strategy_id") or tactic)
+    qty = _as_float_or_none(row.get("qty")) or 0.0
+    last_price = _as_float_or_none(row.get("last_price"))
+    value = (qty * last_price) if last_price is not None else None
+    market = str(row.get("market") or ("AU" if symbol.endswith(".AX") else "US")).upper()
     return {
-        "symbol": str(row.get("symbol") or "").upper(),
-        "qty": _as_float_or_none(row.get("qty")),
+        "id": symbol,
+        "symbol": symbol,
+        "market": market,
+        "qty": qty,
         "avg_price": _as_float_or_none(row.get("avg_price")),
-        "last_price": _as_float_or_none(row.get("last_price")),
+        "last_price": last_price,
+        "value": value,
         "unrealised_pnl": _as_float_or_none(row.get("unrealised_pnl")),
         "realised_pnl": _as_float_or_none(row.get("realised_pnl")),
         "strategy_key": strategy_key,
+        "strategy_id": strategy_key,
         "tactic_id": tactic,
+        "tactic_label": str(row.get("tactic_label") or _PAPER_STRATEGIES.get(strategy_key, {}).get("label") or ""),
+        "stop_loss": _as_float_or_none(row.get("stop_loss")),
+        "take_profit": _as_float_or_none(row.get("take_profit")),
+        "trailing_stop": _as_float_or_none(row.get("trailing_stop")),
+        "highest_price": _as_float_or_none(row.get("highest_price")),
         "opened_at": row.get("opened_at"),
         "updated_at": row.get("updated_at"),
+        "status": str(row.get("status") or "OPEN").upper(),
     }
+
+
+def _paper_symbol_from_position_id(position_id: str) -> str:
+    return str(position_id or "").strip().upper()
 
 
 def _paper_submit_order(payload: Dict[str, Any]) -> Tuple[Optional[Dict[str, Any]], Optional[str], int]:
@@ -4588,6 +4607,13 @@ def _paper_submit_order(payload: Dict[str, Any]) -> Tuple[Optional[Dict[str, Any
     tactic_label = str(payload.get("tactic_label") or "").strip() or None
     notes = str(payload.get("notes") or "").strip() or None
     source = str(payload.get("source") or "ui")
+    market = str(payload.get("market") or ("AU" if symbol.endswith(".AX") else "US")).strip().upper()
+    stop_loss = _as_float_or_none(payload.get("stop_loss"))
+    take_profit = _as_float_or_none(payload.get("take_profit"))
+    trailing_stop = _as_float_or_none(payload.get("trailing_stop"))
+    for level_name, level_value in (("stop_loss", stop_loss), ("take_profit", take_profit), ("trailing_stop", trailing_stop)):
+        if level_value is not None and level_value <= 0:
+            return None, f"{level_name} must be > 0", 400
 
     try:
         quote = get_quote_with_fallback(symbol=symbol, freshness_seconds=60)
@@ -4620,6 +4646,23 @@ def _paper_submit_order(payload: Dict[str, Any]) -> Tuple[Optional[Dict[str, Any
     }
 
     if side == "BUY":
+        existing = _paper_repo.get_position(symbol)
+        existing_stop = _as_float_or_none(existing.get("stop_loss")) if existing else None
+        existing_target = _as_float_or_none(existing.get("take_profit")) if existing else None
+        existing_trail = _as_float_or_none(existing.get("trailing_stop")) if existing else None
+        existing_highest = _as_float_or_none(existing.get("highest_price")) if existing else None
+        next_stop = stop_loss if stop_loss is not None else existing_stop
+        next_target = take_profit if take_profit is not None else existing_target
+        next_trail = trailing_stop if trailing_stop is not None else existing_trail
+        next_tactic = str(existing.get("tactic_id") or strategy_key) if existing else strategy_key
+        next_strategy = str(existing.get("strategy_id") or strategy_key) if existing else strategy_key
+        next_tactic_label = (
+            tactic_label
+            or (str(existing.get("tactic_label") or "").strip() if existing else "")
+            or _PAPER_STRATEGIES.get(strategy_key, {}).get("label")
+        )
+        next_market = str(existing.get("market") or market) if existing else market
+        next_highest = max(float(price), float(existing_highest or 0.0))
         order = _paper_repo.create_order(
             symbol=symbol,
             side="BUY",
@@ -4629,7 +4672,6 @@ def _paper_submit_order(payload: Dict[str, Any]) -> Tuple[Optional[Dict[str, Any
             status="OPEN",
             meta=meta,
         )
-        existing = _paper_repo.get_position(symbol)
         if existing:
             existing_qty = float(existing.get("qty") or 0.0)
             existing_avg = float(existing.get("avg_price") or 0.0)
@@ -4648,7 +4690,15 @@ def _paper_submit_order(payload: Dict[str, Any]) -> Tuple[Optional[Dict[str, Any
             last_price=float(price),
             unrealised_pnl=unreal,
             realised_pnl=realised,
-            tactic_id=strategy_key,
+            tactic_id=next_tactic,
+            strategy_id=next_strategy,
+            tactic_label=next_tactic_label,
+            market=next_market,
+            stop_loss=next_stop,
+            take_profit=next_target,
+            trailing_stop=next_trail,
+            highest_price=next_highest,
+            status="OPEN",
         )
         return _paper_order_view(order), None, 200
 
@@ -4687,6 +4737,11 @@ def _paper_submit_order(payload: Dict[str, Any]) -> Tuple[Optional[Dict[str, Any
     next_realised = existing_realised + realised_delta
     if remaining_qty > 1e-9:
         unreal = (float(price) - avg_price) * remaining_qty
+        next_tactic = str(existing.get("tactic_id") or strategy_key)
+        next_strategy = str(existing.get("strategy_id") or next_tactic)
+        next_tactic_label = str(existing.get("tactic_label") or _PAPER_STRATEGIES.get(next_strategy, {}).get("label") or "")
+        next_market = str(existing.get("market") or ("AU" if symbol.endswith(".AX") else "US"))
+        next_highest = max(float(price), float(_as_float_or_none(existing.get("highest_price")) or 0.0))
         _paper_repo.upsert_position(
             symbol=symbol,
             qty=remaining_qty,
@@ -4694,7 +4749,15 @@ def _paper_submit_order(payload: Dict[str, Any]) -> Tuple[Optional[Dict[str, Any
             last_price=float(price),
             unrealised_pnl=unreal,
             realised_pnl=next_realised,
-            tactic_id=str(existing.get("tactic_id") or strategy_key),
+            tactic_id=next_tactic,
+            strategy_id=next_strategy,
+            tactic_label=next_tactic_label,
+            market=next_market,
+            stop_loss=_as_float_or_none(existing.get("stop_loss")),
+            take_profit=_as_float_or_none(existing.get("take_profit")),
+            trailing_stop=_as_float_or_none(existing.get("trailing_stop")),
+            highest_price=next_highest,
+            status="OPEN",
         )
     else:
         _paper_repo.remove_position(symbol)
@@ -4743,17 +4806,21 @@ def paper_status():
                 continue
         cash_available = starting_cash + cash_delta
         equity = cash_available + sum(float(r.get("last_price") or 0.0) * float(r.get("qty") or 0.0) for r in positions)
+        open_positions_count = len(positions)
         return JSONResponse(
             status_code=200,
             content={
                 "ok": True,
-                "positions_count": len(positions),
+                "positions_count": open_positions_count,
+                "open_positions_count": open_positions_count,
                 "open_orders_count": len(open_orders),
                 "closed_orders_count": len(closed_orders),
                 "closed_wins": closed_wins,
                 "totals": {
                     "unrealised_pnl": total_unreal,
                     "realised_pnl": total_real,
+                    "unrealized_pnl_total": total_unreal,
+                    "realized_pnl_total": total_real,
                     "net_pnl": total_unreal + total_real,
                 },
                 "funds": {
@@ -4761,6 +4828,10 @@ def paper_status():
                     "cash_available": cash_available,
                     "equity": equity,
                 },
+                "equity": equity,
+                "cash_available": cash_available,
+                "realized_pnl_total": total_real,
+                "unrealized_pnl_total": total_unreal,
                 "last_engine_run_at": _paper_engine_last_run_at,
                 "leaderboard": runs,
                 "config": _paper_config(),
@@ -4784,7 +4855,7 @@ def paper_positions():
 @app.post("/paper/positions/{position_id}/close")
 def paper_close_position(position_id: str, payload: Optional[Dict[str, Any]] = None):
     try:
-        symbol = str(position_id or "").strip().upper()
+        symbol = _paper_symbol_from_position_id(position_id)
         if not symbol:
             return JSONResponse(status_code=400, content={"ok": False, "error": "position_id is required"})
         existing = _paper_repo.get_position(symbol)
@@ -4805,9 +4876,9 @@ def paper_close_position(position_id: str, payload: Optional[Dict[str, Any]] = N
         close_payload = {
             "symbol": symbol,
             "side": "SELL",
-            "amount_usd": float(qty) * float(last_price) * 1.05,
-            "strategy_key": str(existing.get("tactic_id") or "manual"),
-            "tactic_label": str(((payload or {}) if isinstance(payload, dict) else {}).get("reason") or "manual_close"),
+            "qty": float(qty),
+            "strategy_key": str(existing.get("strategy_id") or existing.get("tactic_id") or "manual"),
+            "tactic_label": str(((payload or {}) if isinstance(payload, dict) else {}).get("reason") or existing.get("tactic_label") or "manual_close"),
             "source": "paper_close",
         }
         order, err, code = _paper_submit_order(close_payload)
@@ -4820,8 +4891,123 @@ def paper_close_position(position_id: str, payload: Optional[Dict[str, Any]] = N
                 "ok": True,
                 "position": _paper_position_view(position_after) if position_after else None,
                 "order": order,
+                "closed": position_after is None,
             },
         )
+    except Exception as exc:
+        return JSONResponse(status_code=500, content={"ok": False, "error": str(exc)})
+
+
+@app.post("/paper/positions/{position_id}/buy-more")
+def paper_position_buy_more(position_id: str, payload: Optional[Dict[str, Any]] = None):
+    try:
+        symbol = _paper_symbol_from_position_id(position_id)
+        if not symbol:
+            return JSONResponse(status_code=400, content={"ok": False, "error": "position_id is required"})
+        existing = _paper_repo.get_position(symbol)
+        if not existing:
+            return JSONResponse(status_code=404, content={"ok": False, "error": "position not found"})
+        body = payload if isinstance(payload, dict) else {}
+        amount_usd = _as_float_or_none(body.get("amount_usd"))
+        if amount_usd is None or amount_usd <= 0:
+            return JSONResponse(status_code=400, content={"ok": False, "error": "amount_usd must be > 0"})
+        submit_payload = {
+            "symbol": symbol,
+            "side": "BUY",
+            "amount_usd": float(amount_usd),
+            "strategy_key": body.get("strategy_id") or body.get("strategy_key") or existing.get("strategy_id") or existing.get("tactic_id") or "manual",
+            "tactic_label": body.get("tactic_label") or existing.get("tactic_label"),
+            "source": "paper_buy_more",
+            "stop_loss": body.get("stop_loss") if "stop_loss" in body else existing.get("stop_loss"),
+            "take_profit": body.get("take_profit") if "take_profit" in body else existing.get("take_profit"),
+            "trailing_stop": body.get("trailing_stop") if "trailing_stop" in body else existing.get("trailing_stop"),
+            "market": existing.get("market"),
+        }
+        order, err, code = _paper_submit_order(submit_payload)
+        if err:
+            return JSONResponse(status_code=code, content={"ok": False, "error": err})
+        position_after = _paper_repo.get_position(symbol)
+        return JSONResponse(
+            status_code=200,
+            content={
+                "ok": True,
+                "position": _paper_position_view(position_after) if position_after else None,
+                "order": order,
+            },
+        )
+    except Exception as exc:
+        return JSONResponse(status_code=500, content={"ok": False, "error": str(exc)})
+
+
+@app.post("/paper/positions/{position_id}/sell")
+def paper_position_sell(position_id: str, payload: Optional[Dict[str, Any]] = None):
+    try:
+        symbol = _paper_symbol_from_position_id(position_id)
+        if not symbol:
+            return JSONResponse(status_code=400, content={"ok": False, "error": "position_id is required"})
+        existing = _paper_repo.get_position(symbol)
+        if not existing:
+            return JSONResponse(status_code=404, content={"ok": False, "error": "position not found"})
+        body = payload if isinstance(payload, dict) else {}
+        amount_usd = _as_float_or_none(body.get("amount_usd"))
+        qty = _as_float_or_none(body.get("qty"))
+        if (amount_usd is None or amount_usd <= 0) and (qty is None or qty <= 0):
+            return JSONResponse(status_code=400, content={"ok": False, "error": "amount_usd or qty must be > 0"})
+        submit_payload = {
+            "symbol": symbol,
+            "side": "SELL",
+            "amount_usd": amount_usd,
+            "qty": qty,
+            "strategy_key": body.get("strategy_id") or body.get("strategy_key") or existing.get("strategy_id") or existing.get("tactic_id") or "manual",
+            "tactic_label": body.get("tactic_label") or existing.get("tactic_label") or "manual_sell",
+            "source": "paper_position_sell",
+        }
+        order, err, code = _paper_submit_order(submit_payload)
+        if err:
+            return JSONResponse(status_code=code, content={"ok": False, "error": err})
+        position_after = _paper_repo.get_position(symbol)
+        return JSONResponse(
+            status_code=200,
+            content={
+                "ok": True,
+                "position": _paper_position_view(position_after) if position_after else None,
+                "order": order,
+                "closed": position_after is None,
+            },
+        )
+    except Exception as exc:
+        return JSONResponse(status_code=500, content={"ok": False, "error": str(exc)})
+
+
+@app.post("/paper/positions/{position_id}/adjust")
+def paper_position_adjust(position_id: str, payload: Optional[Dict[str, Any]] = None):
+    try:
+        symbol = _paper_symbol_from_position_id(position_id)
+        if not symbol:
+            return JSONResponse(status_code=400, content={"ok": False, "error": "position_id is required"})
+        existing = _paper_repo.get_position(symbol)
+        if not existing:
+            return JSONResponse(status_code=404, content={"ok": False, "error": "position not found"})
+        body = payload if isinstance(payload, dict) else {}
+        updates: Dict[str, Any] = {}
+        for numeric_key in ("stop_loss", "take_profit", "trailing_stop"):
+            if numeric_key in body:
+                numeric_val = _as_float_or_none(body.get(numeric_key))
+                if body.get(numeric_key) not in (None, "", "null") and numeric_val is None:
+                    return JSONResponse(status_code=400, content={"ok": False, "error": f"{numeric_key} must be numeric"})
+                if numeric_val is not None and numeric_val <= 0:
+                    return JSONResponse(status_code=400, content={"ok": False, "error": f"{numeric_key} must be > 0"})
+                updates[numeric_key] = numeric_val
+        if "strategy_id" in body or "strategy_key" in body:
+            strategy = _paper_strategy_key(body.get("strategy_id") or body.get("strategy_key"))
+            updates["strategy_id"] = strategy
+            updates["tactic_id"] = strategy
+        if "tactic_label" in body:
+            updates["tactic_label"] = str(body.get("tactic_label") or "").strip() or None
+        adjusted = _paper_repo.adjust_position(symbol, updates)
+        if not adjusted:
+            return JSONResponse(status_code=404, content={"ok": False, "error": "position not found"})
+        return JSONResponse(status_code=200, content={"ok": True, "position": _paper_position_view(adjusted)})
     except Exception as exc:
         return JSONResponse(status_code=500, content={"ok": False, "error": str(exc)})
 

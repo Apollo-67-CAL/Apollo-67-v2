@@ -114,6 +114,24 @@ const paperOrderModalSubmit = document.getElementById('paperOrderModalSubmit');
 const paperOrderModalCancel = document.getElementById('paperOrderModalCancel');
 const paperOrderModalError = document.getElementById('paperOrderModalError');
 const paperOrderModalSuccess = document.getElementById('paperOrderModalSuccess');
+const paperPositionModal = document.getElementById('paperPositionModal');
+const paperPositionModalTitle = document.getElementById('paperPositionModalTitle');
+const paperPositionModalSymbol = document.getElementById('paperPositionModalSymbol');
+const paperPositionModalAmount = document.getElementById('paperPositionModalAmount');
+const paperPositionModalStrategy = document.getElementById('paperPositionModalStrategy');
+const paperPositionModalTactic = document.getElementById('paperPositionModalTactic');
+const paperPositionModalStop = document.getElementById('paperPositionModalStop');
+const paperPositionModalTarget = document.getElementById('paperPositionModalTarget');
+const paperPositionModalTrail = document.getElementById('paperPositionModalTrail');
+const paperPositionModalSubmit = document.getElementById('paperPositionModalSubmit');
+const paperPositionModalCancel = document.getElementById('paperPositionModalCancel');
+const paperPositionModalError = document.getElementById('paperPositionModalError');
+const paperPositionModalSuccess = document.getElementById('paperPositionModalSuccess');
+const paperPositionAmountGroup = document.getElementById('paperPositionAmountGroup');
+const paperPositionStopsGroup = document.getElementById('paperPositionStopsGroup');
+const paperPositionSellMode = document.getElementById('paperPositionSellMode');
+const paperPositionModalSellAll = document.getElementById('paperPositionModalSellAll');
+const paperPositionCloseNotice = document.getElementById('paperPositionCloseNotice');
 
 const chartCanvas = document.getElementById('priceChart');
 const chartMeta = document.getElementById('chartMeta');
@@ -133,6 +151,7 @@ let openModalCount = 0;
 const PAPER_DEFAULT_AMOUNT = 1000;
 const paperBuyInFlightBySymbol = new Map();
 let paperOrderDraft = null;
+let paperPositionActionDraft = null;
 const nonJsonResponseLogged = new Set();
 
 const state = {
@@ -2705,9 +2724,180 @@ function closePaperOrderModal() {
   paperOrderDraft = null;
 }
 
+function getPaperPositionById(positionId) {
+  const key = normalizeSymbol(positionId || '');
+  if (!key) return null;
+  return (state.paperPositions || []).find((row) => normalizeSymbol(row?.id || row?.symbol) === key) || null;
+}
+
+function setPaperPositionModalError(message) {
+  if (!paperPositionModalError) return;
+  paperPositionModalError.textContent = message || '';
+  paperPositionModalError.hidden = !message;
+}
+
+function openPaperPositionActionModal(action, row) {
+  if (!paperPositionModal || !row) return;
+  const actionKey = String(action || '').trim().toLowerCase();
+  const symbol = normalizeSymbol(row.id || row.symbol);
+  if (!symbol) return;
+  const defaultStrategy = String(row.strategy_id || row.strategy_key || row.tactic_id || 'manual');
+  const defaultTactic = String(row.tactic_label || '').trim();
+  const defaultAmount = Number(state.paperLastAmountUsd || PAPER_DEFAULT_AMOUNT);
+  paperPositionActionDraft = { action: actionKey, positionId: symbol };
+
+  if (paperPositionModalTitle) {
+    if (actionKey === 'buy-more') paperPositionModalTitle.textContent = `Buy More • ${symbol}`;
+    else if (actionKey === 'sell') paperPositionModalTitle.textContent = `Sell Position • ${symbol}`;
+    else if (actionKey === 'adjust') paperPositionModalTitle.textContent = `Adjust Position • ${symbol}`;
+    else paperPositionModalTitle.textContent = `Close Position • ${symbol}`;
+  }
+  if (paperPositionModalSymbol) paperPositionModalSymbol.value = symbol;
+  if (paperPositionModalAmount) paperPositionModalAmount.value = String(Math.max(1, Math.round(defaultAmount)));
+  if (paperPositionModalAmount) paperPositionModalAmount.disabled = false;
+  if (paperPositionModalStrategy) paperPositionModalStrategy.innerHTML = paperStrategyOptionsHtml(defaultStrategy);
+  if (paperPositionModalTactic) paperPositionModalTactic.value = defaultTactic;
+  if (paperPositionModalStop) paperPositionModalStop.value = Number.isFinite(Number(row.stop_loss)) ? String(Number(row.stop_loss)) : '';
+  if (paperPositionModalTarget) paperPositionModalTarget.value = Number.isFinite(Number(row.take_profit)) ? String(Number(row.take_profit)) : '';
+  if (paperPositionModalTrail) paperPositionModalTrail.value = Number.isFinite(Number(row.trailing_stop)) ? String(Number(row.trailing_stop)) : '';
+  if (paperPositionModalSellAll) paperPositionModalSellAll.checked = false;
+  if (paperPositionAmountGroup) paperPositionAmountGroup.hidden = !(actionKey === 'buy-more' || actionKey === 'sell');
+  if (paperPositionSellMode) paperPositionSellMode.hidden = actionKey !== 'sell';
+  if (paperPositionStopsGroup) paperPositionStopsGroup.hidden = actionKey !== 'adjust';
+  if (paperPositionCloseNotice) paperPositionCloseNotice.hidden = actionKey !== 'close';
+  if (paperPositionModalSubmit) {
+    paperPositionModalSubmit.disabled = false;
+    if (actionKey === 'buy-more') paperPositionModalSubmit.textContent = 'Buy More';
+    else if (actionKey === 'sell') paperPositionModalSubmit.textContent = 'Sell';
+    else if (actionKey === 'adjust') paperPositionModalSubmit.textContent = 'Apply Adjustments';
+    else paperPositionModalSubmit.textContent = 'Close Position';
+  }
+  if (paperPositionModalSuccess) {
+    paperPositionModalSuccess.hidden = true;
+    paperPositionModalSuccess.textContent = '';
+  }
+  setPaperPositionModalError('');
+  openModalCount += 1;
+  document.body.style.overflow = 'hidden';
+  paperPositionModal.hidden = false;
+}
+
+function closePaperPositionActionModal() {
+  if (!paperPositionModal) return;
+  paperPositionModal.hidden = true;
+  if (paperPositionModalSellAll) paperPositionModalSellAll.checked = false;
+  if (paperPositionModalAmount) paperPositionModalAmount.disabled = false;
+  if (paperPositionModalSubmit) {
+    paperPositionModalSubmit.disabled = false;
+    paperPositionModalSubmit.textContent = 'Submit';
+  }
+  if (paperPositionModalSuccess) {
+    paperPositionModalSuccess.hidden = true;
+    paperPositionModalSuccess.textContent = '';
+  }
+  setPaperPositionModalError('');
+  paperPositionActionDraft = null;
+  openModalCount = Math.max(0, openModalCount - 1);
+  document.body.style.overflow = openModalCount > 0 ? 'hidden' : '';
+}
+
+async function submitPaperPositionActionModal() {
+  if (!paperPositionActionDraft) return;
+  const { action, positionId } = paperPositionActionDraft;
+  const symbol = normalizeSymbol(positionId);
+  const row = getPaperPositionById(symbol);
+  if (!symbol || !row) {
+    setPaperPositionModalError('Position not found.');
+    return;
+  }
+  const amount = Number(paperPositionModalAmount?.value);
+  const strategy = String(paperPositionModalStrategy?.value || row.strategy_id || row.strategy_key || 'manual').trim() || 'manual';
+  const tactic = String(paperPositionModalTactic?.value || '').trim() || null;
+
+  let endpoint = '';
+  let payload = {};
+  if (action === 'buy-more') {
+    if (!Number.isFinite(amount) || amount <= 0) {
+      setPaperPositionModalError('Amount must be greater than 0.');
+      return;
+    }
+    payload = { amount_usd: amount, strategy_id: strategy, tactic_label: tactic };
+    endpoint = `/paper/positions/${encodeURIComponent(symbol)}/buy-more`;
+  } else if (action === 'sell') {
+    const sellAll = !!paperPositionModalSellAll?.checked;
+    endpoint = sellAll
+      ? `/paper/positions/${encodeURIComponent(symbol)}/close`
+      : `/paper/positions/${encodeURIComponent(symbol)}/sell`;
+    if (sellAll) {
+      payload = { reason: tactic || 'manual' };
+    } else {
+      if (!Number.isFinite(amount) || amount <= 0) {
+        setPaperPositionModalError('Amount must be greater than 0 for partial sell.');
+        return;
+      }
+      payload = { amount_usd: amount, strategy_id: strategy, tactic_label: tactic };
+    }
+  } else if (action === 'adjust') {
+    const stop = Number(paperPositionModalStop?.value);
+    const target = Number(paperPositionModalTarget?.value);
+    const trail = Number(paperPositionModalTrail?.value);
+    payload = {
+      strategy_id: strategy,
+      tactic_label: tactic,
+      stop_loss: Number.isFinite(stop) ? stop : null,
+      take_profit: Number.isFinite(target) ? target : null,
+      trailing_stop: Number.isFinite(trail) ? trail : null,
+    };
+    endpoint = `/paper/positions/${encodeURIComponent(symbol)}/adjust`;
+  } else {
+    endpoint = `/paper/positions/${encodeURIComponent(symbol)}/close`;
+    payload = { reason: tactic || 'manual' };
+  }
+
+  if (paperPositionModalSubmit) {
+    paperPositionModalSubmit.disabled = true;
+    paperPositionModalSubmit.textContent = 'Saving...';
+  }
+  setPaperPositionModalError('');
+  if (paperPositionModalSuccess) {
+    paperPositionModalSuccess.hidden = true;
+    paperPositionModalSuccess.textContent = '';
+  }
+  try {
+    const res = await fetchJsonWithTimeout(endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    }, 7000);
+    if (!res.ok || !res.body?.ok) {
+      setPaperPositionModalError(getErrorMessage(res, 'Failed to update paper position'));
+      return;
+    }
+    await refreshPaperTrading();
+    if (paperPositionModalSuccess) {
+      const verb = action === 'buy-more'
+        ? 'Position increased'
+        : (action === 'adjust' ? 'Position updated' : 'Position sold');
+      paperPositionModalSuccess.textContent = `${verb}: ${symbol}`;
+      paperPositionModalSuccess.hidden = false;
+    }
+    window.setTimeout(() => {
+      closePaperPositionActionModal();
+    }, 350);
+  } catch (error) {
+    setPaperPositionModalError(error?.message || 'Failed to update paper position');
+  } finally {
+    if (paperPositionModalSubmit) {
+      paperPositionModalSubmit.disabled = false;
+      paperPositionModalSubmit.textContent = 'Submit';
+    }
+  }
+}
+
 function forceCloseAllModalsOnInit() {
   if (monitorModal) monitorModal.hidden = true;
   if (paperOrderModal) paperOrderModal.hidden = true;
+  if (paperPositionModal) paperPositionModal.hidden = true;
   if (scannerSourcesModal) scannerSourcesModal.hidden = true;
   if (scannerDetailModal) scannerDetailModal.hidden = true;
   if (monitorModalError) {
@@ -2717,6 +2907,14 @@ function forceCloseAllModalsOnInit() {
   if (paperOrderModalError) {
     paperOrderModalError.hidden = true;
     paperOrderModalError.textContent = '';
+  }
+  if (paperPositionModalError) {
+    paperPositionModalError.hidden = true;
+    paperPositionModalError.textContent = '';
+  }
+  if (paperPositionModalSuccess) {
+    paperPositionModalSuccess.hidden = true;
+    paperPositionModalSuccess.textContent = '';
   }
   if (paperOrderModalSuccess) {
     paperOrderModalSuccess.hidden = true;
@@ -3529,7 +3727,8 @@ function renderPaperTrading() {
   const statusError = state.paperStatusError ? `<div class="panel-error" style="margin-bottom:8px;">${escapeHtml(state.paperStatusError)}</div>` : '';
   paperSummary.innerHTML = `${statusError}
     <div class="monitor-total-item"><span>Open Positions</span><strong>${positions.length}</strong></div>
-    <div class="monitor-total-item"><span>Open Orders</span><strong>${Number(status.open_orders_count || 0)}</strong></div>
+    <div class="monitor-total-item"><span>Cash Available</span><strong>$${formatPrice(Number(status?.funds?.cash_available || status.cash_available || 0))}</strong></div>
+    <div class="monitor-total-item"><span>Equity</span><strong>$${formatPrice(Number(status?.funds?.equity || status.equity || 0))}</strong></div>
     <div class="monitor-total-item"><span>Net P/L</span><strong class="${Number(totals.net_pnl || 0) >= 0 ? 'up' : 'down'}">$${formatPrice(Number(totals.net_pnl || 0))}</strong></div>
   `;
 
@@ -3540,12 +3739,24 @@ function renderPaperTrading() {
         <td>${row.qty != null ? formatPrice(row.qty) : '-'}</td>
         <td>${row.avg_price != null ? `$${formatPrice(row.avg_price)}` : '-'}</td>
         <td>${row.last_price != null ? `$${formatPrice(row.last_price)}` : '-'}</td>
+        <td>${row.value != null ? `$${formatPrice(row.value)}` : '-'}</td>
         <td class="${Number(row.unrealised_pnl || 0) >= 0 ? 'up' : 'down'}">$${formatPrice(Number(row.unrealised_pnl || 0))}</td>
         <td class="${Number(row.realised_pnl || 0) >= 0 ? 'up' : 'down'}">$${formatPrice(Number(row.realised_pnl || 0))}</td>
-        <td>${row.tactic_id || '-'}</td>
+        <td>${escapeHtml(String(row.strategy_id || row.strategy_key || row.tactic_id || '-'))}</td>
+        <td>${row.stop_loss != null ? `$${formatPrice(row.stop_loss)}` : '—'}</td>
+        <td>${row.take_profit != null ? `$${formatPrice(row.take_profit)}` : '—'}</td>
+        <td>${row.trailing_stop != null ? `$${formatPrice(row.trailing_stop)}` : '—'}</td>
+        <td>
+          <div class="paper-pos-actions">
+            <button type="button" class="button-ghost scanner-monitor-btn" data-action="paper-pos-buy-more" data-position-id="${escapeHtml(String(row.id || row.symbol || ''))}">Buy more</button>
+            <button type="button" class="button-ghost scanner-monitor-btn" data-action="paper-pos-sell" data-position-id="${escapeHtml(String(row.id || row.symbol || ''))}">Sell</button>
+            <button type="button" class="button-ghost scanner-monitor-btn" data-action="paper-pos-adjust" data-position-id="${escapeHtml(String(row.id || row.symbol || ''))}">Adjust</button>
+            <button type="button" class="button-ghost scanner-monitor-btn" data-action="paper-pos-close" data-position-id="${escapeHtml(String(row.id || row.symbol || ''))}">Close</button>
+          </div>
+        </td>
       </tr>
     `).join('')
-    : '<tr><td colspan="7" class="empty">No paper positions.</td></tr>';
+    : '<tr><td colspan="12" class="empty">No paper positions.</td></tr>';
 
   paperClosedBody.innerHTML = orders.length
     ? orders.slice(0, 20).map((row) => `
@@ -3737,6 +3948,38 @@ if (paperOrderModal) {
   });
 }
 
+if (paperPositionModalCancel) {
+  paperPositionModalCancel.addEventListener('click', () => {
+    closePaperPositionActionModal();
+  });
+}
+
+if (paperPositionModalSubmit) {
+  paperPositionModalSubmit.addEventListener('click', async () => {
+    await submitPaperPositionActionModal();
+  });
+}
+
+if (paperPositionModal) {
+  paperPositionModal.addEventListener('click', (event) => {
+    if (event.target === paperPositionModal) {
+      closePaperPositionActionModal();
+    }
+  });
+}
+
+if (paperPositionModalSellAll && paperPositionModalAmount) {
+  paperPositionModalSellAll.addEventListener('change', () => {
+    const sellingAll = !!paperPositionModalSellAll.checked;
+    paperPositionModalAmount.disabled = sellingAll;
+    if (sellingAll) {
+      paperPositionModalAmount.value = '';
+    } else if (!paperPositionModalAmount.value) {
+      paperPositionModalAmount.value = String(Math.max(1, Math.round(state.paperLastAmountUsd || PAPER_DEFAULT_AMOUNT)));
+    }
+  });
+}
+
 if (scannerSourcesCloseBtn) {
   scannerSourcesCloseBtn.addEventListener('click', () => {
     closeScannerSourcesModal();
@@ -3776,6 +4019,10 @@ document.addEventListener('keydown', (event) => {
   }
   if (event.key === 'Escape' && paperOrderModal && !paperOrderModal.hidden) {
     closePaperOrderModal();
+    return;
+  }
+  if (event.key === 'Escape' && paperPositionModal && !paperPositionModal.hidden) {
+    closePaperPositionActionModal();
     return;
   }
   if (event.key === 'Escape' && scannerDetailModal && !scannerDetailModal.hidden) {
@@ -3986,6 +4233,38 @@ document.addEventListener('click', (event) => {
     if (symbol) {
       openScannerSourcesModal(symbol);
     }
+    return;
+  }
+
+  const paperBuyMore = event.target.closest('[data-action="paper-pos-buy-more"]');
+  if (paperBuyMore) {
+    const positionId = normalizeSymbol(paperBuyMore.dataset.positionId);
+    const row = getPaperPositionById(positionId);
+    if (row) openPaperPositionActionModal('buy-more', row);
+    return;
+  }
+
+  const paperSell = event.target.closest('[data-action="paper-pos-sell"]');
+  if (paperSell) {
+    const positionId = normalizeSymbol(paperSell.dataset.positionId);
+    const row = getPaperPositionById(positionId);
+    if (row) openPaperPositionActionModal('sell', row);
+    return;
+  }
+
+  const paperAdjust = event.target.closest('[data-action="paper-pos-adjust"]');
+  if (paperAdjust) {
+    const positionId = normalizeSymbol(paperAdjust.dataset.positionId);
+    const row = getPaperPositionById(positionId);
+    if (row) openPaperPositionActionModal('adjust', row);
+    return;
+  }
+
+  const paperClose = event.target.closest('[data-action="paper-pos-close"]');
+  if (paperClose) {
+    const positionId = normalizeSymbol(paperClose.dataset.positionId);
+    const row = getPaperPositionById(positionId);
+    if (row) openPaperPositionActionModal('close', row);
     return;
   }
 

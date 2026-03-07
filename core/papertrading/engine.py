@@ -68,6 +68,14 @@ class PaperTradingEngine:
             unrealised_pnl=0.0,
             realised_pnl=0.0,
             tactic_id=str(meta.get("tactic_id") or "default"),
+            strategy_id=str(meta.get("tactic_id") or "default"),
+            tactic_label=str((scanner_meta or {}).get("tactic_label") or (scanner_meta or {}).get("strategy_label") or ""),
+            market="AU" if symbol_u.endswith(".AX") else "US",
+            stop_loss=self._positive_float((trade or {}).get("stop_loss_price")),
+            take_profit=self._positive_float((trade or {}).get("target_sell_price")),
+            trailing_stop=self._positive_float((trade or {}).get("trailing_stop_price")),
+            highest_price=price,
+            status="OPEN",
         )
         self._refresh_run_metrics()
         return order
@@ -79,12 +87,6 @@ class PaperTradingEngine:
     ) -> Dict[str, Any]:
         closed: List[Dict[str, Any]] = []
         positions = self.repo.list_positions(limit=500)
-        open_orders = self.repo.list_open_orders()
-        order_by_symbol = {}
-        for order in open_orders:
-            sym = str(order.get("symbol") or "").strip().upper()
-            if sym and sym not in order_by_symbol:
-                order_by_symbol[sym] = order
 
         for pos in positions:
             symbol = str(pos.get("symbol") or "").strip().upper()
@@ -101,6 +103,18 @@ class PaperTradingEngine:
 
             trade_params = trade_params_by_symbol.get(symbol) if isinstance(trade_params_by_symbol, dict) else None
             levels = self._resolve_levels(avg, trade_params)
+            stop = self._positive_float(pos.get("stop_loss")) or levels.get("stop")
+            target = self._positive_float(pos.get("take_profit")) or levels.get("target")
+            trail = self._positive_float(pos.get("trailing_stop")) or levels.get("trail")
+            highest_price_prev = self._positive_float(pos.get("highest_price")) or avg
+            highest_price = max(highest_price_prev, price)
+            if trail is not None and highest_price > highest_price_prev:
+                trail_buffer = max(0.01, highest_price_prev - trail)
+                trail = max(float(trail), float(highest_price - trail_buffer))
+            strategy_id = str(pos.get("strategy_id") or pos.get("tactic_id") or "manual")
+            tactic_label = str(pos.get("tactic_label") or strategy_id)
+            market = str(pos.get("market") or ("AU" if symbol.endswith(".AX") else "US")).upper()
+            status = str(pos.get("status") or "OPEN").upper()
 
             unreal = (price - avg) * qty
             self.repo.upsert_position(
@@ -110,26 +124,46 @@ class PaperTradingEngine:
                 last_price=price,
                 unrealised_pnl=unreal,
                 realised_pnl=self._positive_or_zero(pos.get("realised_pnl")),
-                tactic_id=str(pos.get("tactic_id") or "default"),
+                tactic_id=str(pos.get("tactic_id") or strategy_id or "default"),
+                strategy_id=strategy_id,
+                tactic_label=tactic_label,
+                market=market,
+                stop_loss=stop,
+                take_profit=target,
+                trailing_stop=trail,
+                highest_price=highest_price,
+                status=status,
             )
 
             exit_reason = None
-            if levels.get("target") is not None and price >= levels["target"]:
-                exit_reason = "target"
-            elif levels.get("stop") is not None and price <= levels["stop"]:
-                exit_reason = "stop"
-            elif levels.get("trail") is not None and price <= levels["trail"]:
-                exit_reason = "trail"
+            if target is not None and price >= target:
+                exit_reason = "target_hit"
+            elif stop is not None and price <= stop:
+                exit_reason = "stop_hit"
+            elif trail is not None and price <= trail:
+                exit_reason = "trailing_stop_hit"
 
             if not exit_reason:
                 continue
 
-            order = order_by_symbol.get(symbol)
-            if not order:
-                continue
-
             pnl = (price - avg) * qty
-            self.repo.close_order(int(order.get("id")), close_price=price, pnl=pnl)
+            exit_order = self.repo.create_order(
+                symbol=symbol,
+                side="SELL",
+                qty=qty,
+                notional=qty * price,
+                price=price,
+                status="OPEN",
+                meta={
+                    "source": "paper_engine_exit",
+                    "reason": exit_reason,
+                    "strategy_key": strategy_id,
+                    "tactic_id": strategy_id,
+                    "tactic_label": tactic_label,
+                },
+            )
+            if exit_order and exit_order.get("id") is not None:
+                self.repo.close_order(int(exit_order.get("id")), close_price=price, pnl=pnl)
             self.repo.remove_position(symbol)
             closed.append(
                 {

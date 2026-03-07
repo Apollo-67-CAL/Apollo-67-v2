@@ -1082,6 +1082,24 @@ h2 {
   border-top: 1px solid rgba(0, 0, 0, 0.08);
 }
 
+.paper-pos-actions {
+  display: inline-flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.field-group-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+@media (max-width: 900px) {
+  .field-group-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
 .source-row {
   border: 1px solid var(--border);
   border-radius: 10px;

@@ -310,9 +310,14 @@
                       <th>Qty</th>
                       <th>Avg</th>
                       <th>Last</th>
+                      <th>Value</th>
                       <th>Unrealised</th>
                       <th>Realised</th>
-                      <th>Tactic</th>
+                      <th>Strategy</th>
+                      <th>Stop</th>
+                      <th>Target</th>
+                      <th>Trail</th>
+                      <th>Actions</th>
                     </tr>
                   </thead>
                   <tbody id="paperPositionsBody"></tbody>
@@ -415,6 +420,57 @@
       <div class="monitor-modal-actions">
         <button id="paperOrderModalSubmit" type="button">Place Paper Buy</button>
         <button id="paperOrderModalCancel" type="button" class="button-ghost">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="paperPositionModal" class="monitor-modal" hidden>
+    <div class="monitor-modal-card">
+      <h3 id="paperPositionModalTitle">Manage Position</h3>
+      <div id="paperPositionModalError" class="panel-error" hidden></div>
+      <div id="paperPositionModalSuccess" class="monitor-modal-success" hidden></div>
+      <div class="field-group">
+        <label for="paperPositionModalSymbol">Symbol</label>
+        <input id="paperPositionModalSymbol" type="text" readonly />
+      </div>
+      <div id="paperPositionAmountGroup" class="field-group">
+        <label for="paperPositionModalAmount">Amount ($)</label>
+        <input id="paperPositionModalAmount" type="number" min="1" step="1" value="1000" />
+      </div>
+      <div class="field-group">
+        <label for="paperPositionModalStrategy">Strategy</label>
+        <select id="paperPositionModalStrategy"></select>
+      </div>
+      <div class="field-group">
+        <label for="paperPositionModalTactic">Tactic Label (optional)</label>
+        <input id="paperPositionModalTactic" type="text" placeholder="Position management update" />
+      </div>
+      <div id="paperPositionStopsGroup" class="field-group-grid">
+        <div class="field-group">
+          <label for="paperPositionModalStop">Stop Loss</label>
+          <input id="paperPositionModalStop" type="number" min="0" step="0.01" />
+        </div>
+        <div class="field-group">
+          <label for="paperPositionModalTarget">Take Profit</label>
+          <input id="paperPositionModalTarget" type="number" min="0" step="0.01" />
+        </div>
+        <div class="field-group">
+          <label for="paperPositionModalTrail">Trailing Stop</label>
+          <input id="paperPositionModalTrail" type="number" min="0" step="0.01" />
+        </div>
+      </div>
+      <div id="paperPositionCloseNotice" class="field-group muted" hidden>
+        This will close the entire position at the current paper market price.
+      </div>
+      <div id="paperPositionSellMode" class="field-group" hidden>
+        <label>
+          <input id="paperPositionModalSellAll" type="checkbox" />
+          Sell all (close position)
+        </label>
+      </div>
+      <div class="monitor-modal-actions">
+        <button id="paperPositionModalSubmit" type="button">Submit</button>
+        <button id="paperPositionModalCancel" type="button" class="button-ghost">Cancel</button>
       </div>
     </div>
   </div>

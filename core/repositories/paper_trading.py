@@ -92,15 +92,31 @@ class PaperTradingRepository:
         unrealised_pnl: float,
         realised_pnl: float,
         tactic_id: Optional[str] = None,
+        strategy_id: Optional[str] = None,
+        tactic_label: Optional[str] = None,
+        market: Optional[str] = None,
+        stop_loss: Optional[float] = None,
+        take_profit: Optional[float] = None,
+        trailing_stop: Optional[float] = None,
+        highest_price: Optional[float] = None,
+        status: Optional[str] = None,
     ) -> None:
         symbol_u = str(symbol or "").strip().upper()
         now_iso = _utc_now_iso()
+        strategy_u = str(strategy_id or tactic_id or "").strip() or None
+        tactic_u = str(tactic_id or strategy_id or "").strip() or None
+        tactic_label_u = str(tactic_label or "").strip() or None
+        market_u = str(market or "").strip().upper() or None
+        status_u = str(status or "OPEN").strip().upper()
         with get_connection() as conn:
             if conn.backend == "postgres":
                 conn.execute(
                     """
-                    INSERT INTO paper_positions(symbol, qty, avg_price, opened_at, updated_at, last_price, unrealised_pnl, realised_pnl, tactic_id)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    INSERT INTO paper_positions(
+                        symbol, qty, avg_price, opened_at, updated_at, last_price, unrealised_pnl, realised_pnl,
+                        tactic_id, strategy_id, tactic_label, market, stop_loss, take_profit, trailing_stop, highest_price, status
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT (symbol)
                     DO UPDATE SET
                         qty = EXCLUDED.qty,
@@ -109,7 +125,15 @@ class PaperTradingRepository:
                         last_price = EXCLUDED.last_price,
                         unrealised_pnl = EXCLUDED.unrealised_pnl,
                         realised_pnl = EXCLUDED.realised_pnl,
-                        tactic_id = EXCLUDED.tactic_id
+                        tactic_id = EXCLUDED.tactic_id,
+                        strategy_id = EXCLUDED.strategy_id,
+                        tactic_label = EXCLUDED.tactic_label,
+                        market = EXCLUDED.market,
+                        stop_loss = EXCLUDED.stop_loss,
+                        take_profit = EXCLUDED.take_profit,
+                        trailing_stop = EXCLUDED.trailing_stop,
+                        highest_price = EXCLUDED.highest_price,
+                        status = EXCLUDED.status
                     """,
                     (
                         symbol_u,
@@ -120,14 +144,25 @@ class PaperTradingRepository:
                         last_price,
                         float(unrealised_pnl),
                         float(realised_pnl),
-                        tactic_id,
+                        tactic_u,
+                        strategy_u,
+                        tactic_label_u,
+                        market_u,
+                        stop_loss,
+                        take_profit,
+                        trailing_stop,
+                        highest_price,
+                        status_u,
                     ),
                 )
             else:
                 conn.execute(
                     """
-                    INSERT INTO paper_positions(symbol, qty, avg_price, opened_at, updated_at, last_price, unrealised_pnl, realised_pnl, tactic_id)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    INSERT INTO paper_positions(
+                        symbol, qty, avg_price, opened_at, updated_at, last_price, unrealised_pnl, realised_pnl,
+                        tactic_id, strategy_id, tactic_label, market, stop_loss, take_profit, trailing_stop, highest_price, status
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(symbol)
                     DO UPDATE SET
                         qty = excluded.qty,
@@ -136,7 +171,15 @@ class PaperTradingRepository:
                         last_price = excluded.last_price,
                         unrealised_pnl = excluded.unrealised_pnl,
                         realised_pnl = excluded.realised_pnl,
-                        tactic_id = excluded.tactic_id
+                        tactic_id = excluded.tactic_id,
+                        strategy_id = excluded.strategy_id,
+                        tactic_label = excluded.tactic_label,
+                        market = excluded.market,
+                        stop_loss = excluded.stop_loss,
+                        take_profit = excluded.take_profit,
+                        trailing_stop = excluded.trailing_stop,
+                        highest_price = excluded.highest_price,
+                        status = excluded.status
                     """,
                     (
                         symbol_u,
@@ -147,9 +190,62 @@ class PaperTradingRepository:
                         last_price,
                         float(unrealised_pnl),
                         float(realised_pnl),
-                        tactic_id,
+                        tactic_u,
+                        strategy_u,
+                        tactic_label_u,
+                        market_u,
+                        stop_loss,
+                        take_profit,
+                        trailing_stop,
+                        highest_price,
+                        status_u,
                     ),
                 )
+
+    def adjust_position(
+        self,
+        symbol: str,
+        updates: Dict[str, Any],
+    ) -> Optional[Dict[str, Any]]:
+        symbol_u = str(symbol or "").strip().upper()
+        if not symbol_u:
+            return None
+        allowed = {
+            "stop_loss",
+            "take_profit",
+            "trailing_stop",
+            "strategy_id",
+            "tactic_id",
+            "tactic_label",
+            "market",
+            "highest_price",
+            "status",
+            "last_price",
+            "unrealised_pnl",
+            "realised_pnl",
+        }
+        fields: List[str] = []
+        params: List[Any] = []
+        for key, val in (updates or {}).items():
+            if key not in allowed:
+                continue
+            fields.append(f"{key} = ?")
+            params.append(val)
+        if not fields:
+            return self.get_position(symbol_u)
+        fields.append("updated_at = ?")
+        params.append(_utc_now_iso())
+        params.append(symbol_u)
+        with get_connection() as conn:
+            conn.execute(
+                f"UPDATE paper_positions SET {', '.join(fields)} WHERE symbol = ?",
+                tuple(params),
+            )
+            rows = conn.execute(
+                "SELECT * FROM paper_positions WHERE symbol = ? LIMIT 1",
+                (symbol_u,),
+            ).fetchall()
+        return rows[0] if rows else None
 
     def remove_position(self, symbol: str) -> None:
         with get_connection() as conn:

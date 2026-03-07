@@ -307,7 +307,15 @@ CREATE TABLE IF NOT EXISTS paper_positions (
     last_price REAL,
     unrealised_pnl REAL NOT NULL DEFAULT 0,
     realised_pnl REAL NOT NULL DEFAULT 0,
-    tactic_id TEXT
+    tactic_id TEXT,
+    strategy_id TEXT,
+    tactic_label TEXT,
+    market TEXT,
+    stop_loss REAL,
+    take_profit REAL,
+    trailing_stop REAL,
+    highest_price REAL,
+    status TEXT NOT NULL DEFAULT 'OPEN'
 );
 CREATE INDEX IF NOT EXISTS idx_paper_positions_updated_at ON paper_positions(updated_at);
 
@@ -624,7 +632,15 @@ CREATE TABLE IF NOT EXISTS paper_positions (
     last_price DOUBLE PRECISION,
     unrealised_pnl DOUBLE PRECISION NOT NULL DEFAULT 0,
     realised_pnl DOUBLE PRECISION NOT NULL DEFAULT 0,
-    tactic_id TEXT
+    tactic_id TEXT,
+    strategy_id TEXT,
+    tactic_label TEXT,
+    market TEXT,
+    stop_loss DOUBLE PRECISION,
+    take_profit DOUBLE PRECISION,
+    trailing_stop DOUBLE PRECISION,
+    highest_price DOUBLE PRECISION,
+    status TEXT NOT NULL DEFAULT 'OPEN'
 );
 CREATE INDEX IF NOT EXISTS idx_paper_positions_updated_at ON paper_positions(updated_at);
 
@@ -925,6 +941,74 @@ def init_db() -> None:
                 """,
                 ("v9_paper_trading_v1",),
             )
+        _ensure_paper_positions_columns(conn)
+
+
+def _table_columns(conn: DBConnection, table_name: str) -> set[str]:
+    table = str(table_name or "").strip().lower()
+    if not table:
+        return set()
+    if conn.backend == "sqlite":
+        rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+        return {str(row.get("name") or "").strip().lower() for row in rows}
+    rows = conn.execute(
+        """
+        SELECT column_name
+        FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name = ?
+        """,
+        (table,),
+    ).fetchall()
+    return {str(row.get("column_name") or "").strip().lower() for row in rows}
+
+
+def _ensure_column(conn: DBConnection, table_name: str, column_name: str, column_type_sql: str) -> None:
+    cols = _table_columns(conn, table_name)
+    col = str(column_name or "").strip().lower()
+    if not col or col in cols:
+        return
+    conn.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_type_sql}")
+
+
+def _ensure_paper_positions_columns(conn: DBConnection) -> None:
+    if conn.backend == "sqlite":
+        additions = {
+            "strategy_id": "TEXT",
+            "tactic_label": "TEXT",
+            "market": "TEXT",
+            "stop_loss": "REAL",
+            "take_profit": "REAL",
+            "trailing_stop": "REAL",
+            "highest_price": "REAL",
+            "status": "TEXT DEFAULT 'OPEN'",
+        }
+    else:
+        additions = {
+            "strategy_id": "TEXT",
+            "tactic_label": "TEXT",
+            "market": "TEXT",
+            "stop_loss": "DOUBLE PRECISION",
+            "take_profit": "DOUBLE PRECISION",
+            "trailing_stop": "DOUBLE PRECISION",
+            "highest_price": "DOUBLE PRECISION",
+            "status": "TEXT DEFAULT 'OPEN'",
+        }
+    for col_name, col_type in additions.items():
+        _ensure_column(conn, "paper_positions", col_name, col_type)
+    conn.execute(
+        """
+        UPDATE paper_positions
+        SET status = 'OPEN'
+        WHERE status IS NULL OR TRIM(COALESCE(status, '')) = ''
+        """
+    )
+    conn.execute(
+        """
+        UPDATE paper_positions
+        SET strategy_id = tactic_id
+        WHERE strategy_id IS NULL OR TRIM(COALESCE(strategy_id, '')) = ''
+        """
+    )
 
 
 def check_db_connectivity() -> Tuple[bool, str]:
